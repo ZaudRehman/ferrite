@@ -1,0 +1,24 @@
+[package]
+name = "ferrite-shell"
+description = "Ferrite browser foundation: windowing, DPI handling, the immediate-mode rendering loop, and the Cyber-Tactical Minimalism theme."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+egui.workspace = true
+egui-winit.workspace = true
+egui-wgpu.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+pollster.workspace = true
+ferrite-tabs.workspace = true
+ferrite-omnibox.workspace = true
+ferrite-proxy.workspace = true
+ferrite-privacy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+dashmap.workspace = true

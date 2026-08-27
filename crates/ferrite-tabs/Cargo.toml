@@ -1,0 +1,18 @@
+[package]
+name = "ferrite-tabs"
+description = "Ferrite content layer & tab management — Vec<TabState> lifecycle, spatial sync, suspension and IPC bridge foundation (Part 2)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+egui.workspace = true
+winit.workspace = true
+wry.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+url.workspace = true
+http.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+ferrite-privacy.workspace = true

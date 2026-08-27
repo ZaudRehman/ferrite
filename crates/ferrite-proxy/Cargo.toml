@@ -1,0 +1,13 @@
+[package]
+name = "ferrite-proxy"
+description = "Ferrite network interception engine — local HTTP/CONNECT proxy with decision hook, telemetry and payload forking (Part 4)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+httparse.workspace = true
+tokio.workspace = true
+crossbeam-channel.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

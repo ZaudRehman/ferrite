@@ -1,0 +1,16 @@
+[package]
+name = "ferrite-browser"
+description = "The Ferrite sovereign browser binary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "ferrite"
+path = "src/main.rs"
+
+[dependencies]
+ferrite-shell = { path = "../ferrite-shell" }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
