@@ -1,6 +1,6 @@
 //! Credentials and autofill manager.
 
-#![allow(clippy::collapsible_if, dead_code)]
+#![allow(clippy::collapsible_if)]
 
 pub mod breach;
 pub mod credentials;

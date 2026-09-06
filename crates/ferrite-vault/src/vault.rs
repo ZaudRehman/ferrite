@@ -115,7 +115,13 @@ impl Vault {
             batch_tx,
             config: None,
         };
-        Self::init_schema(&vault.conn.lock().unwrap())?;
+        {
+            let conn = vault
+                .conn
+                .lock()
+                .map_err(|e| VaultError::Storage(format!("vault lock poisoned: {e}")))?;
+            Self::init_schema(&conn)?;
+        }
         vault.spawn_batch_writer(batch_rx);
         Ok(vault)
     }

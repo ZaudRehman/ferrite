@@ -58,9 +58,12 @@ mod tests {
     #[test]
     fn reused_detection() {
         let key = b"0123456789ABCDEF0123456789ABCDEF";
-        let c1 = crate::credentials::CredentialRecord::new("https://a.com", "u", "same", key);
-        let c2 = crate::credentials::CredentialRecord::new("https://b.com", "u", "same", key);
-        let c3 = crate::credentials::CredentialRecord::new("https://c.com", "u", "diff", key);
+        let c1 =
+            crate::credentials::CredentialRecord::new("https://a.com", "u", "same", key).unwrap();
+        let c2 =
+            crate::credentials::CredentialRecord::new("https://b.com", "u", "same", key).unwrap();
+        let c3 =
+            crate::credentials::CredentialRecord::new("https://c.com", "u", "diff", key).unwrap();
         let reused = find_reused(&[c1, c2, c3], key);
         assert_eq!(reused.len(), 2);
     }

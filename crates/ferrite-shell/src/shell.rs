@@ -152,10 +152,11 @@ impl ShellApp {
             .ok()
             .and_then(|v| v.parse::<u16>().ok());
         let privacy_engine = {
-            let engine = std::sync::Arc::new(
-                ferrite_privacy::PrivacyEngine::new()
-                    .unwrap_or_else(|_| ferrite_privacy::PrivacyEngine::default()),
-            );
+            let engine =
+                std::sync::Arc::new(ferrite_privacy::PrivacyEngine::new().unwrap_or_else(|e| {
+                    error!(error = %e, "privacy engine init failed, falling back to defaults");
+                    ferrite_privacy::PrivacyEngine::default()
+                }));
             engine.load_settings_from_file("ferrite-settings.json");
             let _ = engine.load_filters(
                 &[("easylist_startup", "||ads.example^\n||tracker.test^")],

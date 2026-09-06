@@ -10,7 +10,8 @@ use crate::vault::Vault;
 pub fn import_netscape_bookmarks(path: &str, vault: &Vault) -> VaultResult<usize> {
     let data = std::fs::read_to_string(path).map_err(|e| VaultError::Import(e.to_string()))?;
     // Very small parser: <A HREF="url">title</A>
-    let re = Regex::new(r#"(?i)<a\s+href="([^"]+)"[^>]*>([^<]+)</a>"#).unwrap();
+    let re = Regex::new(r#"(?i)<a\s+href="([^"]+)"[^>]*>([^<]+)</a>"#)
+        .map_err(|e| VaultError::Import(format!("bookmark pattern: {e}")))?;
     let mut count = 0;
     for cap in re.captures_iter(&data) {
         let url = cap.get(1).map(|m| m.as_str()).unwrap_or("");

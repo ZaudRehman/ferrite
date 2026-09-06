@@ -34,7 +34,10 @@ pub fn import_csv(path: &str, key: &[u8]) -> Vec<CredentialRecord> {
         if url::Url::parse(url).is_err() && url::Url::parse(&format!("https://{url}")).is_err() {
             continue;
         }
-        out.push(CredentialRecord::new(url, username, password, key));
+        // Bad rows are skipped, never stored half-encrypted.
+        if let Ok(rec) = CredentialRecord::new(url, username, password, key) {
+            out.push(rec);
+        }
     }
     out
 }

@@ -22,12 +22,6 @@ pub struct ThreatDb {
     cache: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
-impl Default for ThreatDb {
-    fn default() -> Self {
-        Self::new_in_memory().expect("threat db default")
-    }
-}
-
 impl ThreatDb {
     fn init_schema(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(

@@ -17,17 +17,17 @@ pub struct CredentialRecord {
 }
 
 impl CredentialRecord {
-    pub fn new(url: &str, username: &str, password: &str, key: &[u8]) -> Self {
+    pub fn new(url: &str, username: &str, password: &str, key: &[u8]) -> Result<Self, String> {
         let mut pwd = password.as_bytes().to_vec();
-        let enc = encrypt_field(&pwd, key).expect("credential encrypt: key must be 32B");
+        let enc = encrypt_field(&pwd, key)?;
         pwd.zeroize();
-        Self {
+        Ok(Self {
             id: Uuid::new_v4().to_string(),
             url: url.to_owned(),
             username: username.to_owned(),
             encrypted_password: enc,
             hlc_timestamp: now_millis(),
-        }
+        })
     }
 
     pub fn decrypt_password(&self, key: &[u8]) -> Option<String> {
@@ -90,12 +90,11 @@ fn now_millis() -> i64 {
 
 pub struct CredentialStore {
     vault: std::sync::Arc<Vault>,
-    key: Vec<u8>,
 }
 
 impl CredentialStore {
-    pub fn new(vault: std::sync::Arc<Vault>, key: Vec<u8>) -> Self {
-        Self { vault, key }
+    pub fn new(vault: std::sync::Arc<Vault>) -> Self {
+        Self { vault }
     }
 
     pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -259,7 +258,7 @@ mod tests {
     #[test]
     fn credential_encrypt_decrypt() {
         let key = b"0123456789ABCDEF0123456789ABCDEF";
-        let rec = CredentialRecord::new("https://example.com", "user", "s3cret", key);
+        let rec = CredentialRecord::new("https://example.com", "user", "s3cret", key).unwrap();
         assert_ne!(rec.encrypted_password, b"s3cret");
         assert_eq!(rec.decrypt_password(key).as_deref(), Some("s3cret"));
         // Wrong key authenticates to None, never garbage.
@@ -277,8 +276,8 @@ mod tests {
             CredentialStore::init_schema(&conn).unwrap();
         }
         let key = b"0123456789ABCDEF0123456789ABCDEF";
-        let store = CredentialStore::new(vault.clone(), key.to_vec());
-        let rec = CredentialRecord::new("https://example.com", "alice", "pwd123", key);
+        let store = CredentialStore::new(vault.clone());
+        let rec = CredentialRecord::new("https://example.com", "alice", "pwd123", key).unwrap();
         let id = rec.id.clone();
         store.save(&rec).unwrap();
         let got = store.get_for_origin("https://example.com");
@@ -303,11 +302,12 @@ mod tests {
             CredentialStore::init_schema(&conn).unwrap();
         }
         let key = b"0123456789ABCDEF0123456789ABCDEF";
-        let store = CredentialStore::new(vault.clone(), key.to_vec());
-        let mut rec = CredentialRecord::new("https://example.com", "alice", "new", key);
+        let store = CredentialStore::new(vault.clone());
+        let mut rec = CredentialRecord::new("https://example.com", "alice", "new", key).unwrap();
         store.save(&rec).unwrap();
-        rec.encrypted_password =
-            CredentialRecord::new("https://example.com", "alice", "old", key).encrypted_password;
+        rec.encrypted_password = CredentialRecord::new("https://example.com", "alice", "old", key)
+            .unwrap()
+            .encrypted_password;
         rec.hlc_timestamp -= 1_000_000;
         store.save(&rec).unwrap();
         let got = store.get_for_origin("https://example.com");
