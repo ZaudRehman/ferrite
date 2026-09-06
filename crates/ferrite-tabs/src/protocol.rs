@@ -7,19 +7,20 @@ use http::{Request, Response};
 pub const NEWTAB_HTML: &str = r#"<!DOCTYPE html><!-- ferrite://newtab -->
 <html><head><meta charset="utf-8"><title>New Tab - Ferrite</title>
 <style>
-html,body{margin:0;height:100%;background:#020203;color:#E5E2E1;font-family:Inter,system-ui,sans-serif}
+/*__FERRITE_THEME__*/
+html,body{margin:0;height:100%;background:var(--f-bg);color:var(--f-fg);font-family:var(--f-font-ui)}
 .wrap{max-width:640px;margin:0 auto;padding:48px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh}
-.logo{font-size:28px;font-weight:800;letter-spacing:-0.02em;color:#E5E5E5;margin:0 0 8px}
-.sub{color:#9CA3AF;font-size:13px;margin:0 0 24px;letter-spacing:0.08em;text-transform:uppercase;font-family:"Geist Pixel Square",monospace}
+.logo{font-size:28px;font-weight:800;letter-spacing:-0.02em;color:var(--f-fg);margin:0 0 8px}
+.sub{color:var(--f-muted);font-size:13px;margin:0 0 24px;letter-spacing:0.08em;text-transform:uppercase;font-family:var(--f-font-pixel)}
 .search{width:100%;max-width:560px;position:relative}
-.search input{width:100%;padding:16px 16px;font-size:15px;border:0.5px solid #2A2A2A;border-radius:0;background:#131313;color:#E5E2E1;outline:none;font-family:"JetBrains Mono",monospace}
-.search input:focus{border-color:#6366F1}
-.hint{margin-top:8px;color:#9CA3AF;font-size:11px;font-family:"Geist Pixel Square",monospace;letter-spacing:0.04em}
+.search input{width:100%;padding:16px 16px;font-size:15px;border:0.5px solid var(--f-border);border-radius:0;background:var(--f-surface-1);color:var(--f-fg);outline:none;font-family:var(--f-font-mono)}
+.search input:focus{border-color:var(--f-accent)}
+.hint{margin-top:8px;color:var(--f-muted);font-size:11px;font-family:var(--f-font-pixel);letter-spacing:0.04em}
 .shortcuts{display:grid;grid-template-columns:repeat(4,80px);gap:16px;margin-top:32px;justify-content:center}
-.tile{width:80px;height:80px;background:#131313;border:0.5px solid #2A2A2A;border-radius:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:border-color 100ms,transform 100ms}
-.tile:hover{border-color:#6366F1;transform:translateY(-1px)}
-.tile span{font-size:11px;color:#9CA3AF;font-family:"Geist Pixel Square",monospace}
-.tile strong{font-size:14px;color:#E5E5E5}
+.tile{width:80px;height:80px;background:var(--f-surface-1);border:0.5px solid var(--f-border);border-radius:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:border-color 100ms,transform 100ms}
+.tile:hover{border-color:var(--f-accent);transform:translateY(-1px)}
+.tile span{font-size:11px;color:var(--f-muted);font-family:var(--f-font-pixel)}
+.tile strong{font-size:14px;color:var(--f-fg)}
 </style></head>
 <body>
 <div class="wrap">
@@ -70,19 +71,19 @@ html,body{margin:0;height:100%;background:#020203;color:#E5E2E1;font-family:Inte
 
 pub const CRASHED_HTML: &str = r#"<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Tab Crashed</title>
-<style>html,body{margin:0;height:100%;background:#020203;color:#FF003F;font-family:system-ui;display:flex;align-items:center;justify-content:center;flex-direction:column}</style>
+<style>/*__FERRITE_THEME__*/html,body{margin:0;height:100%;background:var(--f-bg);color:var(--f-danger);font-family:var(--f-font-ui);display:flex;align-items:center;justify-content:center;flex-direction:column}</style>
 </head><body><h1>This tab has crashed.</h1><p><button onclick="location.reload()">Reload Tab</button></p></body></html>
 "#;
 
 pub const SECURITY_WARNING_HTML: &str = r#"<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Security Warning - Ferrite</title>
-<style>html,body{margin:0;height:100%;background:#020203;color:#E5E2E1;font-family:system-ui;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center}</style>
-</head><body><h1 style="color:#FF003F">⚠ Security Warning</h1><p>Ferrite has determined this site is a known phishing/malware vector.</p><p><button onclick="history.back()">Go Back</button> <button onclick="location.href='about:blank'">Proceed at your own risk</button></p></body></html>
+<style>/*__FERRITE_THEME__*/html,body{margin:0;height:100%;background:var(--f-bg);color:var(--f-fg);font-family:var(--f-font-ui);display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center}</style>
+</head><body><h1 style="color:var(--f-danger)">⚠ Security Warning</h1><p>Ferrite has determined this site is a known phishing/malware vector.</p><p><button onclick="history.back()">Go Back</button> <button onclick="location.href='about:blank'">Proceed at your own risk</button></p></body></html>
 "#;
 
 pub const SETTINGS_HTML: &str = r#"<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Settings - Ferrite</title>
-<style>html,body{margin:0;padding:24px;background:#020203;color:#E5E2E1;font-family:system-ui}h1{color:#E5E5E5}h2{color:#E5E5E5;margin-top:24px}label{display:flex;align-items:center;gap:8px;margin:12px 0;font-size:14px}input[type=checkbox]{accent-color:#4F46E5}button{margin:4px;padding:6px 12px}</style>
+<style>/*__FERRITE_THEME__*/html,body{margin:0;padding:24px;background:var(--f-bg);color:var(--f-fg);font-family:var(--f-font-ui)}h1{color:var(--f-fg)}h2{color:var(--f-fg);margin-top:24px}label{display:flex;align-items:center;gap:8px;margin:12px 0;font-size:14px}input[type=checkbox]{accent-color:var(--f-accent)}button{margin:4px;padding:6px 12px}</style>
 </head><body><h1>Privacy Settings</h1>
 <label><input type="checkbox" id="adblock" checked onchange="post('adblock',this.checked)"> Adblock (EasyList)</label>
 <label><input type="checkbox" id="gpc" checked onchange="post('gpc',this.checked)"> Send Sec-GPC: 1</label>
@@ -118,6 +119,18 @@ window.__ferriteShowRecovery = function(p){ document.getElementById('recoveryOut
 /// Assets served under `ferrite://assets/<name>`.
 pub type AssetTable = std::collections::BTreeMap<String, std::sync::Arc<[u8]>>;
 
+/// Marker inside each privileged page's `<style>` where the shell's theme
+/// CSS (`ThemeConfig::theme_css`) is substituted at serve time. Pages keep
+/// working with zero theme (marker left as a harmless empty comment) so
+/// tests and bare handlers never depend on shell tokens.
+pub const THEME_MARKER: &str = "/*__FERRITE_THEME__*/";
+
+/// Substitute the theme CSS block for [`THEME_MARKER`]. Plain string
+/// replace (no regex): an empty `css` leaves the marker comment in place.
+pub fn apply_theme_css(html: &str, css: &str) -> String {
+    html.replacen(THEME_MARKER, css, 1)
+}
+
 /// Minimal HTML escaping for interpolated values (`&<>"'`).
 pub fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -134,7 +147,7 @@ pub fn html_escape(s: &str) -> String {
     out
 }
 
-const PRIVILEGED_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
+const PRIVILEGED_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src http://ferrite.assets https://ferrite.assets; img-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 const NOSNIFF: &str = "nosniff";
 
 fn html_response(status: u16, body: Vec<u8>) -> Response<Cow<'static, [u8]>> {
@@ -166,6 +179,7 @@ pub fn ferrite_protocol_handler_with_assets(
     id: wry::WebViewId<'_>,
     request: Request<Vec<u8>>,
     assets: &AssetTable,
+    theme_css: &str,
 ) -> Response<Cow<'static, [u8]>> {
     let uri = request.uri().to_string();
     // Handle both ferrite://assets/ and http(s)://ferrite.assets/ for Windows WebView2 proxy mapping
@@ -223,20 +237,25 @@ pub fn ferrite_protocol_handler_with_assets(
                 .unwrap_or_else(|_| Response::new(Cow::Borrowed(b"asset error" as &[u8])));
         }
     }
-    ferrite_protocol_handler(id, request)
+    ferrite_protocol_handler(id, request, theme_css)
 }
 
-/// Handler for `ferrite://` page requests.
+/// Handler for `ferrite://` page requests. `theme_css` (the shell's
+/// `ThemeConfig::theme_css` block) is substituted for [`THEME_MARKER`] in
+/// the privileged page templates; empty string leaves pages unthemed but
+/// functional.
 pub fn ferrite_protocol_handler(
     _id: wry::WebViewId<'_>,
     request: Request<Vec<u8>>,
+    theme_css: &str,
 ) -> Response<Cow<'static, [u8]>> {
     let uri = request.uri().to_string();
+    let themed = |html: &str| apply_theme_css(html, theme_css).into_bytes();
     match ferrite_route(&uri) {
-        FerritePage::NewTab => html_response(200, NEWTAB_HTML.as_bytes().to_vec()),
-        FerritePage::Crashed => html_response(200, CRASHED_HTML.as_bytes().to_vec()),
-        FerritePage::Security => html_response(200, SECURITY_WARNING_HTML.as_bytes().to_vec()),
-        FerritePage::Settings => html_response(200, SETTINGS_HTML.as_bytes().to_vec()),
+        FerritePage::NewTab => html_response(200, themed(NEWTAB_HTML)),
+        FerritePage::Crashed => html_response(200, themed(CRASHED_HTML)),
+        FerritePage::Security => html_response(200, themed(SECURITY_WARNING_HTML)),
+        FerritePage::Settings => html_response(200, themed(SETTINGS_HTML)),
         FerritePage::Search => html_response(
             200,
             b"<html><body>ferrite search handled via egui</body></html>".to_vec(),
@@ -365,7 +384,7 @@ mod tests {
             .uri("ferrite://newtab")
             .body(Vec::new())
             .unwrap();
-        let resp = ferrite_protocol_handler("test", req);
+        let resp = ferrite_protocol_handler("test", req, "");
         assert_eq!(resp.status(), 200);
         assert!(resp.headers().contains_key("Content-Type"));
         let body = String::from_utf8(resp.into_body().into_owned()).unwrap();
@@ -378,7 +397,7 @@ mod tests {
             .uri("ferrite://crashed")
             .body(Vec::new())
             .unwrap();
-        let resp = ferrite_protocol_handler("test", req);
+        let resp = ferrite_protocol_handler("test", req, "");
         assert!(resp.into_body().windows(5).any(|w| w == b"crash"));
     }
 
@@ -388,7 +407,7 @@ mod tests {
             .uri("ferrite://unknown")
             .body(Vec::new())
             .unwrap();
-        let resp = ferrite_protocol_handler("test", req);
+        let resp = ferrite_protocol_handler("test", req, "");
         assert_eq!(resp.status(), 404);
     }
 
@@ -410,7 +429,7 @@ mod tests {
             .uri("ferrite://unknown?x=a&y='evil")
             .body(Vec::new())
             .unwrap();
-        let resp = ferrite_protocol_handler("test", req);
+        let resp = ferrite_protocol_handler("test", req, "");
         assert_eq!(resp.status(), 404);
         let body = String::from_utf8(resp.into_body().into_owned()).unwrap();
         assert!(!body.contains("y='evil"));
@@ -426,7 +445,7 @@ mod tests {
             "https://notferrite.example/settings",
         ] {
             let req = Request::builder().uri(uri).body(Vec::new()).unwrap();
-            let resp = ferrite_protocol_handler("test", req);
+            let resp = ferrite_protocol_handler("test", req, "");
             assert_eq!(resp.status(), 404, "uri: {uri}");
             let body = String::from_utf8(resp.into_body().into_owned()).unwrap();
             assert!(
@@ -459,7 +478,7 @@ mod tests {
             .uri("ferrite://newtab")
             .body(Vec::new())
             .unwrap();
-        let resp = ferrite_protocol_handler("test", req);
+        let resp = ferrite_protocol_handler("test", req, "");
         assert_eq!(resp.status(), 200);
         let csp = resp.headers().get("Content-Security-Policy").unwrap();
         assert!(csp.to_str().unwrap().contains("default-src"));
@@ -485,7 +504,7 @@ mod tests {
             .uri("ferrite://assets/geist-pixel-square.ttf")
             .body(Vec::new())
             .unwrap();
-        let resp = ferrite_protocol_handler_with_assets("test", req, &assets);
+        let resp = ferrite_protocol_handler_with_assets("test", req, &assets, "");
         assert_eq!(resp.status(), 200);
         assert_eq!(resp.headers().get("Content-Type").unwrap(), "font/ttf");
         assert_eq!(&*resp.into_body(), b"FAKE_TTF_BYTES");
@@ -498,7 +517,7 @@ mod tests {
             .uri("ferrite://assets/nope.ttf")
             .body(Vec::new())
             .unwrap();
-        let resp = ferrite_protocol_handler_with_assets("test", req, &assets);
+        let resp = ferrite_protocol_handler_with_assets("test", req, &assets, "");
         assert_eq!(resp.status(), 404);
     }
 
@@ -509,7 +528,7 @@ mod tests {
             .uri("ferrite://assets/geist-pixel-square.ttf?v=2#x")
             .body(Vec::new())
             .unwrap();
-        let resp = ferrite_protocol_handler_with_assets("test", req, &assets);
+        let resp = ferrite_protocol_handler_with_assets("test", req, &assets, "");
         assert_eq!(resp.status(), 200);
     }
 
@@ -520,9 +539,63 @@ mod tests {
             .uri("ferrite://newtab")
             .body(Vec::new())
             .unwrap();
-        let resp = ferrite_protocol_handler_with_assets("test", req, &assets);
+        let resp = ferrite_protocol_handler_with_assets("test", req, &assets, "");
         assert_eq!(resp.status(), 200);
         let body = String::from_utf8(resp.into_body().into_owned()).unwrap();
         assert!(body.contains("ferrite://newtab"));
+    }
+
+    #[test]
+    fn theme_css_replaces_marker_once() {
+        let out = apply_theme_css("a/*__FERRITE_THEME__*/b/*__FERRITE_THEME__*/", ":root{}");
+        assert_eq!(out, "a:root{}b/*__FERRITE_THEME__*/");
+        assert_eq!(apply_theme_css("no marker", ":root{}"), "no marker");
+    }
+
+    #[test]
+    fn themed_newtab_has_vars_and_no_hardcoded_colors() {
+        let css = ":root{--f-bg:#090a0f}";
+        let body = themed_body("ferrite://newtab", css);
+        assert!(body.contains(":root{--f-bg:#090a0f}"), "injected");
+        assert!(!body.contains(THEME_MARKER), "marker consumed");
+        for page in [
+            NEWTAB_HTML,
+            CRASHED_HTML,
+            SECURITY_WARNING_HTML,
+            SETTINGS_HTML,
+        ] {
+            assert!(page.contains(THEME_MARKER), "marker present");
+            for hard in [
+                "#020203", "#E5E2E1", "#9CA3AF", "#2A2A2A", "#6366F1", "Inter,",
+            ] {
+                assert!(
+                    !page.contains(hard),
+                    "hardcoded {hard} left in privileged template"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn privileged_csp_allows_first_party_fonts_only() {
+        let req = Request::builder()
+            .uri("ferrite://settings")
+            .body(Vec::new())
+            .unwrap();
+        let resp = ferrite_protocol_handler("test", req, "");
+        let csp = resp.headers().get("Content-Security-Policy").unwrap();
+        let csp = csp.to_str().unwrap();
+        assert!(
+            csp.contains("font-src http://ferrite.assets https://ferrite.assets"),
+            "{csp}"
+        );
+        assert!(!csp.contains("font-src *"), "no wildcard fonts");
+    }
+
+    fn themed_body(uri: &str, css: &str) -> String {
+        let assets = make_assets();
+        let req = Request::builder().uri(uri).body(Vec::new()).unwrap();
+        let resp = ferrite_protocol_handler_with_assets("test", req, &assets, css);
+        String::from_utf8(resp.into_body().into_owned()).unwrap()
     }
 }

@@ -274,6 +274,13 @@ impl ShellApp {
                 "geist-pixel-square.ttf",
                 crate::fonts::GEIST_PIXEL_SQUARE_TTF,
             );
+            f = f.with_asset(
+                "jetbrains-mono-regular.ttf",
+                crate::fonts::JETBRAINS_MONO_TTF,
+            );
+            // Single theme source: the same tokens behind egui Visuals,
+            // serialized for ferrite:// pages (see ThemeConfig::theme_css).
+            f = f.with_theme_css(theme.theme_css());
             Rc::new(f)
         };
         let mut app = AppContext::new_with_factory(theme, factory);

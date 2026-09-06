@@ -1,4 +1,4 @@
-﻿//! Theme tokens: colors, corners, and accent context.
+//! Theme tokens: colors, corners, and accent context.
 //!
 //! Palette blends Aetherial Mercury surfaces with the Technical UI Kit
 //! (Geist Pixel + JetBrains Mono + Lucide). Structural and interactive
@@ -179,6 +179,17 @@ impl Default for ThemeConfig {
     }
 }
 
+/// A [`Color32`] as CSS: `#rrggbb` when opaque, `rgba()` otherwise
+/// (border tokens are translucent white).
+fn css_color(c: Color32) -> String {
+    let [r, g, b, a] = c.to_array();
+    if a == 255 {
+        format!("#{r:02x}{g:02x}{b:02x}")
+    } else {
+        format!("rgba({r},{g},{b},{:.3})", a as f32 / 255.0)
+    }
+}
+
 impl ThemeConfig {
     pub fn new() -> Self {
         Self::default()
@@ -276,6 +287,36 @@ impl ThemeConfig {
 
     pub fn apply(&self, ctx: &Context) {
         ctx.set_visuals(self.visuals());
+    }
+
+    /// CSS custom-property block for `ferrite://` pages — the same tokens
+    /// [`Self::visuals`] is built from, serialized for the web side. The
+    /// protocol handler substitutes it for the `/*__FERRITE_THEME__*/`
+    /// marker at serve time, so a palette change lands in egui chrome and
+    /// internal pages together. Includes `@font-face` for the embedded
+    /// Technical UI Kit fonts, served from `ferrite://assets/`
+    /// (see `WryFactory::with_asset`).
+    pub fn theme_css(&self) -> String {
+        let p = &self.palette;
+        let iris = self.resolved_interactive_accent();
+        format!(
+            ":root{{--f-bg:{};--f-surface-1:{};--f-surface-2:{};--f-fg:{};--f-muted:{};--f-faint:{};--f-accent:{};--f-accent-primary:{};--f-danger:{};--f-warning:{};--f-archive:{};--f-border:{};--f-font-ui:{};--f-font-pixel:{};--f-font-mono:{}}}@font-face{{font-family:\"Geist Pixel Square\";src:url(\"http://ferrite.assets/geist-pixel-square.ttf\") format(\"truetype\");font-display:swap}}@font-face{{font-family:\"JetBrains Mono\";src:url(\"http://ferrite.assets/jetbrains-mono-regular.ttf\") format(\"truetype\");font-display:swap}}",
+            css_color(p.substrate),
+            css_color(p.surface_1),
+            css_color(p.surface_2),
+            css_color(p.foreground),
+            css_color(TEXT_SECONDARY),
+            css_color(TEXT_MUTED),
+            css_color(iris),
+            css_color(p.accent_primary),
+            css_color(p.accent_danger),
+            css_color(p.accent_warning),
+            css_color(p.accent_archive),
+            css_color(BORDER_SUBTLE),
+            "system-ui,-apple-system,\"Segoe UI\",sans-serif",
+            "\"Geist Pixel Square\",ui-monospace,monospace",
+            "\"JetBrains Mono\",ui-monospace,SFMono-Regular,monospace",
+        )
     }
 
     /// Bottom border for inputs. Focused uses the active accent.
@@ -398,6 +439,32 @@ mod tests {
         assert_eq!(v.panel_fill, SURFACE_1);
         assert_eq!(v.window_fill, SURFACE_2);
         assert_eq!(v.extreme_bg_color, SUBSTRATE);
+    }
+
+    #[test]
+    fn theme_css_exports_tokens_and_fonts() {
+        let css = ThemeConfig::default().theme_css();
+        // Same tokens visuals() is built from.
+        assert!(css.contains("--f-bg:#090a0f"), "substrate {css}");
+        assert!(css.contains("--f-fg:#f8fafc"), "foreground {css}");
+        assert!(css.contains("--f-accent:#4f46e5"), "iris {css}");
+        assert!(css.contains("--f-danger:#ff4757"), "danger {css}");
+        assert!(
+            css.contains("--f-border:rgba(255,255,255,0.078)"),
+            "border {css}"
+        );
+        assert!(css.contains("--f-font-ui:"), "ui stack {css}");
+        // Embedded fonts served from the asset table.
+        assert!(css.contains("@font-face"), "faces {css}");
+        assert!(css.contains("geist-pixel-square.ttf"), "pixel {css}");
+        assert!(css.contains("jetbrains-mono-regular.ttf"), "mono {css}");
+        // Archive accent context moves the interactive accent.
+        let mut cfg = ThemeConfig::default();
+        cfg.toggle_context();
+        assert!(
+            cfg.theme_css().contains("--f-accent:#f0c75e"),
+            "archive accent"
+        );
     }
 
     #[test]

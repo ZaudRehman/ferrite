@@ -217,6 +217,9 @@ pub struct WryFactory {
     ipc_sender: tokio::sync::mpsc::Sender<IpcMessage>,
     ipc_limits: crate::ipc::SharedLimitsHandle,
     assets: std::sync::Arc<crate::protocol::AssetTable>,
+    /// Shell theme CSS block, substituted for the marker in privileged
+    /// pages at serve time. Empty until the shell provides it.
+    theme_css: String,
     proxy: Option<(String, u16)>,
     archive: Option<std::sync::Arc<ferrite_archive::Archive>>,
     downloads: Option<crate::downloads::DownloadManager>,
@@ -234,6 +237,7 @@ impl WryFactory {
             ipc_sender,
             ipc_limits,
             assets: std::sync::Arc::new(crate::protocol::AssetTable::new()),
+            theme_css: String::new(),
             proxy: None,
             archive: None,
             downloads: None,
@@ -260,6 +264,14 @@ impl WryFactory {
         let mut table = (*self.assets).clone();
         table.insert(name.to_owned(), std::sync::Arc::from(bytes));
         self.assets = std::sync::Arc::new(table);
+        self
+    }
+
+    /// Theme CSS block served into privileged pages (see
+    /// `crate::protocol::THEME_MARKER`). Captured per webview at creation.
+    #[must_use]
+    pub fn with_theme_css(mut self, css: impl Into<String>) -> Self {
+        self.theme_css = css.into();
         self
     }
 
@@ -304,6 +316,7 @@ impl WebViewFactory for WryFactory {
         let dl_pending = std::sync::Arc::clone(&self.pending_downloads);
 
         let assets = self.assets.clone();
+        let theme_css = self.theme_css.clone();
         let archive = self.archive.clone();
         #[allow(clippy::collapsible_if)]
         let mut builder = wry::WebViewBuilder::new()
@@ -324,7 +337,9 @@ impl WebViewFactory for WryFactory {
                                         // snapshot body is archived third-party HTML
                                         // served with scripts disabled (CSP below) so
                                         // stored scripts cannot reach `window.ipc`.
-                                        let banner = format!("<div style=\"background:#1C1B1B;color:#E5E2E1;padding:8px;text-align:center\">Archive snapshot from {}</div>", snap.timestamp);
+                                        // The banner uses theme vars; the style block
+                                        // defines them (body content keeps its own).
+                                        let banner = format!("<style>{}</style><div style=\"background:var(--f-surface-2);color:var(--f-fg);padding:8px;text-align:center;font-family:var(--f-font-ui)\">Archive snapshot from {}</div>", crate::protocol::apply_theme_css(crate::protocol::THEME_MARKER, &theme_css), snap.timestamp);
                                         let body = format!("{}{}", banner, snap.html);
                                         return http::Response::builder()
                                             .status(200)
@@ -378,7 +393,9 @@ impl WebViewFactory for WryFactory {
                             }
                         }
                     }
-                    crate::protocol::ferrite_protocol_handler_with_assets(id, req, &assets)
+                    crate::protocol::ferrite_protocol_handler_with_assets(
+                        id, req, &assets, &theme_css
+                    )
                 },
             )
             .with_initialization_script(audio_listener_js())
