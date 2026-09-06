@@ -51,6 +51,10 @@ what operators must provision. Updated 2026-09-11 after P0–P2.
   but not real EFF memorability. TOTP is SHA1/6-digit/30s only.
 
 ### Sync scale
+- **Shell integration**: `ferrite-sync` has no entry point into `ShellApp`
+  (no `Arc` held, no background tasks spawned, no pairing UI), so
+  cross-device sync is inert no matter how solid the crate is in isolation.
+  Wiring it is shell lifecycle + pairing UI work, not yet scheduled.
 - Per-device causality is approximated by HLC high-water marks (origin
   columns deferred). Vector-clock counters are diagnostic.
 - mDNS/DNS-SD storms beyond ~50 LAN peers untested. Relay is a single

@@ -74,7 +74,7 @@ Current: `fmt` clean, `clippy` 0 warnings, 157 tests passed.
 Parts 1-5 implemented and production grade for the choke. Not yet a full consumer browser.
 
 - Done: window/shell, tabs with suspend/discard, omnibox with 4 engines and autocomplete, proxy with telemetry/fork, privacy with trie and SQLite.
-- Next: Archive pipeline (fork consumer), Vault, Sync, and CDN fetch for hourly updates.
+- Next: Sync shell integration (crate complete but unwired, see `docs/LIMITATIONS.md`), and CDN fetch for hourly updates.
 
 ## License
 
