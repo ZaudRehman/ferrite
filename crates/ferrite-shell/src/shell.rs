@@ -524,6 +524,8 @@ impl ShellApp {
                         diagnostics,
                         self.proxy_requests,
                         self.proxy_dropped,
+                        self.proxy.is_some(),
+                        self.privacy.fail_open_count(),
                         dl_count,
                         dl_last.clone(),
                         content_rect_cell,
@@ -885,6 +887,8 @@ fn build_shell_ui(
     diagnostics: bool,
     proxy_requests: u64,
     proxy_dropped: u64,
+    proxy_alive: bool,
+    fail_open_count: u64,
     downloads_seen: usize,
     last_download: Option<String>,
     content_rect_cell: &Cell<Option<Rect>>,
@@ -2015,12 +2019,20 @@ fn build_shell_ui(
                     .data(|d| d.get_temp::<bool>(shield_id))
                     .unwrap_or(false);
                 let shield_count = proxy_requests;
-                let shield_fg = if shield_count > 0 {
+                // Protection-degraded state (Part 4 spec): the choke is a
+                // promise, so proxy-down or any fail-open decision must be
+                // visible, never log-only.
+                let degraded = !proxy_alive || fail_open_count > 0;
+                let shield_fg = if degraded {
+                    crate::theme::ACCENT_DANGER
+                } else if shield_count > 0 {
                     crate::theme::ACCENT_PRIMARY
                 } else {
                     crate::theme::TEXT_MUTED
                 };
-                let shield_bg = if shield_count > 0 {
+                let shield_bg = if degraded {
+                    crate::theme::ACCENT_DANGER.gamma_multiply(0.12)
+                } else if shield_count > 0 {
                     crate::theme::ACCENT_PRIMARY.gamma_multiply(0.12)
                 } else {
                     app.theme.palette.surface_2
@@ -2055,7 +2067,9 @@ fn build_shell_ui(
                     crate::icons::paint(
                         ui.painter(),
                         icon_rect,
-                        if shield_count > 0 {
+                        if degraded {
+                            crate::icons::Icon::Shield
+                        } else if shield_count > 0 {
                             crate::icons::Icon::ShieldCheck
                         } else {
                             crate::icons::Icon::Shield
@@ -2072,7 +2086,11 @@ fn build_shell_ui(
                 }
                 if shield_resp
                     .clone()
-                    .on_hover_text("Shield — blocked")
+                    .on_hover_text(if degraded {
+                        "Shield — protection degraded"
+                    } else {
+                        "Shield — blocked"
+                    })
                     .clicked()
                 {
                     shield_pop = !shield_pop;
@@ -2166,6 +2184,28 @@ fn build_shell_ui(
                                             .color(app.theme.palette.foreground),
                                     );
                                     panel.add_space(4.0);
+                                    if degraded {
+                                        if !proxy_alive {
+                                            panel.label(
+                                                RichText::new("Proxy down — traffic is direct")
+                                                    .size(12.0)
+                                                    .color(crate::theme::ACCENT_DANGER)
+                                                    .font(egui::FontId::monospace(12.0)),
+                                            );
+                                        }
+                                        if fail_open_count > 0 {
+                                            panel.label(
+                                                RichText::new(format!(
+                                                    "{} fail-open decisions",
+                                                    fail_open_count
+                                                ))
+                                                .size(12.0)
+                                                .color(crate::theme::ACCENT_DANGER)
+                                                .font(egui::FontId::monospace(12.0)),
+                                            );
+                                        }
+                                        panel.add_space(4.0);
+                                    }
                                     panel.label(
                                         RichText::new(format!(
                                             "{} requests blocked",
@@ -2188,9 +2228,19 @@ fn build_shell_ui(
                                     );
                                     panel.add_space(4.0);
                                     panel.label(
-                                        RichText::new("Blockers active for this session")
-                                            .size(11.0)
-                                            .color(crate::theme::TEXT_MUTED),
+                                        RichText::new(if degraded {
+                                            "Protection degraded — see above"
+                                        } else {
+                                            "Blockers active for this session"
+                                        })
+                                        .size(11.0)
+                                        .color(
+                                            if degraded {
+                                                crate::theme::ACCENT_DANGER
+                                            } else {
+                                                crate::theme::TEXT_MUTED
+                                            },
+                                        ),
                                     );
                                 });
                         });

@@ -55,6 +55,9 @@ pub struct VerdictCounts {
     pub tracker: std::sync::atomic::AtomicU64,
     pub malware: std::sync::atomic::AtomicU64,
     pub mixed: std::sync::atomic::AtomicU64,
+    /// Protective checks that failed open (poisoned locks, realtime
+    /// timeouts). Any nonzero value means protection was degraded.
+    pub fail_open: std::sync::atomic::AtomicU64,
 }
 
 impl VerdictCounts {
@@ -79,6 +82,18 @@ impl VerdictCounts {
             self.malware.load(Relaxed),
             self.mixed.load(Relaxed),
         )
+    }
+
+    /// Record one fail-open (a protective check that could not run).
+    pub fn record_fail_open(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.fail_open.fetch_add(1, Relaxed);
+    }
+
+    /// Monotonic count of fail-open decisions this process lifetime.
+    pub fn fail_open_count(&self) -> u64 {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.fail_open.load(Relaxed)
     }
 }
 
@@ -173,6 +188,12 @@ impl PrivacyEngine {
     /// Monotonic decision counters for fleet triage.
     pub fn verdict_counts(&self) -> (u64, u64, u64, u64, u64) {
         self.verdict_counts.snapshot()
+    }
+
+    /// Monotonic count of fail-open decisions (protective checks that
+    /// could not run). Powers the shell's "Protection degraded" badge.
+    pub fn fail_open_count(&self) -> u64 {
+        self.verdict_counts.fail_open_count()
     }
 
     pub fn set_proxy_port(&self, port: Option<u16>) {
@@ -417,6 +438,7 @@ impl PrivacyEngine {
             }
             Err(e) => {
                 tracing::warn!(error = %e, "threat lock poisoned - fail-open");
+                self.verdict_counts.record_fail_open();
             }
         }
 
@@ -449,6 +471,7 @@ impl PrivacyEngine {
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "filter lock poisoned - fail-open");
+                    self.verdict_counts.record_fail_open();
                 }
             }
         }
@@ -478,6 +501,7 @@ impl PrivacyEngine {
             .enable_all()
             .build();
         let Ok(rt) = rt else {
+            self.verdict_counts.record_fail_open();
             return false;
         };
         match rt.block_on(tokio::time::timeout(
@@ -488,6 +512,7 @@ impl PrivacyEngine {
             Ok(_) => false,
             Err(_) => {
                 tracing::debug!(%domain, "realtime lookup timeout - fail-open");
+                self.verdict_counts.record_fail_open();
                 false
             }
         }
@@ -569,5 +594,19 @@ mod tests {
         let (allow_n, ad_n, tracker_n, malware_n, mixed_n) = e.verdict_counts();
         assert_eq!((allow_n, ad_n), (1, 2));
         assert_eq!((tracker_n, malware_n, mixed_n), (0, 0, 0));
+    }
+
+    #[test]
+    fn fail_open_counter_starts_at_zero_and_records() {
+        let e = PrivacyEngine::new().unwrap();
+        assert_eq!(e.fail_open_count(), 0);
+        e.verdict_counts.record_fail_open();
+        e.verdict_counts.record_fail_open();
+        assert_eq!(e.fail_open_count(), 2);
+        // Terminal verdict counters are unaffected by fail-open records.
+        let meta = RequestMeta::new("example.com", ResourceType::Document);
+        assert_eq!(e.decide(&meta), Verdict::Allow);
+        assert_eq!(e.fail_open_count(), 2);
+        assert_eq!(e.verdict_counts().0, 1);
     }
 }
