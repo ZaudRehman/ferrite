@@ -492,6 +492,58 @@ fn internal_host_requires_exact_match() {
     handle.stop();
 }
 
+#[test]
+fn archive_fallback_serves_snapshot_on_dial_failure() {
+    // Canned provider: stands in for the shell's Archive-backed closure.
+    let provider: Arc<ferrite_proxy::ArchiveProvider> = Arc::new(|_url: &str| {
+        Some(ferrite_proxy::ArchiveSnapshot {
+            html: b"<html><body>archived copy</body></html>".to_vec(),
+            headers: "text/html".to_owned(),
+            timestamp: 1700000000,
+        })
+    });
+    let handle = ferrite_proxy::spawn(
+        ProxyConfig {
+            fixed_port: None,
+            archive: Some(provider),
+        },
+        Arc::new(ferrite_proxy::AllowAllHook),
+    )
+    .expect("proxy spawn");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    // Port 1 is closed: dial fails, so the archive snapshot must serve.
+    let resp = rt.block_on(send_recv(
+        handle.port,
+        "GET http://127.0.0.1:1/dead HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    ));
+    assert!(resp.starts_with("HTTP/1.1 200"), "snapshot served: {resp}");
+    assert!(
+        resp.contains("Displaying local snapshot"),
+        "archive banner: {resp}"
+    );
+    assert!(resp.contains("archived copy"), "snapshot body: {resp}");
+    handle.stop();
+}
+
+#[test]
+fn archive_none_still_502s_on_dial_failure() {
+    // Without a provider the old behavior is unchanged: 502, no snapshot.
+    let handle = spawn_proxy(Arc::new(ferrite_proxy::AllowAllHook));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let resp = rt.block_on(send_recv(
+        handle.port,
+        "GET http://127.0.0.1:1/dead HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    ));
+    assert!(resp.starts_with("HTTP/1.1 502"), "no fallback: {resp}");
+    handle.stop();
+}
+
 async fn futures_join<T: Send + 'static>(
     handles: Vec<tokio::task::JoinHandle<T>>,
 ) -> Vec<std::result::Result<T, ()>> {

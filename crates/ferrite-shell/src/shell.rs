@@ -187,10 +187,36 @@ impl ShellApp {
             );
             engine
         };
+        // Sovereign Archive: one shared store feeds the proxy's offline
+        // snapshot fallback and the tab layer's ferrite://archive viewer.
+        // Previously the store was never opened (archive: None below, and
+        // WryFactory::with_archive had no callers).
+        let archive: Option<std::sync::Arc<ferrite_archive::Archive>> =
+            match ferrite_archive::Archive::open(ferrite_archive::ArchiveConfig::default())
+                .or_else(|_| ferrite_archive::Archive::open_in_memory())
+            {
+                Ok(store) => Some(std::sync::Arc::new(store)),
+                Err(e) => {
+                    error!(error = %e, "archive unavailable: offline snapshot fallback disabled");
+                    None
+                }
+            };
+        let archive_provider =
+            archive.clone().map(|store| {
+                std::sync::Arc::new(move |url: &str| {
+                    store.get_latest(url).ok().flatten().map(|snap| {
+                        ferrite_proxy::ArchiveSnapshot {
+                            html: snap.html.into_bytes(),
+                            headers: snap.headers,
+                            timestamp: snap.timestamp,
+                        }
+                    })
+                }) as std::sync::Arc<ferrite_proxy::ArchiveProvider>
+            });
         let proxy = match ferrite_proxy::spawn(
             ferrite_proxy::ProxyConfig {
                 fixed_port,
-                archive: None,
+                archive: archive_provider,
             },
             privacy_engine.clone() as std::sync::Arc<dyn ferrite_proxy::DecisionHook>,
         ) {
@@ -211,6 +237,9 @@ impl ShellApp {
         let factory: Rc<dyn ferrite_tabs::WebViewFactory> = {
             let mut f = WryFactory::new(ipc_bridge.sender.clone(), ipc_bridge.limiter());
             f = f.with_downloads(downloads.clone());
+            if let Some(ref store) = archive {
+                f = f.with_archive(std::sync::Arc::clone(store));
+            }
             if let Some(port) = proxy_port {
                 f = f.with_proxy("127.0.0.1", port);
             }
