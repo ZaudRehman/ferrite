@@ -335,23 +335,49 @@ pub fn paint_centered(painter: &Painter, rect: Rect, icon: Icon, color: Color32)
 
 use egui::{Sense, Ui, Vec2 as EVec2};
 
+/// Gamma-space mix of two colors (t=0 → a, t=1 → b). For hover/focus
+/// transitions driven by `ctx.animate_bool_with_time`.
+pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let aa = a.to_array();
+    let bb = b.to_array();
+    Color32::from_rgba_unmultiplied(
+        (aa[0] as f32 + (bb[0] as f32 - aa[0] as f32) * t) as u8,
+        (aa[1] as f32 + (bb[1] as f32 - aa[1] as f32) * t) as u8,
+        (aa[2] as f32 + (bb[2] as f32 - aa[2] as f32) * t) as u8,
+        (aa[3] as f32 + (bb[3] as f32 - aa[3] as f32) * t) as u8,
+    )
+}
+
 /// Lucide icon button: `size` hit target, `icon` stroked at `fg`, background `bg`.
 /// Handles hover/active via Technical UI Kit tokens (borders over shadows).
+/// Hover cross-fades over ~0.12s (`animate_bool_with_time` requests repaints
+/// while animating, so this plays under OnDemand rendering).
 /// Returns the `Response`; caller adds `.on_hover_text(...)` and checks `.clicked()`.
+#[track_caller]
 pub fn button(ui: &mut Ui, size: EVec2, icon: Icon, fg: Color32, bg: Color32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    // Stable per-call-site animation id: no signature change, no scroll
+    // aliasing (unlike rect-keyed ids), no cross-talk between same-icon
+    // buttons in one row (unlike icon-keyed ids).
+    let hov_t = ui.ctx().animate_bool_with_time(
+        egui::Id::new(std::panic::Location::caller()),
+        resp.hovered(),
+        0.12,
+    );
     let bg_fill = if resp.is_pointer_button_down_on() {
         crate::theme::ACCENT_INTERACTIVE.gamma_multiply(0.18)
-    } else if resp.hovered() {
-        crate::theme::SURFACE_3
     } else {
-        bg
+        mix(bg, crate::theme::SURFACE_3, hov_t)
     };
-    let stroke = if resp.hovered() {
-        egui::Stroke::new(1.0, crate::theme::BORDER_ACTIVE)
-    } else {
-        egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE)
-    };
+    let stroke = egui::Stroke::new(
+        1.0,
+        mix(
+            crate::theme::BORDER_SUBTLE,
+            crate::theme::BORDER_ACTIVE,
+            hov_t,
+        ),
+    );
     ui.painter()
         .rect_filled(rect, crate::theme::CORNER_SM, bg_fill);
     ui.painter().rect_stroke(
@@ -371,6 +397,7 @@ pub fn button(ui: &mut Ui, size: EVec2, icon: Icon, fg: Color32, bg: Color32) ->
 }
 
 /// Smaller 28×28 icon button for dense bars (tabs).
+#[track_caller]
 pub fn small_button(ui: &mut Ui, icon: Icon, fg: Color32, bg: Color32) -> egui::Response {
     button(ui, EVec2::new(28.0, 28.0), icon, fg, bg)
 }

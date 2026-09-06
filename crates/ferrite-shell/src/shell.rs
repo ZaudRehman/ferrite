@@ -111,6 +111,10 @@ pub(crate) struct ShellApp {
     proxy_requests: u64,
     proxy_dropped: u64,
     privacy: std::sync::Arc<ferrite_privacy::PrivacyEngine>,
+    /// Encrypted store for history/bookmarks/imports. `None` when the
+    /// keyring or vault fails to open — import/export then logs and
+    /// declines instead of running on a half-built store (fail-closed).
+    vault: Option<std::sync::Arc<ferrite_vault::Vault>>,
     tab_search_open: bool,
     tab_search_query: String,
     modifiers: winit::keyboard::ModifiersState,
@@ -214,6 +218,28 @@ impl ShellApp {
                     })
                 }) as std::sync::Arc<ferrite_proxy::ArchiveProvider>
             });
+        // Vault: keyring key if present, else generate-and-store; the store
+        // itself falls back to in-memory when the file cannot open (session
+        // imports still work, nothing persists — logged, never silent).
+        let vault = match ferrite_vault::keyring::load_master_key() {
+            Ok(Some(key)) => open_named_vault(key),
+            Ok(None) => match ferrite_vault::keyring::generate_master_key() {
+                Ok(key) => {
+                    if let Err(e) = ferrite_vault::keyring::store_master_key(&key) {
+                        warn!(error = %e, "keyring store failed: generated key lives for this run only");
+                    }
+                    open_named_vault(key)
+                }
+                Err(e) => {
+                    warn!(error = %e, "vault unavailable: master key cannot be generated");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, "vault unavailable: keyring unreadable");
+                None
+            }
+        };
         let proxy = match ferrite_proxy::spawn(
             ferrite_proxy::ProxyConfig {
                 fixed_port,
@@ -267,6 +293,7 @@ impl ShellApp {
             proxy_requests: 0,
             proxy_dropped: 0,
             privacy: privacy_engine,
+            vault,
             tab_search_open: false,
             tab_search_query: String::new(),
             modifiers: winit::keyboard::ModifiersState::default(),
@@ -286,6 +313,47 @@ impl ShellApp {
             last_heartbeat: Instant::now(),
             downloads,
             download_log: std::collections::VecDeque::new(),
+        }
+    }
+    /// Settings-page import/export requests. Takes only the vault (not
+    /// `&self`) so it can run inside the IPC drain loop while `state` is
+    /// mutably borrowed. File choice goes through a native picker (`rfd`);
+    /// parsing stays in the vault importers. Pickers are modal by nature —
+    /// this blocks the UI thread while open, like any native dialog.
+    fn handle_import(vault: Option<&std::sync::Arc<ferrite_vault::Vault>>, kind: &str) {
+        let Some(vault) = vault else {
+            warn!("import requested but vault is unavailable");
+            return;
+        };
+        if kind == "export" {
+            let Some(path) = rfd::FileDialog::new()
+                .set_file_name("ferrite-bookmarks.html")
+                .save_file()
+            else {
+                return;
+            };
+            match import_from_path(vault, kind, &path) {
+                Ok(bytes) => info!(path = %path.display(), bytes, "bookmarks exported"),
+                Err(e) => warn!(error = %e, "bookmark export failed"),
+            }
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Bookmark files",
+                if kind == "bookmarks" {
+                    &["html", "htm"][..]
+                } else {
+                    &["sqlite", "db"][..]
+                },
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        match import_from_path(vault, kind, &path) {
+            Ok(n) => info!(kind, count = n, "import complete"),
+            Err(e) => warn!(error = %e, kind, "import failed"),
         }
     }
     fn bootstrap(&mut self, elwt: &ActiveEventLoop) {
@@ -480,11 +548,15 @@ impl ShellApp {
                         }
                     }
                 }
+                "import" => {
+                    let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+                    Self::handle_import(self.vault.as_ref(), kind);
+                }
                 // First-party page messages with no Rust consumer yet.
                 // Explicitly ignored (logged at debug): they must NOT fall
                 // through to title handling. Wiring is P1+ work.
-                "navigate" | "search" | "recovery" | "import" | "console" | "elements"
-                | "storage" | "autofill_scan" => {
+                "navigate" | "search" | "recovery" | "console" | "elements" | "storage"
+                | "autofill_scan" => {
                     debug!(msg_type, tab_id = %msg.tab_id, "ipc: known type without consumer - ignored");
                 }
                 unknown => {
@@ -1198,6 +1270,16 @@ fn draw_tab_bar(
                     };
                     let (rect, resp) =
                         ui.allocate_exact_size(egui::vec2(32.0, 28.0), egui::Sense::click());
+                    let pin_hov = ui.ctx().animate_bool_with_time(
+                        egui::Id::new(("tabchip", tab.id)),
+                        !is_active && resp.hovered(),
+                        0.12,
+                    );
+                    let bg = if is_active {
+                        bg
+                    } else {
+                        crate::icons::mix(bg, SURFACE_2.gamma_multiply(0.5), pin_hov)
+                    };
                     // Fixed-size chips: gate only the paint calls.
                     let pinned_visible = ui.is_rect_visible(rect);
                     if pinned_visible {
@@ -1370,12 +1452,19 @@ fn draw_tab_bar(
                             // skipped for fully clipped chips (200+ tabs).
                             let chip_visible = ui.is_rect_visible(rect);
                             let hovered = resp.hovered();
+                            let hov_t = ui.ctx().animate_bool_with_time(
+                                egui::Id::new(("tabchip", tab.id)),
+                                hovered && !is_active,
+                                0.12,
+                            );
                             let bg = if is_active {
                                 SURFACE_2
-                            } else if hovered {
-                                SURFACE_2.gamma_multiply(0.5)
                             } else {
-                                egui::Color32::TRANSPARENT
+                                crate::icons::mix(
+                                    egui::Color32::TRANSPARENT,
+                                    SURFACE_2.gamma_multiply(0.5),
+                                    hov_t,
+                                )
                             };
                             if chip_visible {
                                 ui.painter().rect_filled(rect, crate::theme::CORNER_SM, bg);
@@ -1604,12 +1693,15 @@ fn draw_trailing_cluster(
     let (shield_rect, shield_resp) =
         ui.allocate_exact_size(egui::vec2(58.0, 28.0), egui::Sense::click());
     {
+        let shield_hov = ui.ctx().animate_bool_with_time(
+            egui::Id::new("shield_hover"),
+            shield_resp.hovered(),
+            0.12,
+        );
         let bg = if shield_resp.is_pointer_button_down_on() {
             shield_bg.gamma_multiply(0.8)
-        } else if shield_resp.hovered() {
-            crate::theme::SURFACE_3
         } else {
-            shield_bg
+            crate::icons::mix(shield_bg, crate::theme::SURFACE_3, shield_hov)
         };
         let stroke = if shield_resp.hovered() {
             egui::Stroke::new(1.0, crate::theme::BORDER_ACTIVE)
@@ -2244,16 +2336,19 @@ fn draw_omnibox_contents(ui: &mut Ui, app: &mut AppContext, window: &Window) {
             d.insert_temp(egui::Id::new("omnibox_focused"), foc);
         });
         app.omnibox.focused = foc;
+        let foc_t = ui
+            .ctx()
+            .animate_bool_with_time(egui::Id::new("omnibox_focus"), foc, 0.15);
         ui.painter().rect_stroke(
             r,
             crate::theme::CORNER_OMNIBOX,
             egui::Stroke::new(
                 1.0,
-                if foc {
-                    crate::theme::BORDER_ACTIVE
-                } else {
-                    crate::theme::BORDER_SUBTLE
-                },
+                crate::icons::mix(
+                    crate::theme::BORDER_SUBTLE,
+                    crate::theme::BORDER_ACTIVE,
+                    foc_t,
+                ),
             ),
             egui::StrokeKind::Inside,
         );
@@ -2596,6 +2691,53 @@ fn build_shell_ui(
     );
 }
 
+/// Open the file vault, falling back to in-memory (session-only imports).
+fn open_named_vault(key: Vec<u8>) -> Option<std::sync::Arc<ferrite_vault::Vault>> {
+    match ferrite_vault::Vault::open(ferrite_vault::VaultConfig::new("ferrite.db", key)) {
+        Ok(v) => Some(std::sync::Arc::new(v)),
+        Err(e) => {
+            warn!(error = %e, "file vault failed, trying in-memory");
+            match ferrite_vault::Vault::open_in_memory() {
+                Ok(v) => {
+                    warn!("vault running in-memory: imports last for this session only");
+                    Some(std::sync::Arc::new(v))
+                }
+                Err(e) => {
+                    warn!(error = %e, "vault unavailable: import/export disabled");
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// Import/export against `path` without dialogs (testable core of the
+/// settings-page import buttons). Kinds: `bookmarks` (Netscape HTML),
+/// `history` (Chrome, falling back to Firefox places), `export` (writes
+/// Netscape HTML, returns bytes written).
+pub(crate) fn import_from_path(
+    vault: &ferrite_vault::Vault,
+    kind: &str,
+    path: &std::path::Path,
+) -> ferrite_vault::VaultResult<usize> {
+    use ferrite_vault::import as vault_import;
+    let p = path.to_string_lossy().into_owned();
+    match kind {
+        "bookmarks" => vault_import::import_netscape_bookmarks(&p, vault),
+        "history" => vault_import::import_chrome_history(&p, vault)
+            .or_else(|_| vault_import::import_firefox_history(&p, vault)),
+        "export" => {
+            let html = vault_import::export_bookmarks_netscape(vault);
+            std::fs::write(path, &html)
+                .map_err(|e| ferrite_vault::VaultError::Import(e.to_string()))?;
+            Ok(html.len())
+        }
+        other => Err(ferrite_vault::VaultError::Import(format!(
+            "unknown import kind: {other}"
+        ))),
+    }
+}
+
 /// Open a tab, logging refusals (limit/invalid URL) instead of failing
 /// silently and leaving the user on a dead button.
 fn open_tab(tabs: &mut ferrite_tabs::TabManager, window: &Window, url: String) {
@@ -2630,4 +2772,61 @@ pub fn run(config: ShellConfig) -> ShellResult<()> {
     let mut app = ShellApp::new(config);
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    fn test_vault() -> std::sync::Arc<ferrite_vault::Vault> {
+        std::sync::Arc::new(ferrite_vault::Vault::open_in_memory().unwrap())
+    }
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("ferrite_shell_import_{name}"))
+    }
+
+    #[test]
+    fn bookmarks_round_trip_through_dialog_core() {
+        let vault = test_vault();
+        let path = temp_path("bookmarks.html");
+        std::fs::write(
+            &path,
+            r#"<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><DT><A HREF="https://example.com">Example</A></DL>"#,
+        )
+        .unwrap();
+        let n = import_from_path(&vault, "bookmarks", &path).unwrap();
+        assert_eq!(n, 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn missing_file_and_unknown_kind_are_errors_not_panics() {
+        let vault = test_vault();
+        let missing = temp_path("definitely-not-here.html");
+        let _ = std::fs::remove_file(&missing);
+        assert!(import_from_path(&vault, "bookmarks", &missing).is_err());
+        assert!(import_from_path(&vault, "history", &missing).is_err());
+        assert!(import_from_path(&vault, "nope", &missing).is_err());
+    }
+
+    #[test]
+    fn export_writes_netscape_html() {
+        let vault = test_vault();
+        let src = temp_path("export_src.html");
+        std::fs::write(
+            &src,
+            r#"<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><DT><A HREF="https://example.com">Example</A></DL>"#,
+        )
+        .unwrap();
+        import_from_path(&vault, "bookmarks", &src).unwrap();
+        let out = temp_path("export_out.html");
+        let _ = std::fs::remove_file(&out);
+        let bytes = import_from_path(&vault, "export", &out).unwrap();
+        assert!(bytes > 0);
+        let html = std::fs::read_to_string(&out).unwrap();
+        assert!(html.contains("example.com"));
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
+    }
 }
