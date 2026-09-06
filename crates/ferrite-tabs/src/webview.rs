@@ -15,6 +15,10 @@ pub trait WebViewHandle: std::fmt::Debug {
     fn evaluate_script(&self, js: &str) -> TabResult<()>;
     /// Real engine reload (wry `reload()`), preserving session history.
     fn reload(&self) -> TabResult<()>;
+    /// Move OS keyboard focus into this webview. Needed when two native
+    /// child windows (chrome overlay + content) share one parent: egui and
+    /// the content webview do not yield focus to each other on their own.
+    fn focus(&self) -> TabResult<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +115,12 @@ impl WebViewHandle for WryHandle {
             .reload()
             .map_err(|source| TabError::WebViewOperationFailed { source })
     }
+
+    fn focus(&self) -> TabResult<()> {
+        self.inner
+            .focus()
+            .map_err(|source| TabError::WebViewOperationFailed { source })
+    }
 }
 
 /// Mock for tests.
@@ -120,6 +130,7 @@ pub struct MockHandle {
     bounds: Mutex<Option<wry::Rect>>,
     last_url: Mutex<Option<String>>,
     scripts: Mutex<Vec<String>>,
+    focused: Mutex<bool>,
 }
 
 impl MockHandle {
@@ -150,6 +161,10 @@ impl MockHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    pub fn was_focused(&self) -> bool {
+        *self.focused.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -187,6 +202,13 @@ impl WebViewHandle for MockHandle {
         // assert history-preserving reloads without a real engine.
         if let Ok(mut guard) = self.scripts.lock() {
             guard.push("location.reload()".to_owned());
+        }
+        Ok(())
+    }
+
+    fn focus(&self) -> TabResult<()> {
+        if let Ok(mut guard) = self.focused.lock() {
+            *guard = true;
         }
         Ok(())
     }

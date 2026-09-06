@@ -115,6 +115,11 @@ pub(crate) struct ShellApp {
     /// keyring or vault fails to open — import/export then logs and
     /// declines instead of running on a half-built store (fail-closed).
     vault: Option<std::sync::Arc<ferrite_vault::Vault>>,
+    /// HTML tab-search overlay webview (pilot, `FERRITE_WEB_TABSEARCH=1`).
+    /// Lazily created on first open; hidden otherwise. Separate from tabs
+    /// so content webviews keep running underneath the dim backdrop.
+    overlay: Option<std::rc::Rc<dyn ferrite_tabs::WebViewHandle>>,
+    overlay_open: bool,
     tab_search_open: bool,
     tab_search_query: String,
     modifiers: winit::keyboard::ModifiersState,
@@ -301,6 +306,8 @@ impl ShellApp {
             proxy_dropped: 0,
             privacy: privacy_engine,
             vault,
+            overlay: None,
+            overlay_open: false,
             tab_search_open: false,
             tab_search_query: String::new(),
             modifiers: winit::keyboard::ModifiersState::default(),
@@ -362,6 +369,79 @@ impl ShellApp {
             Ok(n) => info!(kind, count = n, "import complete"),
             Err(e) => warn!(error = %e, kind, "import failed"),
         }
+    }
+    /// Pilot flag: HTML tab-search overlay instead of the egui window.
+    /// Opt-in (`FERRITE_WEB_TABSEARCH=1`); default keeps the egui path,
+    /// which is also the complete revert plan (unset the var). Read fresh
+    /// on every toggle so no restart is needed to flip modes.
+    fn web_tabsearch_enabled() -> bool {
+        std::env::var("FERRITE_WEB_TABSEARCH")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    }
+
+    /// Toggle the HTML overlay (pilot). Creates it lazily on first open so
+    /// a failed build never affects startup; afterwards show/hide + focus
+    /// prove the chrome-webview ↔ content-webview focus routing.
+    fn toggle_web_tabsearch(&mut self, window: &Window) {
+        if self.overlay_open {
+            self.overlay_open = false;
+            Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
+            window.request_redraw();
+            return;
+        }
+        let scale = window.scale_factor();
+        let bounds = self
+            .content_rect
+            .get()
+            .and_then(|r| egui_rect_to_wry_rect(r, scale));
+        if self.overlay.is_none() {
+            match self
+                .app
+                .tabs
+                .factory()
+                .create(window, "ferrite://tabsearch", bounds)
+            {
+                Ok(h) => self.overlay = Some(h),
+                Err(e) => {
+                    warn!(error = %e, "tabsearch overlay creation failed");
+                    return;
+                }
+            }
+        }
+        if let Some(ov) = self.overlay.as_ref() {
+            if let Some(b) = bounds {
+                let _ = ov.set_bounds(b);
+            }
+            let _ = ov.set_visible(true);
+            if let Err(e) = ov.focus() {
+                warn!(error = %e, "tabsearch overlay focus failed");
+            }
+            // Page also calls this on load; re-invoking resets the query
+            // and restarts the entrance animation on every open.
+            let _ = ov.evaluate_script("__ferriteShow()");
+        }
+        self.overlay_open = true;
+        window.request_redraw();
+    }
+
+    /// Hide the overlay and return keyboard focus to the active tab's
+    /// content webview (falling back to whatever holds it if none).
+    /// Associated (not `&self`) so the IPC drain loop can call it while
+    /// `state` is mutably borrowed — same reason as `handle_import`.
+    fn close_web_tabsearch(
+        overlay: &mut Option<std::rc::Rc<dyn ferrite_tabs::WebViewHandle>>,
+        tabs: &mut ferrite_tabs::TabManager,
+    ) {
+        if let Some(ov) = overlay.as_ref() {
+            let _ = ov.set_visible(false);
+        }
+        if let Some(tab) = tabs.active_tab() {
+            if let Some(h) = tab.webview.as_ref() {
+                let _ = h.focus();
+            }
+        }
+        // `overlay_open` is cleared by the caller (it owns the flag).
     }
     fn bootstrap(&mut self, elwt: &ActiveEventLoop) {
         let config = self.config.clone();
@@ -559,6 +639,50 @@ impl ShellApp {
                     let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
                     Self::handle_import(self.vault.as_ref(), kind);
                 }
+                "tabsearch" => {
+                    let action = v.get("action").and_then(|x| x.as_str()).unwrap_or("");
+                    match action {
+                        "query" => {
+                            let q = v.get("query").and_then(|x| x.as_str()).unwrap_or("");
+                            let json = tabsearch_results_json(&self.app.tabs, q);
+                            if let Some(ov) = self.overlay.as_ref() {
+                                let js = format!("__ferriteResults({json})");
+                                if let Err(e) = ov.evaluate_script(&js) {
+                                    warn!(error = %e, "tabsearch results push failed");
+                                }
+                            }
+                        }
+                        "select" => {
+                            if let Some(id) = v
+                                .get("id")
+                                .and_then(|x| x.as_str())
+                                .and_then(|s| s.parse::<uuid::Uuid>().ok())
+                            {
+                                // Restore path (not bare switch): discarded
+                                // tabs rebuild instead of going blank.
+                                let idx = self.app.tabs.iter().position(|t| t.id == id);
+                                if let Some(idx) = idx {
+                                    let bounds = self
+                                        .content_rect
+                                        .get()
+                                        .and_then(|r| egui_rect_to_wry_rect(r, scale));
+                                    if let Err(e) =
+                                        self.app.tabs.switch_tab_with_window(&window, idx, bounds)
+                                    {
+                                        warn!(error = %e, "tabsearch switch failed");
+                                    }
+                                    self.app.sync_theme_from_tabs();
+                                }
+                            }
+                            self.overlay_open = false;
+                            Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
+                        }
+                        _ => {
+                            self.overlay_open = false;
+                            Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
+                        }
+                    }
+                }
                 // First-party page messages with no Rust consumer yet.
                 // Explicitly ignored (logged at debug): they must NOT fall
                 // through to title handling. Wiring is P1+ work.
@@ -679,9 +803,13 @@ impl ShellApp {
         if self.modifiers.control_key() && self.modifiers.shift_key() {
             if let Key::Character(ref s) = event.logical_key {
                 if s.eq_ignore_ascii_case("a") {
-                    self.tab_search_open = !self.tab_search_open;
-                    if self.tab_search_open {
-                        self.tab_search_query.clear();
+                    if Self::web_tabsearch_enabled() {
+                        self.toggle_web_tabsearch(window);
+                    } else {
+                        self.tab_search_open = !self.tab_search_open;
+                        if self.tab_search_open {
+                            self.tab_search_query.clear();
+                        }
                     }
                     window.request_redraw();
                     return true;
@@ -690,6 +818,15 @@ impl ShellApp {
         }
         if self.tab_search_open && event.logical_key == Key::Named(NamedKey::Escape) {
             self.tab_search_open = false;
+            window.request_redraw();
+            return true;
+        }
+        // Safety net: if OS focus ever lands back in egui while the HTML
+        // overlay is open, Esc still closes it (the page handles Esc itself
+        // when the webview holds focus).
+        if self.overlay_open && event.logical_key == Key::Named(NamedKey::Escape) {
+            self.overlay_open = false;
+            Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
             window.request_redraw();
             return true;
         }
@@ -2745,6 +2882,29 @@ pub(crate) fn import_from_path(
     }
 }
 
+/// Serialize tab-search hits for the HTML overlay page. `</` is escaped
+/// so tab titles cannot break out of the `evaluate_script` string context.
+fn tabsearch_results_json(tabs: &ferrite_tabs::TabManager, query: &str) -> String {
+    let active = tabs.active_id();
+    let items: Vec<serde_json::Value> = tabs
+        .search(query)
+        .iter()
+        .take(9)
+        .map(|t| {
+            serde_json::json!({
+                "id": t.id.to_string(),
+                "title": t.title,
+                "url": t.url,
+                "discarded": t.is_discarded(),
+                "active": Some(t.id) == active,
+            })
+        })
+        .collect();
+    serde_json::to_string(&items)
+        .unwrap_or_else(|_| "[]".to_owned())
+        .replace("</", "<\\/")
+}
+
 /// Open a tab, logging refusals (limit/invalid URL) instead of failing
 /// silently and leaving the user on a dead button.
 fn open_tab(tabs: &mut ferrite_tabs::TabManager, window: &Window, url: String) {
@@ -2835,5 +2995,17 @@ mod import_tests {
         assert!(html.contains("example.com"));
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);
+    }
+}
+
+#[cfg(test)]
+mod tabsearch_tests {
+    use super::*;
+
+    #[test]
+    fn empty_manager_serializes_empty_list() {
+        let mgr = ferrite_tabs::TabManager::new(std::rc::Rc::new(ferrite_tabs::MockFactory));
+        assert_eq!(tabsearch_results_json(&mgr, ""), "[]");
+        assert_eq!(tabsearch_results_json(&mgr, "xyz"), "[]");
     }
 }

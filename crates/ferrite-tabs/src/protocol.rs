@@ -69,6 +69,94 @@ html,body{margin:0;height:100%;background:var(--f-bg);color:var(--f-fg);font-fam
 </body></html>
 "#;
 
+pub const TABSEARCH_HTML: &str = r#"<!DOCTYPE html><!-- ferrite://tabsearch -->
+<html><head><meta charset="utf-8"><title>Tab Search - Ferrite</title>
+<style>
+/*__FERRITE_THEME__*/
+html,body{margin:0;height:100%;background:rgba(0,0,0,.62);font-family:var(--f-font-ui);overflow:hidden}
+.backdrop{position:fixed;inset:0}
+.panel{width:640px;max-width:calc(100vw - 64px);margin:16vh auto 0;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:2px;animation:rise 140ms ease-out}
+@keyframes rise{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.eyebrow{display:flex;justify-content:space-between;align-items:center;padding:10px 16px 0;font-family:var(--f-font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--f-muted)}
+.inputrow{display:flex;align-items:center;gap:10px;padding:10px 16px 12px;border-bottom:1px solid var(--f-border)}
+.inputrow svg{flex:none;color:var(--f-muted)}
+#q{flex:1;background:transparent;border:0;outline:none;color:var(--f-fg);font-size:17px;font-family:var(--f-font-ui);padding:2px 0;min-width:0}
+#q::placeholder{color:var(--f-faint)}
+.kbd{font-family:var(--f-font-mono);font-size:11px;color:var(--f-muted);border:1px solid var(--f-border);border-radius:3px;padding:1px 6px;flex:none}
+#results{max-height:336px;overflow-y:auto;padding:4px}
+.row{display:flex;align-items:center;gap:12px;padding:9px 12px;border-left:3px solid transparent;cursor:pointer;animation:rowin 160ms ease-out backwards}
+.row:nth-child(2){animation-delay:25ms}.row:nth-child(3){animation-delay:50ms}.row:nth-child(4){animation-delay:75ms}.row:nth-child(5){animation-delay:100ms}.row:nth-child(6){animation-delay:125ms}.row:nth-child(7){animation-delay:150ms}.row:nth-child(8){animation-delay:175ms}
+@keyframes rowin{from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:none}}
+.row.sel{background:var(--f-surface-2);border-left-color:var(--f-accent)}
+.row .idx{font-family:var(--f-font-mono);font-size:11px;color:var(--f-faint);width:20px;flex:none}
+.row .tt{display:block;min-width:0;flex:1}
+.row .t{display:block;font-size:14px;color:var(--f-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .u{display:block;font-size:11px;color:var(--f-muted);font-family:var(--f-font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .tag{font-family:var(--f-font-mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--f-muted);border:1px solid var(--f-border);border-radius:3px;padding:1px 6px;flex:none}
+.row .tag.on{color:var(--f-accent);border-color:var(--f-accent)}
+.footer{display:flex;justify-content:space-between;padding:8px 16px;border-top:1px solid var(--f-border);font-family:var(--f-font-mono);font-size:11px;color:var(--f-muted)}
+.footer b{color:var(--f-fg);font-weight:400}
+.empty{padding:24px;text-align:center;font-family:var(--f-font-mono);font-size:12px;letter-spacing:.06em;color:var(--f-faint)}
+@media (prefers-reduced-motion:reduce){.panel,.row{animation:none}}
+</style></head>
+<body>
+<div class="backdrop" id="backdrop"></div>
+<div class="panel" id="panel">
+<div class="eyebrow"><span>Tab search</span><span id="count"></span></div>
+<div class="inputrow">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="20" y2="20"/></svg>
+<input id="q" placeholder="Search tabs…" autocomplete="off" spellcheck="false">
+<span class="kbd">ESC</span>
+</div>
+<div id="results"></div>
+<div class="footer"><span><b>&#8593;&#8595;</b> navigate &middot; <b>Enter</b> switch &middot; <b>Esc</b> close</span><span>FERRITE</span></div>
+</div>
+<script>
+(function(){
+  var q=document.getElementById('q'), results=document.getElementById('results'),
+      count=document.getElementById('count'), sel=0, items=[];
+  function post(o){ try{ window.ipc.postMessage(JSON.stringify(o)); }catch(e){} }
+  function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  window.__ferriteResults=function(list){
+    items=list||[]; sel=0; render();
+  };
+  window.__ferriteShow=function(){
+    var p=document.getElementById('panel');
+    p.style.animation='none'; void p.offsetWidth; p.style.animation='';
+    q.value=''; q.focus(); post({type:'tabsearch',action:'query',query:''});
+  };
+  function render(){
+    count.textContent = items.length ? (items.length + (items.length===1?' TAB':' TABS')) : '';
+    if(!items.length){ results.innerHTML='<div class="empty">NO TABS MATCH</div>'; return; }
+    var h='';
+    for(var i=0;i<items.length;i++){ var t=items[i];
+      h+='<div class="row'+(i===sel?' sel':'')+'" data-i="'+i+'">'
+        +'<span class="idx">'+('0'+(i+1)).slice(-2)+'</span>'
+        +'<span class="tt"><span class="t">'+esc(t.title||t.url)+'</span><span class="u">'+esc(t.url)+'</span></span>'
+        +(t.active?'<span class="tag on">ACTIVE</span>':(t.discarded?'<span class="tag">DISCARDED</span>':''))
+        +'</div>';
+    }
+    results.innerHTML=h;
+    var rows=results.querySelectorAll('.row'), j;
+    for(j=0;j<rows.length;j++){ (function(el){ el.addEventListener('click',function(){ choose(parseInt(el.getAttribute('data-i'),10)); }); })(rows[j]); }
+  }
+  function choose(i){ if(i>=0&&i<items.length){ post({type:'tabsearch',action:'select',id:items[i].id}); } }
+  q.addEventListener('input',function(){ post({type:'tabsearch',action:'query',query:q.value}); });
+  q.addEventListener('keydown',function(e){
+    if(e.key==='ArrowDown'){ e.preventDefault(); if(items.length){ sel=(sel+1)%items.length; render(); } }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); if(items.length){ sel=(sel-1+items.length)%items.length; render(); } }
+    else if(e.key==='Enter'){ e.preventDefault(); choose(sel); }
+    else if(e.key==='Escape'){ e.preventDefault(); post({type:'tabsearch',action:'close'}); }
+  });
+  document.getElementById('backdrop').addEventListener('click',function(){ post({type:'tabsearch',action:'close'}); });
+  document.getElementById('panel').addEventListener('click',function(e){ e.stopPropagation(); });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ post({type:'tabsearch',action:'close'}); } });
+  window.__ferriteShow();
+})();
+</script>
+</body></html>
+"#;
+
 pub const CRASHED_HTML: &str = r#"<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Tab Crashed</title>
 <style>/*__FERRITE_THEME__*/html,body{margin:0;height:100%;background:var(--f-bg);color:var(--f-danger);font-family:var(--f-font-ui);display:flex;align-items:center;justify-content:center;flex-direction:column}</style>
@@ -256,6 +344,7 @@ pub fn ferrite_protocol_handler(
         FerritePage::Crashed => html_response(200, themed(CRASHED_HTML)),
         FerritePage::Security => html_response(200, themed(SECURITY_WARNING_HTML)),
         FerritePage::Settings => html_response(200, themed(SETTINGS_HTML)),
+        FerritePage::TabSearch => html_response(200, themed(TABSEARCH_HTML)),
         FerritePage::Search => html_response(
             200,
             b"<html><body>ferrite search handled via egui</body></html>".to_vec(),
@@ -281,6 +370,7 @@ enum FerritePage {
     Security,
     Settings,
     Search,
+    TabSearch,
     Unknown,
     External,
 }
@@ -326,6 +416,7 @@ fn ferrite_route(uri: &str) -> FerritePage {
             "security-warning",
             "settings",
             "search",
+            "tabsearch",
             "assets",
         ]
         .iter()
@@ -348,6 +439,7 @@ fn ferrite_route(uri: &str) -> FerritePage {
         "security-warning" => FerritePage::Security,
         "settings" => FerritePage::Settings,
         "search" => FerritePage::Search,
+        "tabsearch" => FerritePage::TabSearch,
         "assets" => FerritePage::Unknown,
         _ => FerritePage::Unknown,
     }
@@ -563,6 +655,7 @@ mod tests {
             CRASHED_HTML,
             SECURITY_WARNING_HTML,
             SETTINGS_HTML,
+            TABSEARCH_HTML,
         ] {
             assert!(page.contains(THEME_MARKER), "marker present");
             for hard in [
@@ -597,5 +690,14 @@ mod tests {
         let req = Request::builder().uri(uri).body(Vec::new()).unwrap();
         let resp = ferrite_protocol_handler_with_assets("test", req, &assets, css);
         String::from_utf8(resp.into_body().into_owned()).unwrap()
+    }
+
+    #[test]
+    fn tabsearch_route_serves_overlay_page() {
+        let body = themed_body("ferrite://tabsearch", ":root{}");
+        assert!(body.contains("Tab search"), "eyebrow");
+        assert!(body.contains("__ferriteResults"), "results hook");
+        assert!(body.contains("__ferriteShow"), "show hook");
+        assert!(body.contains("prefers-reduced-motion"), "motion guard");
     }
 }

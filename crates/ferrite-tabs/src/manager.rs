@@ -55,6 +55,12 @@ impl TabManager {
         self.idle_timeout = timeout;
         self
     }
+    /// Factory that created this manager's webviews. The shell reuses it
+    /// for non-tab surfaces (e.g. the HTML tab-search overlay) so chrome
+    /// and content share protocol assets, proxy config, and IPC plumbing.
+    pub fn factory(&self) -> &Rc<dyn WebViewFactory> {
+        &self.factory
+    }
     pub fn len(&self) -> usize {
         self.tabs.len()
     }
