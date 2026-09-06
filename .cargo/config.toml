@@ -1,0 +1,5 @@
+[build]
+rustflags = ["--remap-path-prefix", "D:\\ferrite=/ferrite", "--remap-path-prefix", "$HOME/.cargo=/cargo"]
+
+[env]
+SOURCE_DATE_EPOCH = "0"

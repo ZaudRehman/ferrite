@@ -21,6 +21,19 @@ pub struct Suggestion {
 #[derive(Debug, Clone, Default)]
 pub struct AutocompleteCache {
     inner: Arc<DashMap<String, HistoryEntry>>,
+    /// Monotonic generation bumped on every insert/clear: identical
+    /// (prefix, limit, generation) queries reuse the last result instead of
+    /// re-scanning the whole map every frame.
+    generation: Arc<std::sync::atomic::AtomicU64>,
+    last_query: Arc<std::sync::Mutex<Option<CachedQuery>>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedQuery {
+    prefix: String,
+    limit: usize,
+    generation: u64,
+    results: Vec<Suggestion>,
 }
 
 impl AutocompleteCache {
@@ -28,6 +41,8 @@ impl AutocompleteCache {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(DashMap::new()),
+            generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            last_query: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -46,6 +61,9 @@ impl AutocompleteCache {
         if !title.trim().is_empty() {
             entry.title = title;
         }
+        drop(entry);
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Number of entries.
@@ -61,12 +79,23 @@ impl AutocompleteCache {
     /// Clear all entries.
     pub fn clear(&self) {
         self.inner.clear();
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Query by case-insensitive substring, returning up to `limit` suggestions.
     pub fn query(&self, prefix: &str, limit: usize) -> Vec<Suggestion> {
         if prefix.trim().is_empty() {
             return Vec::new();
+        }
+        let current_gen = self.generation.load(std::sync::atomic::Ordering::Relaxed);
+        if let Ok(cached) = self.last_query.lock()
+            && let Some(q) = cached.as_ref()
+            && q.generation == current_gen
+            && q.prefix == prefix
+            && q.limit == limit
+        {
+            return q.results.clone();
         }
         let needle = prefix.to_lowercase();
         let mut matches: Vec<Suggestion> = Vec::new();
@@ -88,6 +117,14 @@ impl AutocompleteCache {
 
         matches.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.url.cmp(&b.url)));
         matches.truncate(limit);
+        if let Ok(mut cached) = self.last_query.lock() {
+            *cached = Some(CachedQuery {
+                prefix: prefix.to_owned(),
+                limit,
+                generation: current_gen,
+                results: matches.clone(),
+            });
+        }
         matches
     }
 }
@@ -209,5 +246,21 @@ mod tests {
         assert!(!c.is_empty());
         c.clear();
         assert!(c.is_empty());
+    }
+
+    #[test]
+    fn repeated_query_served_from_cache() {
+        let c = cache_with_entries();
+        let first = c.query("rust", 5);
+        let second = c.query("rust", 5);
+        assert_eq!(first, second);
+        // New insert invalidates the cache.
+        c.insert(
+            "https://rust-new.example".to_string(),
+            "Rust New".to_string(),
+            9999,
+        );
+        let third = c.query("rust", 5);
+        assert!(third.iter().any(|s| s.url.contains("rust-new")));
     }
 }

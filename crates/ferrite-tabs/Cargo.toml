@@ -15,4 +15,13 @@ url.workspace = true
 http.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+crossbeam-channel.workspace = true
 ferrite-privacy.workspace = true
+ferrite-archive.workspace = true
+ferrite-credentials.workspace = true
+gtk = { version = "0.18.2", optional = true }
+
+[features]
+gtk = ["dep:gtk"]

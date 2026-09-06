@@ -13,11 +13,15 @@ pub enum TabError {
     #[error("tab not found: {id}")]
     TabNotFound { id: Uuid },
 
+    /// Close refused: the tab is pinned (unpin first or force-close).
+    #[error("tab is pinned, unpin or force close: {id}")]
+    PinnedTab { id: Uuid },
+
     /// Index is outside the current `Vec<TabState>` bounds.
     #[error("tab index out of bounds: {index} (len={len})")]
     IndexOutOfBounds { index: usize, len: usize },
 
-    /// Tab limit exceeded (spec §5.1 memory guard, default 50).
+    /// Tab limit exceeded (spec §5.1 memory guard, now unlimited by default, limit only if configured).
     #[error("tab limit exceeded: {current} >= {limit}")]
     TabLimitExceeded { current: usize, limit: usize },
 
@@ -50,6 +54,10 @@ pub enum TabError {
     /// No active tab is selected (`active_tab_index` is `None`).
     #[error("no active tab")]
     NoActiveTab,
+
+    /// Session file could not be written or read.
+    #[error("session persistence: {message}")]
+    SessionIo { message: String },
 }
 
 #[cfg(test)]

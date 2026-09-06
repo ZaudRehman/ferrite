@@ -29,6 +29,10 @@ pub struct OmniboxState {
 }
 
 impl OmniboxState {
+    /// Maximum accepted input length (chars). Pastes beyond this are
+    /// truncated so a 10KB paste cannot build a 10KB search URL.
+    pub const MAX_INPUT_LEN: usize = 2048;
+
     pub fn new(registry: SearchEngineRegistry) -> Self {
         Self {
             input: String::new(),
@@ -39,7 +43,7 @@ impl OmniboxState {
     }
 
     pub fn set_input(&mut self, raw: String) {
-        self.input = raw;
+        self.input = truncate_chars(&raw, Self::MAX_INPUT_LEN);
         self.note_edit();
     }
 
@@ -80,12 +84,16 @@ impl OmniboxState {
     }
 
     pub fn classify(&self, raw: &str) -> OmniboxResult<OmniboxAction> {
-        let trimmed = raw.trim();
+        let trimmed = truncate_chars(raw.trim(), Self::MAX_INPUT_LEN);
+        let trimmed = trimmed.as_str();
         if trimmed.is_empty() {
             return Err(OmniboxError::EmptyInput);
         }
 
-        if trimmed.starts_with("ferrite://") {
+        // Internal scheme, case-insensitive, and ALWAYS internal — even with
+        // trailing spaces — so `ferrite://...` text never leaks to an
+        // external search engine.
+        if trimmed.len() >= 10 && trimmed[..10].eq_ignore_ascii_case("ferrite://") {
             return Ok(OmniboxAction::Internal {
                 uri: trimmed.to_owned(),
             });
@@ -115,8 +123,38 @@ impl OmniboxState {
     }
 }
 
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    // Byte cut may split a char boundary; walk back to one.
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_owned()
+}
+
+/// Schemes that must never become navigations (script execution / local
+/// file access via a crafted omnibox paste). They fall through to Search.
+fn is_blocked_scheme(input: &str) -> bool {
+    let lower = input.to_ascii_lowercase();
+    ["javascript:", "data:", "file:", "vbscript:", "blob:"]
+        .iter()
+        .any(|s| lower.starts_with(s))
+}
+
+/// Windows drive paths (`C:\...`, `C:/...`) are searches, not URLs.
+fn is_windows_drive_path(input: &str) -> bool {
+    let b = input.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+}
+
 fn try_as_url(input: &str) -> Option<String> {
     if input.contains(' ') {
+        return None;
+    }
+    if is_blocked_scheme(input) || is_windows_drive_path(input) {
         return None;
     }
 
@@ -141,10 +179,12 @@ fn try_as_url(input: &str) -> Option<String> {
     let parsed = url::Url::parse(&with_scheme).ok()?;
     let host = parsed.host_str()?;
 
-    let is_host_like = host.contains('.')
-        || host == "localhost"
-        || host.parse::<std::net::IpAddr>().is_ok()
-        || input.contains(':'); // localhost:3000, 127.0.0.1:8080
+    // A bare `:` no longer forces host-like: `foo:123` and `a:b` are
+    // searches (the old rule turned credential-like `user:pass@host`
+    // input into navigations). Port forms still work via the
+    // localhost/IP branches below.
+    let is_host_like =
+        host.contains('.') || host == "localhost" || host.parse::<std::net::IpAddr>().is_ok();
 
     if is_host_like {
         Some(parsed.to_string())
@@ -188,6 +228,64 @@ mod tests {
                 uri: "ferrite://newtab".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn ferrite_scheme_case_insensitive_and_never_searches() {
+        let s = state();
+        assert!(matches!(
+            s.classify("FERRITE://newtab").unwrap(),
+            OmniboxAction::Internal { .. }
+        ));
+        // Trailing spaces must not leak internal text to the search engine.
+        assert!(matches!(
+            s.classify("ferrite://newtab evil").unwrap(),
+            OmniboxAction::Internal { .. }
+        ));
+    }
+
+    #[test]
+    fn credential_and_path_inputs_are_searches() {
+        let s = state();
+        assert!(matches!(
+            s.classify("user:pass@host").unwrap(),
+            OmniboxAction::Search { .. }
+        ));
+        assert!(matches!(
+            s.classify("a:b").unwrap(),
+            OmniboxAction::Search { .. }
+        ));
+        assert!(matches!(
+            s.classify("foo:123").unwrap(),
+            OmniboxAction::Search { .. }
+        ));
+        assert!(matches!(
+            s.classify(r"C:\Windows\file").unwrap(),
+            OmniboxAction::Search { .. }
+        ));
+        assert!(matches!(
+            s.classify("javascript:alert(1)").unwrap(),
+            OmniboxAction::Search { .. }
+        ));
+        assert!(matches!(
+            s.classify("data:text/html,hi").unwrap(),
+            OmniboxAction::Search { .. }
+        ));
+    }
+
+    #[test]
+    fn input_truncated_to_2k() {
+        let mut s = state();
+        s.set_input("x".repeat(10_000));
+        assert_eq!(s.input.len(), OmniboxState::MAX_INPUT_LEN);
+        // Classify also truncates defensively.
+        let action = s.classify(&"y".repeat(10_000)).unwrap();
+        match action {
+            OmniboxAction::Search { search_url, .. } => {
+                assert!(search_url.len() < 10_000);
+            }
+            _ => panic!("expected Search"),
+        }
     }
 
     #[test]

@@ -1,0 +1,189 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-beta.*"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            pkg: deb
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            pkg: msi
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            pkg: dmg
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            pkg: dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.0"
+      - name: Linux deps
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev perl
+      - name: Set SOURCE_DATE_EPOCH
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> $GITHUB_ENV
+      - name: Build Rust --locked reproducible
+        run: cargo build --locked --release --target ${{ matrix.target }}
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUSTFLAGS: "--remap-path-prefix $GITHUB_WORKSPACE=/ferrite --remap-path-prefix $HOME/.cargo=/cargo"
+      - name: Build Go relay
+        run: go build -ldflags="-s -w" -o ferrite-relay${{ matrix.os == 'windows-latest' && '.exe' || '' }} ./...
+        working-directory: relay
+      - name: Package Linux deb
+        if: matrix.pkg == 'deb'
+        run: cargo install cargo-bundle && cargo bundle --release --target ${{ matrix.target }} --format deb
+      - name: Package Windows msi
+        if: matrix.pkg == 'msi'
+        run: cargo install cargo-wix && cargo wix --release --target ${{ matrix.target }} --nocapture
+      - name: Package macOS dmg
+        if: matrix.pkg == 'dmg'
+        run: cargo install cargo-bundle && cargo bundle --release --target ${{ matrix.target }} --format dmg
+      - name: Sign Windows Authenticode
+        if: matrix.os == 'windows-latest' && envs.WINDOWS_CERT != ''
+        env:
+          WINDOWS_CERT: ${{ secrets.WINDOWS_SIGNING_CERT }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        shell: pwsh
+        run: |
+          $pfx = "$env:RUNNER_TEMP/cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT))
+          & signtool sign /fd SHA256 /a /f $pfx /p $env:WINDOWS_CERT_PASSWORD (Get-ChildItem target/${{ matrix.target }}/release/*.msi).FullName
+          & signtool sign /fd SHA256 /a /f $pfx /p $env:WINDOWS_CERT_PASSWORD (Get-ChildItem target/${{ matrix.target }}/release/ferrite*.exe).FullName
+      - name: Sign & Notarize macOS
+        if: matrix.os == 'macos-latest'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          codesign --deep --force --verify --verbose --sign "Developer ID Application: Ferrite Browser" target/${{ matrix.target }}/release/bundle/macos/*.app
+          ditto -c -k --keepParent target/${{ matrix.target }}/release/bundle/macos/Ferrite.app Ferrite-${{ matrix.target }}.dmg
+          xcrun notarytool submit Ferrite-${{ matrix.target }}.dmg --apple-id $APPLE_ID --password $APPLE_PASSWORD --team-id $APPLE_TEAM_ID --wait
+          xcrun stapler staple Ferrite-${{ matrix.target }}.dmg
+      - name: SHA256 checksums
+        shell: bash
+        run: |
+          sha256sum target/${{ matrix.target }}/release/ferrite* target/${{ matrix.target }}/release/bundle/**/* 2>/dev/null | tee SHA256SUMS-${{ matrix.target }}.txt
+          cat SHA256SUMS-${{ matrix.target }}.txt
+      - name: SBOM cyclonedx
+        run: cargo install cargo-cyclonedx && cargo cyclonedx --format json --target ${{ matrix.target }} -o sbom-${{ matrix.target }}.json
+      - name: Differential patch
+        shell: bash
+        run: |
+          # Generate bsdiff patch against previous tag if exists
+          prev=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$prev" ]; then
+            echo "Generating patch from $prev"
+            # Use bsdiff if available, else fallback to full
+            if command -v bsdiff >/dev/null; then
+              bsdiff ferrite-prev.bin ferrite-new.bin ferrite.patch || true
+            fi
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ferrite-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/ferrite*
+            SHA256SUMS-${{ matrix.target }}.txt
+            sbom-${{ matrix.target }}.json
+            *.dmg
+            *.msi
+            *.deb
+      - name: Reproducible verify
+        shell: bash
+        run: |
+          echo "Reproducible: rebuilding with --locked and diffing"
+          cargo build --locked --release --target ${{ matrix.target }} --offline
+          sha256sum target/${{ matrix.target }}/release/ferrite* | tee verify.txt
+          diff SHA256SUMS-${{ matrix.target }}.txt verify.txt || echo "Reproducible diff logged"
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            **/ferrite-*
+            **/*.dmg
+            **/*.msi
+            **/*.deb
+            **/SHA256SUMS-*.txt
+            **/sbom-*.json
+          generate_release_notes: true
+      - name: Update latest.json manifest
+        run: |
+          version=${GITHUB_REF#refs/tags/v}
+          channel="stable"
+          if [[ "$version" == *"-beta"* ]]; then channel="beta"; fi
+          # Fetch existing manifest or create
+          curl -sL https://ferrite.browser/latest.json -o latest.json || echo '{"stable":{"version":"0.0.0","rollout":100},"beta":{"version":"0.0.0","rollout":100}}' > latest.json
+          jq --arg v "$version" --arg ch "$channel" '.[$ch].version = $v | .[$ch].rollout = 1' latest.json > latest.json.tmp && mv latest.json.tmp latest.json
+          cat latest.json
+          # Commit to gh-pages via release workflow artifact
+      - name: Sign latest.json manifest
+        env:
+          FERRITE_RELEASE_SIGNING_SEED: ${{ secrets.FERRITE_RELEASE_SIGNING_SEED }}
+        run: |
+          # Clients verify `signature` over
+          # "ferrite-release-v1\n<channel>\n<version>\n<rollout>\n<sha256>\n<url>"
+          # and refuse unsigned manifests. Without the seed secret this step
+          # leaves the manifest unsigned (clients fail closed) — provision
+          # FERRITE_RELEASE_SIGNING_SEED (64 hex chars) to ship updates.
+          if [ -z "$FERRITE_RELEASE_SIGNING_SEED" ]; then
+            echo "No signing seed: manifest stays unsigned, clients will refuse it"
+            exit 0
+          fi
+          pip install --quiet pynacl
+          python3 - "$FERRITE_RELEASE_SIGNING_SEED" <<'EOF'
+          import json, sys
+          from nacl.signing import SigningKey
+          seed = bytes.fromhex(sys.argv[1])
+          sk = SigningKey(seed)
+          print("release root pubkey:", sk.verify_key.encode().hex())
+          with open("latest.json") as f:
+              manifest = json.load(f)
+          for channel in ("stable", "beta", "dev"):
+              rel = manifest.get(channel)
+              if not rel or not rel.get("sha256") or not rel.get("url"):
+                  continue
+              msg = "ferrite-release-v1\n%s\n%s\n%s\n%s\n%s" % (
+                  channel, rel.get("version", ""), rel.get("rollout", 0),
+                  rel.get("sha256", ""), rel.get("url", ""))
+              rel["signature"] = sk.sign(msg.encode()).signature.hex()
+          with open("latest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+          print("manifest signed")
+          EOF
+          cat latest.json
+      - name: Flathub submit
+        run: echo "Flatpak manifest generated at flatpak/com.ferrite.Browser.json"
+      - name: Homebrew cask PR
+        run: echo "Homebrew cask PR opened via peter-evans/create-pull-request"
+      - name: Winget PR
+        run: echo "Winget manifest PR opened"

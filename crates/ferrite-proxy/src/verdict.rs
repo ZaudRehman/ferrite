@@ -15,6 +15,11 @@ pub struct RequestMeta {
     pub resource: ResourceType,
     pub is_secure: bool,
     pub referrer: Option<String>,
+    /// Full absolute URL (`https://host/path?q`) when known. Empty for
+    /// CONNECT tunnels where only the authority is visible. Adblock path,
+    /// query and `$third-party` matching require this; domain-only synthesis
+    /// silently disables most EasyList rules.
+    pub request_url: String,
 }
 
 impl RequestMeta {
@@ -24,7 +29,13 @@ impl RequestMeta {
             resource,
             is_secure: false,
             referrer: None,
+            request_url: String::new(),
         }
+    }
+
+    pub fn with_url(mut self, url: impl Into<String>) -> Self {
+        self.request_url = url.into();
+        self
     }
 
     /// Whether this is a mixed-content subresource (HTTP from HTTPS page).
@@ -50,6 +61,10 @@ pub trait DecisionHook: Send + Sync + std::fmt::Debug {
 
     fn should_upgrade_https(&self) -> bool {
         true
+    }
+
+    fn csp_directives(&self, _meta: &RequestMeta) -> Option<String> {
+        None
     }
 }
 
@@ -132,6 +147,31 @@ mod tests {
         assert_eq!(resource_type_from_path("/"), ResourceType::Document);
         assert_eq!(resource_type_from_path("/x.html"), ResourceType::Document);
         assert_eq!(resource_type_from_path("/api/data"), ResourceType::Other);
+        assert_eq!(resource_type_from_path("/clip.mp4"), ResourceType::Media);
+        assert_eq!(resource_type_from_path("/a.woff2"), ResourceType::Font);
+        assert_eq!(resource_type_from_path("/photo.avif"), ResourceType::Image);
+    }
+
+    #[test]
+    fn sec_fetch_dest_empty_falls_back_to_path() {
+        // `empty` must NOT force Document (it poisoned the top-level gate).
+        assert_eq!(resource_type_from_sec_fetch_dest("empty"), None);
+        assert_eq!(
+            resource_type_for_request(Some("empty"), "/a.js"),
+            ResourceType::Script
+        );
+        assert_eq!(
+            resource_type_from_sec_fetch_dest("audio"),
+            Some(ResourceType::Media)
+        );
+        assert_eq!(
+            resource_type_from_sec_fetch_dest("font"),
+            Some(ResourceType::Font)
+        );
+        assert_eq!(
+            resource_type_from_sec_fetch_dest("iframe"),
+            Some(ResourceType::Document)
+        );
     }
 }
 
@@ -142,18 +182,29 @@ pub enum ResourceType {
     Image,
     Stylesheet,
     Xhr,
+    Media,
+    Font,
     Other,
 }
 
 pub fn resource_type_from_sec_fetch_dest(value: &str) -> Option<ResourceType> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "document" | "empty" => Some(ResourceType::Document),
+        // Top-level navigation only. `empty` is fetch/XHR fallback and must
+        // NOT become Document (it poisoned the top-level realtime gate).
+        "document" => Some(ResourceType::Document),
+        "empty" => None,
         "script" | "audioworklet" | "serviceworker" | "sharedworker" | "worker" => {
             Some(ResourceType::Script)
         }
         "image" => Some(ResourceType::Image),
         "style" => Some(ResourceType::Stylesheet),
         "xhr" | "fetch" => Some(ResourceType::Xhr),
+        "audio" | "video" | "track" => Some(ResourceType::Media),
+        "font" => Some(ResourceType::Font),
+        // iframe/frame/object/embed/fencedframe etc. are sub-documents;
+        // map to Document so top-level policy applies, not Other.
+        "iframe" | "frame" | "fencedframe" | "object" | "embed" => Some(ResourceType::Document),
+        "manifest" | "report" => Some(ResourceType::Other),
         _ => None,
     }
 }
@@ -168,10 +219,30 @@ pub fn resource_type_from_path(path: &str) -> ResourceType {
         || lower.ends_with(".gif")
         || lower.ends_with(".webp")
         || lower.ends_with(".svg")
+        || lower.ends_with(".avif")
+        || lower.ends_with(".ico")
+        || lower.ends_with(".bmp")
     {
         ResourceType::Image
     } else if lower.ends_with(".css") {
         ResourceType::Stylesheet
+    } else if lower.ends_with(".mp4")
+        || lower.ends_with(".webm")
+        || lower.ends_with(".mp3")
+        || lower.ends_with(".ogg")
+        || lower.ends_with(".wav")
+        || lower.ends_with(".m4a")
+        || lower.ends_with(".avi")
+        || lower.ends_with(".mov")
+    {
+        ResourceType::Media
+    } else if lower.ends_with(".woff")
+        || lower.ends_with(".woff2")
+        || lower.ends_with(".ttf")
+        || lower.ends_with(".otf")
+        || lower.ends_with(".eot")
+    {
+        ResourceType::Font
     } else if lower.ends_with(".html") || lower.ends_with(".htm") || lower == "/" {
         ResourceType::Document
     } else {

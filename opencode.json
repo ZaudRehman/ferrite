@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@dietrichgebert/ponytail", "./.opencode/plugins/graphify.js"],
+  "mcp": {
+    "banani": {
+      "type": "remote",
+      "url": "https://app.banani.co/api/mcp/mcp",
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {env:BANANI_API_KEY}"
+      },
+      "enabled": true
+    }
+  }
+}

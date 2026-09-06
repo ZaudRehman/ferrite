@@ -9,7 +9,7 @@ pub mod verdict;
 pub use error::{ProxyError, ProxyResult};
 pub use event::{Classification, FORK_CAP, ForkTx, ForkedPayload, NetworkEvent, TelemetryTx};
 pub use payload::DebugBufferSink;
-pub use server::{ProxyConfig, ProxyHandle, spawn};
+pub use server::{ArchiveProvider, ArchiveSnapshot, ProxyConfig, ProxyHandle, spawn};
 pub use verdict::{
     AllowAllHook, BlockListHook, DecisionHook, RequestMeta, ResourceType, Verdict,
     resource_type_from_path,

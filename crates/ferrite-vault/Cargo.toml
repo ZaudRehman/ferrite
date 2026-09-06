@@ -1,0 +1,33 @@
+[package]
+name = "ferrite-vault"
+description = "Ferrite encrypted vault and telemetry pipeline — SQLCipher, keyring, dashmap, sessions, import/export (Part 7)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+crossbeam-channel.workspace = true
+dashmap.workspace = true
+uuid = { version = "1.7", features = ["v4", "serde"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+keyring = "3.6"
+bip39 = { version = "2.1", features = ["rand"] }
+argon2 = "0.5"
+rand = "0.8"
+getrandom = "0.2"
+aes-gcm = "0.11"
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+
+[features]
+sqlcipher = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
+default = []
+
+[dev-dependencies]
+tempfile = "3.8"

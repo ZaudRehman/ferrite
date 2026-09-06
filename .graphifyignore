@@ -1,0 +1,16 @@
+# Vendored agent skills / plugin demos are not project code — they drown the
+# knowledge graph (JS/TS/Astro/Python demo files outnumber the Rust 10:1).
+.opencode/
+.agents/
+# Build output and generated graph data
+/target/
+graphify-out/
+# Runtime databases and logs created by running the browser
+*.db
+*.db-shm
+*.db-wal
+*.log
+ferrite-session.json
+# Local-only checkouts / archives
+CHECKSUM/
+INTERNAL/

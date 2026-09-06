@@ -3,38 +3,47 @@
 use std::rc::Rc;
 use std::time::Instant;
 
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::{error::TabResult, navigation::NavigationHistory, webview::WebViewHandle};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TabLifecycle {
     Active,
     Suspended,
     Discarded,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TabState {
     pub id: Uuid,
     pub url: String,
     pub title: String,
+    #[serde(skip, default)]
     pub favicon: Option<Vec<u8>>,
     pub is_loading: bool,
     pub is_archive_view: bool,
+    pub is_pdf_view: bool,
+    pub is_passwords_view: bool,
     pub is_playing_audio: bool,
     pub is_muted: bool,
     pub is_pinned: bool,
     pub is_crashed: bool,
     pub lifecycle: TabLifecycle,
+    #[serde(skip, default)]
     pub suspended_since: Option<Instant>,
+    #[serde(skip, default)]
     pub webview: Option<Rc<dyn WebViewHandle>>,
     pub history: NavigationHistory,
+    pub scroll_position: (f32, f32),
 }
 
 impl TabState {
     pub fn new(id: Uuid, url: String, webview: Rc<dyn WebViewHandle>) -> Self {
         let is_archive_view = url.starts_with("ferrite://archive/");
+        let is_pdf_view = url.ends_with(".pdf") || url.contains("ferrite://pdf/");
+        let is_passwords_view = url.starts_with("ferrite://passwords");
         let title = if url.is_empty() {
             "New Tab".to_owned()
         } else {
@@ -47,6 +56,8 @@ impl TabState {
             favicon: None,
             is_loading: true,
             is_archive_view,
+            is_pdf_view,
+            is_passwords_view,
             is_playing_audio: false,
             is_muted: false,
             is_pinned: false,
@@ -55,11 +66,14 @@ impl TabState {
             suspended_since: None,
             webview: Some(webview),
             history: NavigationHistory::new(),
+            scroll_position: (0.0, 0.0),
         }
     }
 
     pub fn new_discarded(id: Uuid, url: String, title: String) -> Self {
         let is_archive_view = url.starts_with("ferrite://archive/");
+        let is_pdf_view = url.ends_with(".pdf") || url.contains("ferrite://pdf/");
+        let is_passwords_view = url.starts_with("ferrite://passwords");
         let display_title = if title.trim().is_empty() {
             if url.is_empty() {
                 "New Tab".to_owned()
@@ -76,6 +90,8 @@ impl TabState {
             favicon: None,
             is_loading: false,
             is_archive_view,
+            is_pdf_view,
+            is_passwords_view,
             is_playing_audio: false,
             is_muted: false,
             is_pinned: false,
@@ -84,6 +100,7 @@ impl TabState {
             suspended_since: None,
             webview: None,
             history: NavigationHistory::new(),
+            scroll_position: (0.0, 0.0),
         }
     }
 
@@ -93,6 +110,8 @@ impl TabState {
         self.url = new_url.clone();
         self.title = new_url.clone();
         self.is_archive_view = self.url.starts_with("ferrite://archive/");
+        self.is_pdf_view = self.url.ends_with(".pdf") || self.url.contains("ferrite://pdf/");
+        self.is_passwords_view = self.url.starts_with("ferrite://passwords");
         self.is_loading = true;
         self.is_crashed = false;
     }
@@ -142,8 +161,10 @@ impl TabState {
 
     pub fn suspend(&mut self) {
         if self.lifecycle == TabLifecycle::Active {
-            if let Some(handle) = self.webview.as_ref() {
-                let _ = handle.set_visible(false);
+            if let Some(handle) = self.webview.as_ref()
+                && let Err(e) = handle.set_visible(false)
+            {
+                debug!(error = %e, "suspend hide failed");
             }
             self.lifecycle = TabLifecycle::Suspended;
             self.suspended_since = Some(Instant::now());
@@ -179,20 +200,22 @@ impl TabState {
         self.history.can_go_forward()
     }
 
-    /// Attempt to go back.
     pub fn go_back(&mut self) -> Option<String> {
         let target = self.history.go_back(&self.url)?;
         self.url.clone_from(&target);
         self.is_archive_view = self.url.starts_with("ferrite://archive/");
+        self.is_pdf_view = self.url.ends_with(".pdf") || self.url.contains("ferrite://pdf/");
+        self.is_passwords_view = self.url.starts_with("ferrite://passwords");
         self.is_loading = true;
         Some(target)
     }
 
-    /// Attempt to go forward.
     pub fn go_forward(&mut self) -> Option<String> {
         let target = self.history.go_forward(&self.url)?;
         self.url.clone_from(&target);
         self.is_archive_view = self.url.starts_with("ferrite://archive/");
+        self.is_pdf_view = self.url.ends_with(".pdf") || self.url.contains("ferrite://pdf/");
+        self.is_passwords_view = self.url.starts_with("ferrite://passwords");
         self.is_loading = true;
         Some(target)
     }
@@ -219,6 +242,46 @@ impl TabState {
         if let Some(handle) = self.webview.as_ref() {
             handle.load_url(&url)?;
         }
+        Ok(())
+    }
+
+    /// History-preserving traversal for back/forward: updates URL, title and
+    /// view flags WITHOUT pushing onto the history stacks. Using `load_url`
+    /// here would re-push the source and destroy the forward stack.
+    pub fn load_traversal(&mut self, url: String) -> TabResult<()> {
+        self.url.clone_from(&url);
+        self.title.clone_from(&url);
+        self.is_archive_view = self.url.starts_with("ferrite://archive/");
+        self.is_pdf_view = self.url.ends_with(".pdf") || self.url.contains("ferrite://pdf/");
+        self.is_passwords_view = self.url.starts_with("ferrite://passwords");
+        self.is_loading = true;
+        self.is_crashed = false;
+        if let Some(handle) = self.webview.as_ref() {
+            handle.load_url(&url)?;
+        }
+        Ok(())
+    }
+
+    /// Real reload via the engine (history untouched).
+    pub fn reload(&mut self) -> TabResult<()> {
+        self.is_loading = true;
+        self.is_crashed = false;
+        if let Some(handle) = self.webview.as_ref() {
+            handle.reload()?;
+        }
+        Ok(())
+    }
+
+    /// Real stop: `window.stop()` halts parsing and in-flight loads in the
+    /// engine (the old code only hid the view while the page kept loading).
+    pub fn stop(&mut self) -> TabResult<()> {
+        if let Some(handle) = self.webview.as_ref() {
+            // Best-effort: a gone renderer must not fail the stop.
+            if let Err(e) = handle.evaluate_script("window.stop()") {
+                debug!(error = %e, "stop script failed");
+            }
+        }
+        self.is_loading = false;
         Ok(())
     }
 }

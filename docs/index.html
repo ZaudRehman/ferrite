@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ferrite - Sovereign Browser</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#020203">
+<meta name="description" content="Ferrite - Usability by Default, Privacy by Choice. Sovereign Archive, local-first sync, E2EE backup. Reproducible, signed, no tracking.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<style>
+:root{
+  --substrate:#020203; --surface-1:#131313; --surface-2:#1C1B1B; --surface-3:#2A2A2A;
+  --foreground:#E5E2E1; --muted:#9CA3AF; --accent:#4F46E5; --accent-hover:#6366F1;
+  --danger:#FF003F; --archive:#F0C75E; --focus:0 0 0 2px #020203, 0 0 0 4px var(--accent);
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-6:24px; --space-8:32px; --space-12:48px; --space-16:64px; --space-24:96px;
+  --radius-sharp:0px; --radius-pill:999px; --hairline:0.5px;
+  --text-xs:11px; --text-sm:13px; --text-base:15px; --text-lg:18px; --text-xl:30px; --text-2xl:52px;
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--substrate);color:var(--foreground);font-family:Inter, ui-sans-serif, system-ui; -webkit-font-smoothing:antialiased}
+a{color:var(--accent)}a:hover{color:var(--accent-hover)}
+a:focus-visible,button:focus-visible{outline:none;box-shadow:var(--focus)}
+.skip{position:absolute;left:-999px;top:auto;width:1px;height:1px;overflow:hidden}
+.skip:focus{left:var(--space-4);top:var(--space-4);width:auto;height:auto;padding:var(--space-2) var(--space-4);background:var(--surface-2);border:var(--hairline) solid var(--surface-3);z-index:10}
+/* Bento Grid Editorial */
+.hero{max-width:1200px;margin:0 auto;padding:var(--space-16) var(--space-6) var(--space-12);display:grid;grid-template-columns:1.2fr 0.8fr;gap:var(--space-8);align-items:center}
+@media(max-width:900px){.hero{grid-template-columns:1fr;padding:var(--space-12) var(--space-6)}}
+.hero h1{font-size:var(--text-2xl);line-height:1.05;letter-spacing:-0.03em;margin:0 0 var(--space-4);font-weight:800}
+.hero h1 span{color:var(--accent)}
+.lead{max-width:560px;color:var(--muted);font-size:var(--text-base);line-height:1.6;margin:0 0 var(--space-6)}
+.cta-row{display:flex;flex-wrap:wrap;gap:var(--space-3)}
+.cta{appearance:none;display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 var(--space-6);border-radius:var(--radius-pill);background:var(--accent);color:white;text-decoration:none;font-weight:600;font-size:var(--text-sm);border:var(--hairline) solid transparent;transition:transform 150ms, background 100ms}
+.cta:hover{background:var(--accent-hover);transform:translateY(-1px)}
+.cta.secondary{background:var(--surface-1);color:var(--foreground);border-color:var(--surface-3)}
+.cta.secondary:hover{border-color:var(--foreground);background:var(--surface-2)}
+.hero-visual{position:relative;background:var(--surface-1);border:var(--hairline) solid var(--surface-2);border-radius:var(--radius-sharp);padding:var(--space-6);overflow:hidden}
+.hero-visual::before{content:"";position:absolute;inset:0;background:radial-gradient(600px 300px at 20% 0%, rgba(99,102,241,0.12), transparent 60%), linear-gradient(to bottom, transparent, rgba(0,0,0,0.2));pointer-events:none}
+.browser-mock{position:relative;background:var(--substrate);border:var(--hairline) solid var(--surface-3);border-radius:var(--radius-sharp);overflow:hidden}
+.browser-bar{height:32px;background:var(--surface-1);border-bottom:var(--hairline) solid var(--surface-2);display:flex;align-items:center;gap:var(--space-2);padding:0 var(--space-3)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--surface-3)}
+.dot.active{background:var(--accent)}
+.browser-body{height:160px;background:linear-gradient(to bottom, var(--surface-1), var(--substrate));display:flex;align-items:center;justify-content:center;color:var(--muted);font-family:"JetBrains Mono", monospace;font-size:var(--text-xs)}
+.bento{max-width:1200px;margin:0 auto;padding:0 var(--space-6) var(--space-12);display:grid;grid-template-columns:repeat(12,1fr);grid-auto-rows:minmax(160px,auto);gap:var(--space-4)}
+@media(max-width:900px){.bento{grid-template-columns:1fr}}
+.card{background:var(--surface-1);border:var(--hairline) solid var(--surface-2);border-radius:var(--radius-sharp);padding:var(--space-6);position:relative;overflow:hidden;transition:border-color 100ms}
+.card:hover{border-color:var(--surface-3)}
+.card.large{grid-column:span 8}
+.card.tall{grid-row:span 2}
+.card.small{grid-column:span 4}
+@media(max-width:900px){.card.large,.card.small{grid-column:span 12}.card.tall{grid-row:span 1}}
+.eyebrow{font-family:"Geist Pixel Square", monospace;font-size:var(--text-xs);letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:var(--space-3);display:flex;align-items:center;gap:var(--space-2)}
+.eyebrow::before{content:"";width:12px;height:1px;background:var(--accent);display:inline-block}
+.card h3{margin:0 0 var(--space-3);font-size:var(--text-lg);line-height:1.2}
+.card p{margin:0;color:var(--muted);line-height:1.6;font-size:var(--text-sm)}
+.card code{font-family:"JetBrains Mono", monospace;font-size:var(--text-sm);background:var(--surface-2);border:var(--hairline) solid var(--surface-2);padding:2px 6px;border-radius:var(--radius-sharp)}
+.install{max-width:1200px;margin:0 auto;padding:0 var(--space-6) var(--space-12)}
+.install pre{margin:0;background:var(--surface-1);border:var(--hairline) solid var(--surface-2);border-radius:var(--radius-sharp);padding:var(--space-6);overflow:auto;font-family:"JetBrains Mono", monospace;font-size:var(--text-sm);line-height:1.6}
+footer{max-width:1200px;margin:0 auto;padding:var(--space-8) var(--space-6);color:var(--muted);font-size:var(--text-sm);line-height:1.6;border-top:var(--hairline) solid var(--surface-2);display:flex;flex-wrap:wrap;gap:var(--space-4);justify-content:space-between}
+</style>
+</head>
+<body>
+<a href="#main" class="skip">Skip to content</a>
+<section class="hero" aria-label="Hero">
+<div>
+<h1>Ferrite <span>Sovereign</span> Browser</h1>
+<p class="lead">Usability by Default, Privacy by Choice. Local-first mesh via <code>mDNS + QUIC/mTLS</code>, Sovereign Archive, E2EE backup. Reproducible, signed, no third-party trackers, ever.</p>
+<div class="cta-row" role="group" aria-label="Downloads">
+<a class="cta" href="https://github.com/anomalyco/opencode/releases/latest" id="dl-linux" aria-label="Download for Linux deb">Download Linux (.deb)</a>
+<a class="cta secondary" href="https://github.com/anomalyco/opencode/releases/latest" id="dl-win" aria-label="Download for Windows msi">Windows (.msi)</a>
+<a class="cta secondary" href="https://github.com/anomalyco/opencode/releases/latest" id="dl-mac" aria-label="Download for macOS dmg">macOS (.dmg)</a>
+</div>
+<p class="lead" style="font-size:var(--text-sm);margin-top:var(--space-3)">Flatpak, Homebrew, winget, AUR · <a href="/latest.json">latest.json</a> · <a href="https://github.com/anomalyco/opencode">GitHub</a></p>
+</div>
+<div class="hero-visual" aria-hidden="true">
+<div class="browser-mock">
+<div class="browser-bar"><span class="dot active"></span><span class="dot"></span><span class="dot"></span><span style="margin-left:auto;font-family:monospace;font-size:10px;color:var(--muted)">ferrite://newtab - 1280x800 - 1.25x</span></div>
+<div class="browser-body">egui + wgpu + wry - Aetherial Mercury - Geist Pixel</div>
+</div>
+</div>
+</section>
+<main id="main" class="bento" aria-label="Features">
+<article class="card large">
+<p class="eyebrow">Local-First Sync</p>
+<h3>Mesh, not cloud</h3>
+<p>Ed25519 TOFU, <code>_ferrite._tcp</code> mDNS under 3s, X25519 6-digit, LWW CRDT + Raft 150 to 300ms. Blind relay never sees plaintext. Revocation propagates mesh-wide.</p>
+</article>
+<article class="card small">
+<p class="eyebrow">Sovereign Archive</p>
+<h3>Your history, your disk</h3>
+<p>zstd 10, FTS5, 2GB LRU, Time Machine 50, pinned eager. On-demand fetch, not silent inheritance.</p>
+</article>
+<article class="card small">
+<p class="eyebrow">E2EE Backup</p>
+<h3>Zero-knowledge</h3>
+<p>Argon2id + AES-GCM, versioned 5, WebDAV/Drive file scope. OAuth tokens field-encrypted.</p>
+</article>
+<article class="card large tall">
+<p class="eyebrow">Privacy Choke</p>
+<h3>Adblock + Threat + GPC</h3>
+<p>adblock 0.13 trie, SHA256 threat WAL hourly, k-anon 300ms via proxy, GPC 1, cookie strip, De-AMP, cosmetic, fingerprint spoof <code>Canvas/WebGL/Audio</code>.</p>
+<p style="margin-top:var(--space-4);color:var(--muted);font-size:var(--text-sm)">Razor 0.5px borders, not shadows. Pill for chips, sharp for panels, bottom-only for inputs.</p>
+</article>
+<article class="card small">
+<p class="eyebrow">Native PDF</p>
+<h3>Isolated renderer</h3>
+<p>pdfium + shm, password prompt never persisted, form fill native, print raster 3x, search + highlight.</p>
+</article>
+<article class="card small">
+<p class="eyebrow">Vault</p>
+<h3>SQLCipher + Batch</h3>
+<p>AES-256, WAL, 50/1s batch, dashmap 5000, BIP39 Argon2id recovery, sessions 10s.</p>
+</article>
+</main>
+<section class="install" aria-labelledby="install">
+<h2 id="install" style="font-size:var(--text-xl);margin:0 0 var(--space-2)">Install</h2>
+<p class="lead" style="font-size:var(--text-sm)">Signed (Windows Authenticode, Apple notarization) and reproducible — <code>cargo build --locked</code> <code>SOURCE_DATE_EPOCH</code> <code>--remap-path-prefix</code>. No tracking on this page.</p>
+<pre><code># Flatpak (Flathub)
+flatpak install flathub com.ferrite.Browser
+# Homebrew
+brew install --cask ferrite
+# winget
+winget install Ferrite.Browser
+# Arch
+yay -S ferrite-browser</code></pre>
+</section>
+<footer role="contentinfo">
+<span>No third-party analytics, ads, or tracking. Update manifest at <code>/latest.json</code> is stateless CDN edge, purged 24 to 48h.</span>
+<span><a href="https://github.com/anomalyco/opencode">GitHub</a> - Apache-2.0 - 2026 Zaud Rehman</span>
+</footer>
+<script>
+fetch('/latest.json').then(r=>r.json()).then(m=>{
+  const base="https://github.com/anomalyco/opencode/releases/download/v";
+  if(m.stable && m.stable.version){
+    const v=m.stable.version;
+    const url=m.stable.url;
+    document.getElementById('dl-linux').href= url || base+v+"/ferrite-"+v+".deb";
+    document.getElementById('dl-win').href= url || base+v+"/ferrite-"+v+".msi";
+    document.getElementById('dl-mac').href= url || base+v+"/ferrite-"+v+".dmg";
+  }
+}).catch(()=>{});
+</script>
+</body>
+</html>

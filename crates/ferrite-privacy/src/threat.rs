@@ -1,7 +1,7 @@
-﻿//! Threat intel: hash lookup.
+//! Threat intel: hash lookup.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -17,6 +17,9 @@ pub fn hash_domain(domain: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct ThreatDb {
     inner: Arc<Mutex<Connection>>,
+    // In-memory hash set mirrors SQLite so `contains` never touches the
+    // database on the proxy hot path (no blocking Mutex+query per request).
+    cache: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
 impl Default for ThreatDb {
@@ -40,6 +43,7 @@ impl ThreatDb {
         Self::init_schema(&conn)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(conn)),
+            cache: Arc::new(RwLock::new(std::collections::HashSet::new())),
         })
     }
 
@@ -54,8 +58,18 @@ impl ThreatDb {
         // WAL + synchronous NORMAL - durable enough for threat cache, faster.
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         Self::init_schema(&conn)?;
+        // Warm the in-memory mirror from existing rows (best-effort).
+        let cached: std::collections::HashSet<String> = conn
+            .prepare("SELECT hash FROM threats")
+            .and_then(|mut s| {
+                s.query_map([], |r| r.get::<_, String>(0))
+                    .and_then(|rows| rows.collect::<Result<_, _>>())
+            })
+            .map(|v: Vec<String>| v.into_iter().collect())
+            .unwrap_or_default();
         Ok(Self {
             inner: Arc::new(Mutex::new(conn)),
+            cache: Arc::new(RwLock::new(cached)),
         })
     }
 
@@ -68,6 +82,7 @@ impl ThreatDb {
             .map_err(|e| format!("threat begin: {e}"))?;
         let mut ok = true;
         let mut err_msg = String::new();
+        let mut hashes: Vec<String> = Vec::with_capacity(urls.len());
         {
             let mut stmt =
                 match conn.prepare_cached("INSERT OR IGNORE INTO threats(hash) VALUES(?1)") {
@@ -80,16 +95,20 @@ impl ThreatDb {
             for url in urls {
                 let host = normalize_host(url);
                 let hash = hash_domain(&host);
-                if let Err(e) = stmt.execute([hash]) {
+                if let Err(e) = stmt.execute([hash.clone()]) {
                     ok = false;
                     err_msg = format!("threat insert: {e}");
                     break;
                 }
+                hashes.push(hash);
             }
         }
         if ok {
             conn.execute_batch("COMMIT;")
                 .map_err(|e| format!("threat commit: {e}"))?;
+            if let Ok(mut cache) = self.cache.write() {
+                *cache = hashes.into_iter().collect();
+            }
             Ok(())
         } else {
             let _ = conn.execute_batch("ROLLBACK;");
@@ -98,7 +117,14 @@ impl ThreatDb {
     }
 
     pub fn contains(&self, domain: &str) -> bool {
-        let hash = hash_domain(domain);
+        let hash = hash_domain(&normalize_host(domain));
+        if let Ok(cache) = self.cache.read() {
+            if !cache.is_empty() {
+                return cache.contains(&hash);
+            }
+        }
+        // Fallback to SQLite only when the mirror is empty (fresh file DB
+        // or poisoned cache path): preserves old behavior for tests.
         let Ok(conn) = self.inner.lock() else {
             return false;
         };
@@ -107,6 +133,48 @@ impl ThreatDb {
             return false;
         };
         stmt.exists([hash]).unwrap_or(false)
+    }
+
+    /// Suffix-aware check: `sub.evil.com` matches an `evil.com` entry.
+    /// Normalizes input (URL → host) and walks parent domains.
+    pub fn contains_with_suffixes(&self, domain: &str) -> bool {
+        let host = normalize_host(domain).to_lowercase();
+        if host.is_empty() {
+            return false;
+        }
+        // Fast path: in-memory mirror.
+        if let Ok(cache) = self.cache.read() {
+            if !cache.is_empty() {
+                let mut cur = host.as_str();
+                loop {
+                    if cache.contains(&hash_domain(cur)) {
+                        return true;
+                    }
+                    match cur.find('.') {
+                        Some(i) => cur = &cur[i + 1..],
+                        None => return false,
+                    }
+                }
+            }
+        }
+        // SQLite fallback mirrors the same walk.
+        let Ok(conn) = self.inner.lock() else {
+            return false;
+        };
+        let Ok(mut stmt) = conn.prepare_cached("SELECT 1 FROM threats WHERE hash=?1 LIMIT 1")
+        else {
+            return false;
+        };
+        let mut cur = host.as_str();
+        loop {
+            if stmt.exists([hash_domain(cur)]).unwrap_or(false) {
+                return true;
+            }
+            match cur.find('.') {
+                Some(i) => cur = &cur[i + 1..],
+                None => return false,
+            }
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -172,6 +240,27 @@ mod tests {
         );
         assert_eq!(normalize_host("example.com/path"), "example.com");
         assert_eq!(normalize_host("sub.example.com"), "sub.example.com");
+    }
+
+    #[test]
+    fn subdomain_matches_parent_entry() {
+        let db = ThreatDb::new_in_memory().unwrap();
+        db.load_snapshot(&["evil.com"]).unwrap();
+        assert!(db.contains_with_suffixes("sub.evil.com"));
+        assert!(db.contains_with_suffixes("deep.sub.evil.com"));
+        assert!(db.contains_with_suffixes("EVIL.COM"));
+        assert!(!db.contains_with_suffixes("not-evil.com"));
+        assert!(!db.contains_with_suffixes("evil.com.evil.org"));
+    }
+
+    #[test]
+    fn contains_normalizes_url_input() {
+        let db = ThreatDb::new_in_memory().unwrap();
+        db.load_snapshot(&["https://phishing.test/login?q=1"])
+            .unwrap();
+        assert!(db.contains("phishing.test"));
+        assert!(db.contains("https://phishing.test/other"));
+        assert!(db.contains_with_suffixes("https://sub.phishing.test/x"));
     }
 
     #[test]

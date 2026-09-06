@@ -7,6 +7,11 @@ members = [
     "crates/ferrite-omnibox",
     "crates/ferrite-proxy",
     "crates/ferrite-privacy",
+    "crates/ferrite-archive",
+    "crates/ferrite-pdf-renderer",
+    "crates/ferrite-vault",
+    "crates/ferrite-credentials",
+    "crates/ferrite-sync",
 ]
 
 [workspace.package]
@@ -46,6 +51,10 @@ ferrite-tabs = { path = "crates/ferrite-tabs" }
 ferrite-omnibox = { path = "crates/ferrite-omnibox" }
 ferrite-proxy = { path = "crates/ferrite-proxy" }
 ferrite-privacy = { path = "crates/ferrite-privacy" }
+ferrite-archive = { path = "crates/ferrite-archive" }
+ferrite-vault = { path = "crates/ferrite-vault" }
+ferrite-credentials = { path = "crates/ferrite-credentials" }
+ferrite-sync = { path = "crates/ferrite-sync" }
 
 # Network interception engine (Part 4) — raw tokio + httparse (see CHECKSUM/PART4)
 httparse = "1.8"
@@ -54,6 +63,15 @@ adblock = { version = "0.13", default-features = false, features = ["embedded-do
 sha2 = "0.11"
 regex = "1.12"
 once_cell = "1.21"
+zstd = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+quinn = "0.11"
+mdns-sd = "0.13"
+rcgen = "0.13"
+rustls-pki-types = "1.12"
+bytes = "1.9"
 
 [profile.release]
 opt-level = 3

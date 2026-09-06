@@ -12,13 +12,19 @@ pub use self::{
     shell::{RepaintPolicy, ShellConfig, run},
     theme::{AccentContext, PaletteTokens, ThemeConfig},
 };
+pub use ferrite_tabs::{
+    DownloadEvent, DownloadManager, DownloadStateKind, default_download_dir, sanitize_filename,
+};
 
 pub(crate) mod app_context;
 mod error;
 mod fonts;
+pub mod icons;
+pub mod inspector;
 mod renderer;
 mod shell;
 mod theme;
+mod titlebar;
 
 /// The root viewport managed by the shell.
 pub(crate) const ROOT_VIEWPORT: ViewportId = ViewportId::ROOT;

@@ -1,4 +1,4 @@
-﻿use std::rc::Rc;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
@@ -11,20 +11,38 @@ use crate::{
     webview::WebViewFactory,
 };
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SessionTab {
+    url: String,
+    title: String,
+    is_pinned: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SessionFile {
+    version: u32,
+    active: usize,
+    tabs: Vec<SessionTab>,
+}
+
 #[derive(Debug)]
 pub struct TabManager {
     tabs: Vec<TabState>,
     active_index: Option<usize>,
-    max_tabs: usize,
+    max_tabs: Option<usize>,
     factory: Rc<dyn WebViewFactory>,
     idle_timeout: Duration,
 }
 
+/// Default per-window tab cap: bounds renderer processes and per-frame
+/// layout work. Override with [`TabManager::with_max_tabs`].
+pub const DEFAULT_MAX_TABS: usize = 100;
+
 impl TabManager {
     pub fn new(factory: Rc<dyn WebViewFactory>) -> Self {
-        Self::with_max_tabs(factory, 50)
+        Self::with_max_tabs(factory, Some(DEFAULT_MAX_TABS))
     }
-    pub fn with_max_tabs(factory: Rc<dyn WebViewFactory>, max_tabs: usize) -> Self {
+    pub fn with_max_tabs(factory: Rc<dyn WebViewFactory>, max_tabs: Option<usize>) -> Self {
         Self {
             tabs: Vec::new(),
             active_index: None,
@@ -74,10 +92,12 @@ impl TabManager {
         url: Option<String>,
         bounds: Option<wry::Rect>,
     ) -> TabResult<Uuid> {
-        if self.tabs.len() >= self.max_tabs {
+        if let Some(limit) = self.max_tabs
+            && self.tabs.len() >= limit
+        {
             return Err(TabError::TabLimitExceeded {
                 current: self.tabs.len(),
-                limit: self.max_tabs,
+                limit,
             });
         }
         let raw_url = url.unwrap_or_else(|| "ferrite://newtab".to_owned());
@@ -114,10 +134,12 @@ impl TabManager {
         title: String,
         is_pinned: bool,
     ) -> TabResult<Uuid> {
-        if self.tabs.len() >= self.max_tabs {
+        if let Some(limit) = self.max_tabs
+            && self.tabs.len() >= limit
+        {
             return Err(TabError::TabLimitExceeded {
                 current: self.tabs.len(),
-                limit: self.max_tabs,
+                limit,
             });
         }
         let id = Uuid::new_v4();
@@ -131,10 +153,12 @@ impl TabManager {
     }
     pub fn new_tab_mock(&mut self, url: Option<String>) -> TabResult<Uuid> {
         use crate::webview::MockHandle;
-        if self.tabs.len() >= self.max_tabs {
+        if let Some(limit) = self.max_tabs
+            && self.tabs.len() >= limit
+        {
             return Err(TabError::TabLimitExceeded {
                 current: self.tabs.len(),
-                limit: self.max_tabs,
+                limit,
             });
         }
         let raw_url = url.unwrap_or_else(|| "ferrite://newtab".to_owned());
@@ -179,8 +203,8 @@ impl TabManager {
         }
         let removed_id = self.tabs.get(index).map(|t| t.id).unwrap_or_else(Uuid::nil);
         if self.tabs.get(index).map(|t| t.is_pinned).unwrap_or(false) {
-            warn!(%removed_id, "close blocked for pinned tab: use force close");
-            return Err(TabError::TabNotFound { id: removed_id });
+            warn!(%removed_id, "close blocked for pinned tab: unpin or force close");
+            return Err(TabError::PinnedTab { id: removed_id });
         }
         self.tabs.remove(index);
         info!(%removed_id, "tab closed");
@@ -193,11 +217,15 @@ impl TabManager {
                     let new_active = index.min(self.tabs.len() - 1);
                     self.active_index = Some(new_active);
                     if let Some(tab) = self.tabs.get_mut(new_active) {
-                        if tab.is_discarded() {
-                        } else {
+                        // Never flip a discarded tab to Active without a
+                        // webview (that yields blank tabs): it stays
+                        // Discarded until switch_tab_with_window restores it.
+                        if !tab.is_discarded() {
                             tab.lifecycle = TabLifecycle::Active;
                             tab.suspended_since = None;
-                            let _ = tab.set_visible(true);
+                            if let Err(e) = tab.set_visible(true) {
+                                debug!(error = %e, "post-close show failed");
+                            }
                         }
                     }
                 }
@@ -220,10 +248,13 @@ impl TabManager {
             self.active_index = new_active;
             if let Some(idx) = self.active_index
                 && let Some(tab) = self.tabs.get_mut(idx)
+                && !tab.is_discarded()
             {
                 tab.lifecycle = TabLifecycle::Active;
                 tab.suspended_since = None;
-                let _ = tab.set_visible(true);
+                if let Err(e) = tab.set_visible(true) {
+                    debug!(error = %e, "bulk-close show failed");
+                }
             }
         }
         info!(closed, "bulk close");
@@ -239,6 +270,7 @@ impl TabManager {
             .get_mut(index)
             .ok_or(TabError::IndexOutOfBounds { index, len })?;
         if tab.is_pinned || tab.is_playing_audio {
+            debug!(tab_id = %tab.id, pinned = tab.is_pinned, audio = tab.is_playing_audio, "discard skipped (exempt)");
             return Ok(());
         }
         tab.discard();
@@ -251,26 +283,24 @@ impl TabManager {
         index: usize,
         bounds: Option<wry::Rect>,
     ) -> TabResult<()> {
-        if index >= self.tabs.len() {
-            return Err(TabError::IndexOutOfBounds {
-                index,
-                len: self.tabs.len(),
-            });
+        let len = self.tabs.len();
+        if index >= len {
+            return Err(TabError::IndexOutOfBounds { index, len });
         }
-        let url = self
-            .tabs
-            .get(index)
-            .map(|t| t.url.clone())
-            .unwrap_or_default();
-        let is_muted = self.tabs.get(index).map(|t| t.is_muted).unwrap_or(false);
-        let id = self.tabs.get(index).map(|t| t.id).unwrap_or_else(Uuid::nil);
+        let (url, is_muted, id) = match self.tabs.get(index) {
+            Some(t) => (t.url.clone(), t.is_muted, t.id),
+            None => return Err(TabError::IndexOutOfBounds { index, len }),
+        };
         let webview = self.factory.create_with_id(window, &url, bounds, id)?;
-        let tab = self.tabs.get_mut(index).unwrap();
+        let tab = self
+            .tabs
+            .get_mut(index)
+            .ok_or(TabError::IndexOutOfBounds { index, len })?;
         tab.restore(webview);
-        if is_muted {
-            let _ = tab.webview.as_ref().unwrap().evaluate_script(
+        if is_muted && let Some(handle) = tab.webview.as_ref() {
+            handle.evaluate_script(
                 "Array.from(document.querySelectorAll('audio,video')).forEach(m=>m.muted=true)",
-            );
+            )?;
         }
         Ok(())
     }
@@ -309,7 +339,9 @@ impl TabManager {
             if let Some(next) = self.tabs.get_mut(index) {
                 next.lifecycle = TabLifecycle::Active;
                 next.suspended_since = None;
-                let _ = next.set_visible(true);
+                if let Err(e) = next.set_visible(true) {
+                    debug!(error = %e, "tab show failed");
+                }
             }
         }
         self.active_index = Some(index);
@@ -339,13 +371,14 @@ impl TabManager {
         self.switch_tab_by_index(index)
     }
     pub fn toggle_mute(&mut self, index: usize) -> TabResult<bool> {
-        if index >= self.tabs.len() {
-            return Err(TabError::IndexOutOfBounds {
-                index,
-                len: self.tabs.len(),
-            });
+        let len = self.tabs.len();
+        if index >= len {
+            return Err(TabError::IndexOutOfBounds { index, len });
         }
-        let tab = self.tabs.get_mut(index).unwrap();
+        let tab = self
+            .tabs
+            .get_mut(index)
+            .ok_or(TabError::IndexOutOfBounds { index, len })?;
         let muted = tab.toggle_mute();
         if let Some(handle) = tab.webview.as_ref() {
             let js = if muted {
@@ -353,21 +386,49 @@ impl TabManager {
             } else {
                 "Array.from(document.querySelectorAll('audio,video')).forEach(m=>m.muted=false)"
             };
-            let _ = handle.evaluate_script(js);
+            if let Err(e) = handle.evaluate_script(js) {
+                debug!(error = %e, "mute script failed");
+            }
         }
         Ok(muted)
     }
     pub fn toggle_pin(&mut self, index: usize) -> TabResult<bool> {
-        if index >= self.tabs.len() {
-            return Err(TabError::IndexOutOfBounds {
-                index,
-                len: self.tabs.len(),
-            });
+        let len = self.tabs.len();
+        if index >= len {
+            return Err(TabError::IndexOutOfBounds { index, len });
         }
-        let tab = self.tabs.get_mut(index).unwrap();
+        let tab = self
+            .tabs
+            .get_mut(index)
+            .ok_or(TabError::IndexOutOfBounds { index, len })?;
         let pinned = tab.toggle_pinned();
         Ok(pinned)
     }
+    pub fn reorder(&mut self, from: usize, to: usize) -> TabResult<()> {
+        if from >= self.tabs.len() || to >= self.tabs.len() {
+            return Err(TabError::IndexOutOfBounds {
+                index: from.max(to),
+                len: self.tabs.len(),
+            });
+        }
+        if from == to {
+            return Ok(());
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        // Adjust active_index
+        if let Some(active) = self.active_index {
+            if active == from {
+                self.active_index = Some(to);
+            } else if from < active && to >= active {
+                self.active_index = Some(active - 1);
+            } else if from > active && to <= active {
+                self.active_index = Some(active + 1);
+            }
+        }
+        Ok(())
+    }
+
     pub fn search(&self, query: &str) -> Vec<&TabState> {
         if query.trim().is_empty() {
             return self.tabs.iter().collect();
@@ -413,6 +474,75 @@ impl TabManager {
     pub fn get_tab_mut(&mut self, id: Uuid) -> Option<&mut TabState> {
         self.tabs.iter_mut().find(|t| t.id == id)
     }
+    /// Persisted tab metadata for crash recovery. Webviews are never
+    /// serialized: loaded tabs start Discarded and rebuild on selection.
+    pub fn save_to_file(&self, path: &std::path::Path) -> TabResult<()> {
+        let session = SessionFile {
+            version: 1,
+            active: self.active_index.unwrap_or(0),
+            tabs: self
+                .tabs
+                .iter()
+                .map(|t| SessionTab {
+                    url: t.url.clone(),
+                    title: t.title.clone(),
+                    is_pinned: t.is_pinned,
+                })
+                .collect(),
+        };
+        let json = serde_json::to_string_pretty(&session).map_err(|e| TabError::SessionIo {
+            message: format!("serialize: {e}"),
+        })?;
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, json).map_err(|e| TabError::SessionIo {
+            message: format!("write {}: {e}", tmp.display()),
+        })?;
+        std::fs::rename(&tmp, path).map_err(|e| TabError::SessionIo {
+            message: format!("rename {}: {e}", path.display()),
+        })?;
+        Ok(())
+    }
+
+    /// Load persisted tabs as Discarded (caller restores the active one with
+    /// a window). Corrupt/foreign files yield an empty session, never a panic.
+    pub fn load_from_file(&mut self, path: &std::path::Path) -> usize {
+        let data = match std::fs::read_to_string(path) {
+            Ok(d) => d,
+            Err(_) => return 0,
+        };
+        let session: SessionFile = match serde_json::from_str(&data) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "session file corrupt - starting fresh");
+                return 0;
+            }
+        };
+        if session.version != 1 {
+            warn!(
+                version = session.version,
+                "unknown session version - starting fresh"
+            );
+            return 0;
+        }
+        let mut restored: usize = 0;
+        for t in session.tabs.iter().take(200) {
+            if t.url.len() > 2048 {
+                continue;
+            }
+            if self
+                .new_discarded_tab(t.url.clone(), t.title.clone(), t.is_pinned)
+                .is_ok()
+            {
+                restored += 1;
+            }
+        }
+        if restored > 0 {
+            self.active_index = Some(session.active.min(restored.saturating_sub(1)));
+        }
+        info!(restored, "session restored as discarded tabs");
+        restored
+    }
+
     pub fn discard_idle_tabs(&mut self, now: Instant) {
         for idx in 0..self.tabs.len() {
             let should_discard = {
@@ -428,8 +558,8 @@ impl TabManager {
                         .suspended_since
                         .is_some_and(|since| now.duration_since(since) >= self.idle_timeout)
             };
-            if should_discard {
-                let _ = self.discard_tab(idx);
+            if should_discard && let Err(e) = self.discard_tab(idx) {
+                debug!(error = %e, "idle discard failed");
             }
         }
     }

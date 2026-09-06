@@ -1,0 +1,37 @@
+[package]
+name = "ferrite-sync"
+description = "Ferrite sovereign sync — discovery & cryptography (Part 10) — mDNS _ferrite._tcp, Ed25519 mTLS, QR pairing, mesh trust propagation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid = { version = "1.7", features = ["v4", "serde"] }
+ferrite-vault.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+tokio-rustls.workspace = true
+quinn = { version = "0.11", features = ["rustls"] }
+mdns-sd = "0.13"
+bytes = "1.9"
+rcgen.workspace = true
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+qrcode = "0.14"
+bincode = "1.3"
+base64 = "0.22"
+pem = "3.0"
+sha2.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+rand = "0.8"
+hex = "0.4"
+x509-parser = "0.16"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+aes-gcm = "0.11"
+argon2 = "0.5"
+bsdiff = "0.2.1"
+ureq = { version = "3", features = ["json"] }

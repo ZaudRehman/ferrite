@@ -1,4 +1,4 @@
-﻿//! Part 4 end-to-end integration tests (spec §6 validation #1-#5).
+//! Part 4 end-to-end integration tests (spec §6 validation #1-#5).
 //!
 //! Spawns a real local upstream HTTP/1.1 server (raw tokio, mirroring the
 //! proxy's own stack) and drives the real proxy over real sockets:
@@ -336,6 +336,159 @@ fn one_hundred_parallel_forwards() {
 
     let ok = results.iter().filter(|r| r.is_ok()).count();
     assert_eq!(ok, 100, "all 100 parallel forwards succeeded");
+    handle.stop();
+}
+
+#[test]
+fn chunked_response_is_reframed() {
+    // Upstream speaks raw chunked framing; the proxy must re-encode valid
+    // chunked framing so the client does not hang.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let up_port = listener.local_addr().unwrap().port();
+    let join = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            // Consume request head.
+            let mut acc = Vec::new();
+            loop {
+                let n = sock.read(&mut buf).await.unwrap();
+                acc.extend_from_slice(&buf[..n]);
+                if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        });
+    });
+    let handle = spawn_proxy(Arc::new(ferrite_proxy::AllowAllHook));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let body = rt.block_on(async {
+        let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", handle.port))
+            .await
+            .unwrap();
+        let req = format!(
+            "GET http://127.0.0.1:{up_port}/chunked HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        );
+        sock.write_all(req.as_bytes()).await.unwrap();
+        let mut out = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = tokio::time::timeout(Duration::from_secs(5), sock.read(&mut buf))
+                .await
+                .expect("chunked response must terminate")
+                .unwrap();
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+            if out.windows(5).any(|w| w == b"world") && out.ends_with(b"0\r\n\r\n") {
+                break;
+            }
+        }
+        String::from_utf8(out).unwrap()
+    });
+    assert!(body.contains("Transfer-Encoding: chunked"), "got: {body}");
+    assert!(body.contains("hello"), "chunk payload relayed");
+    assert!(body.contains("world"), "second chunk relayed");
+    assert!(
+        body.ends_with("0\r\n\r\n"),
+        "valid terminating chunk: {body}"
+    );
+    let _ = join.join();
+    handle.stop();
+}
+
+#[test]
+fn chunked_upload_is_forwarded() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let up_port = listener.local_addr().unwrap().port();
+    let join = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut acc = Vec::new();
+            let mut buf = [0u8; 4096];
+            // Read head + chunked body until terminating chunk.
+            loop {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                acc.extend_from_slice(&buf[..n]);
+                if acc.windows(5).any(|w| w == b"0\r\n\r\n") {
+                    break;
+                }
+            }
+            let req = String::from_utf8_lossy(&acc).into_owned();
+            assert!(req.contains("hello"), "upstream saw chunk payload: {req}");
+            let body = b"upload-ok";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\nupload-ok",
+                body.len()
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+        });
+    });
+    let handle = spawn_proxy(Arc::new(ferrite_proxy::AllowAllHook));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let resp = rt.block_on(send_recv(
+        handle.port,
+        &format!(
+            "POST http://127.0.0.1:{up_port}/submit HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+        ),
+    ));
+    assert!(resp.contains("upload-ok"), "chunked upload proxied: {resp}");
+    let _ = join.join();
+    handle.stop();
+}
+
+#[test]
+fn internal_host_requires_exact_match() {
+    let handle = spawn_proxy(Arc::new(ferrite_proxy::AllowAllHook));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    // Exact internal host serves the local page.
+    let internal = rt.block_on(send_recv(
+        handle.port,
+        "GET http://ferrite/newtab HTTP/1.1\r\nHost: ferrite\r\nConnection: close\r\n\r\n",
+    ));
+    assert!(
+        internal.starts_with("HTTP/1.1 200"),
+        "internal served: {internal}"
+    );
+    // External host merely containing the substring must NOT be hijacked.
+    // `.invalid` never resolves, so the proxy must 502 — never 200 internal.
+    let external = rt.block_on(send_recv(
+        handle.port,
+        "GET http://myferrite.invalid/ HTTP/1.1\r\nHost: myferrite.invalid\r\nConnection: close\r\n\r\n",
+    ));
+    assert!(
+        external.starts_with("HTTP/1.1 502"),
+        "substring host not hijacked, got: {external}"
+    );
+    assert!(!external.contains("ferrite://newtab"));
     handle.stop();
 }
 

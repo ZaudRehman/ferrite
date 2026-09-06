@@ -6,7 +6,9 @@ pub mod error;
 pub mod filters;
 pub mod headers;
 pub mod js;
+pub mod realtime;
 pub mod threat;
+pub mod updater;
 
-pub use engine::{PrivacyEngine, PrivacySettings};
+pub use engine::{PrivacyEngine, PrivacySettings, VerdictCounts};
 pub use error::{PrivacyError, PrivacyResult};

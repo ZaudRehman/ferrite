@@ -18,7 +18,21 @@ ferrite-tabs.workspace = true
 ferrite-omnibox.workspace = true
 ferrite-proxy.workspace = true
 ferrite-privacy.workspace = true
+ferrite-archive.workspace = true
+ferrite-vault.workspace = true
+ferrite-credentials.workspace = true
+tokio.workspace = true
+url.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 dashmap.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
+arboard = "3.4"
+rfd = "0.17.2"
+crossbeam-queue = "0.3.13"
+crossbeam-channel = "0.5"
+chrono = "0.4.45"
+regex.workspace = true
+wry.workspace = true

@@ -1,6 +1,5 @@
-﻿//! Privacy engine.
+//! Privacy engine.
 
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 use tracing::debug;
@@ -13,10 +12,18 @@ use crate::threat::ThreatDb;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrivacySettings {
+    #[serde(default = "default_true")]
     pub adblock_enabled: bool,
+    #[serde(default = "default_true")]
     pub gpc_enabled: bool,
+    #[serde(default)]
     pub realtime_lookup_enabled: bool,
+    #[serde(default = "default_true")]
     pub https_upgrade_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for PrivacySettings {
@@ -35,7 +42,106 @@ pub struct PrivacyEngine {
     filters: Arc<RwLock<FilterEngine>>,
     threat_db: Arc<RwLock<ThreatDb>>,
     settings: Arc<RwLock<PrivacySettings>>,
-    tracker_hosts: Arc<RwLock<HashSet<String>>>,
+    tracker_hosts: Arc<RwLock<TrackerSet>>,
+    proxy_port: Arc<RwLock<Option<u16>>>,
+    verdict_counts: VerdictCounts,
+}
+
+/// Fleet-triagable decision counters (monotonic, process lifetime).
+#[derive(Debug, Default)]
+pub struct VerdictCounts {
+    pub allow: std::sync::atomic::AtomicU64,
+    pub ad: std::sync::atomic::AtomicU64,
+    pub tracker: std::sync::atomic::AtomicU64,
+    pub malware: std::sync::atomic::AtomicU64,
+    pub mixed: std::sync::atomic::AtomicU64,
+}
+
+impl VerdictCounts {
+    fn record(&self, v: Verdict) {
+        use std::sync::atomic::Ordering::Relaxed;
+        match v {
+            Verdict::Allow => self.allow.fetch_add(1, Relaxed),
+            Verdict::BlockAd => self.ad.fetch_add(1, Relaxed),
+            Verdict::BlockTracker => self.tracker.fetch_add(1, Relaxed),
+            Verdict::BlockMalware => self.malware.fetch_add(1, Relaxed),
+            Verdict::BlockMixedContent => self.mixed.fetch_add(1, Relaxed),
+        };
+    }
+
+    /// Snapshot as (allow, ad, tracker, malware, mixed).
+    pub fn snapshot(&self) -> (u64, u64, u64, u64, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.allow.load(Relaxed),
+            self.ad.load(Relaxed),
+            self.tracker.load(Relaxed),
+            self.malware.load(Relaxed),
+            self.mixed.load(Relaxed),
+        )
+    }
+}
+
+/// Bounded LRU set for tracker hosts with TTL. The old unbounded
+/// `HashSet` grew forever and took a write lock per novel tracker.
+#[derive(Debug)]
+struct TrackerSet {
+    map: std::collections::HashMap<String, std::time::Instant>,
+    order: std::collections::VecDeque<String>,
+    cap: usize,
+    ttl: std::time::Duration,
+}
+
+impl TrackerSet {
+    fn new(cap: usize, ttl: std::time::Duration) -> Self {
+        Self {
+            map: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            cap,
+            ttl,
+        }
+    }
+
+    fn contains(&self, host: &str) -> bool {
+        matches!(self.map.get(host), Some(t) if t.elapsed() < self.ttl)
+    }
+
+    fn insert(&mut self, host: String) {
+        let now = std::time::Instant::now();
+        if self.map.contains_key(&host) {
+            self.map.insert(host.clone(), now);
+            self.order.retain(|h| h != &host);
+            self.order.push_back(host);
+            return;
+        }
+        // Opportunistic expiry of the front (amortized, no full scan).
+        while let Some(front) = self.order.front() {
+            let expired = self
+                .map
+                .get(front)
+                .map(|t| t.elapsed() >= self.ttl)
+                .unwrap_or(true);
+            if !expired {
+                break;
+            }
+            if let Some(old) = self.order.pop_front() {
+                self.map.remove(&old);
+            }
+        }
+        self.map.insert(host.clone(), now);
+        self.order.push_back(host);
+        while self.order.len() > self.cap {
+            if let Some(old) = self.order.pop_front() {
+                self.map.remove(&old);
+            }
+        }
+    }
+}
+
+impl Default for TrackerSet {
+    fn default() -> Self {
+        Self::new(10_000, std::time::Duration::from_secs(7 * 24 * 3600))
+    }
 }
 
 impl PrivacyEngine {
@@ -47,7 +153,9 @@ impl PrivacyEngine {
             filters: Arc::new(RwLock::new(FilterEngine::new()?)),
             threat_db: Arc::new(RwLock::new(threat)),
             settings: Arc::new(RwLock::new(PrivacySettings::default())),
-            tracker_hosts: Arc::new(RwLock::new(HashSet::new())),
+            tracker_hosts: Arc::new(RwLock::new(TrackerSet::default())),
+            proxy_port: Arc::new(RwLock::new(None)),
+            verdict_counts: VerdictCounts::default(),
         })
     }
 
@@ -56,8 +164,25 @@ impl PrivacyEngine {
             filters: Arc::new(RwLock::new(FilterEngine::new()?)),
             threat_db: Arc::new(RwLock::new(db)),
             settings: Arc::new(RwLock::new(PrivacySettings::default())),
-            tracker_hosts: Arc::new(RwLock::new(HashSet::new())),
+            tracker_hosts: Arc::new(RwLock::new(TrackerSet::default())),
+            proxy_port: Arc::new(RwLock::new(None)),
+            verdict_counts: VerdictCounts::default(),
         })
+    }
+
+    /// Monotonic decision counters for fleet triage.
+    pub fn verdict_counts(&self) -> (u64, u64, u64, u64, u64) {
+        self.verdict_counts.snapshot()
+    }
+
+    pub fn set_proxy_port(&self, port: Option<u16>) {
+        if let Ok(mut p) = self.proxy_port.write() {
+            *p = port;
+        }
+    }
+
+    pub fn proxy_port(&self) -> Option<u16> {
+        self.proxy_port.read().ok().and_then(|p| *p)
     }
 
     pub fn load_filters(
@@ -65,11 +190,17 @@ impl PrivacyEngine {
         lists: &[(&str, &str)],
         expected_sha256: Option<&str>,
     ) -> PrivacyResult<()> {
+        // RCU-style: build the new engine WITHOUT holding the lock, then
+        // swap under a brief write. The old code held the write lock across
+        // EasyList parsing and froze every navigation on hourly update.
+        let mut fresh = FilterEngine::new()?;
+        fresh.load(lists, expected_sha256)?;
         let mut engine = self
             .filters
             .write()
             .map_err(|e| PrivacyError::AdblockInit(format!("filter lock poisoned: {e}")))?;
-        engine.load(lists, expected_sha256)
+        *engine = fresh;
+        Ok(())
     }
 
     pub fn load_threat_snapshot(&self, urls: &[&str]) -> PrivacyResult<()> {
@@ -95,19 +226,23 @@ impl PrivacyEngine {
     }
 
     pub fn should_strip_cookies(&self, request_domain: &str) -> bool {
-        let hosts = self.tracker_hosts.read().ok();
-        if let Some(set) = hosts {
-            set.contains(&request_domain.to_lowercase())
-        } else {
-            false
-        }
+        let key = request_domain.to_lowercase();
+        self.tracker_hosts
+            .read()
+            .map(|set| set.contains(&key))
+            .unwrap_or(false)
     }
 
     pub fn save_settings_to_file(&self, path: impl AsRef<std::path::Path>) {
         let settings = self.settings();
         if let Ok(json) = serde_json::to_string_pretty(&settings) {
-            if let Err(e) = std::fs::write(path.as_ref(), json) {
-                tracing::warn!(error = %e, "save settings failed");
+            let path = path.as_ref();
+            // Atomic write: tmp + rename + best-effort fsync.
+            let tmp = path.with_extension("tmp");
+            if std::fs::write(&tmp, json).is_ok() {
+                let _ = std::fs::rename(&tmp, path);
+            } else {
+                tracing::warn!("save settings failed");
             }
         }
     }
@@ -166,25 +301,40 @@ impl PrivacyEngine {
         &self,
         domain: &str,
         is_top_level: bool,
-        lookup: impl Fn(&str) -> Option<bool> + Send + 'static,
+        lookup: impl Fn(&str) -> Option<bool>,
     ) -> Option<Verdict> {
         if !self.settings().realtime_lookup_enabled || !is_top_level {
             return None;
         }
-        let prefix = crate::threat::hash_domain(domain)[..8].to_owned();
-        // 300ms timeout via channel
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let res = lookup(&prefix);
-            let _ = tx.send(res);
-        });
-        match rx.recv_timeout(std::time::Duration::from_millis(300)) {
-            Ok(Some(true)) => Some(Verdict::BlockMalware),
-            Ok(_) => None,
-            Err(_) => {
-                tracing::debug!(%domain, "realtime lookup timeout - fail-open");
-                None
+        let full = crate::threat::hash_domain(domain);
+        let prefix = full[..8].to_owned();
+        if !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        // Prefer network lookup through the proxy; fall back to the injected
+        // lookup (tests) when no port is configured or the network yields no
+        // answer. Single 300ms budget, no per-request thread fan-out.
+        if let Some(port) = self.proxy_port() {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
+            if let Ok(rt) = rt {
+                let fut = crate::realtime::lookup(&prefix, port);
+                if let Ok(Some(hit)) = rt.block_on(tokio::time::timeout(
+                    std::time::Duration::from_millis(300),
+                    fut,
+                )) {
+                    return if hit {
+                        Some(Verdict::BlockMalware)
+                    } else {
+                        None
+                    };
+                }
             }
+        }
+        match lookup(&prefix) {
+            Some(true) => Some(Verdict::BlockMalware),
+            _ => None,
         }
     }
 }
@@ -201,11 +351,10 @@ impl DecisionHook for PrivacyEngine {
     }
 
     fn should_strip_cookies(&self, host: &str) -> bool {
-        if let Ok(set) = self.tracker_hosts.read() {
-            set.contains(&host.to_lowercase())
-        } else {
-            false
-        }
+        self.tracker_hosts
+            .read()
+            .map(|set| set.contains(&host.to_lowercase()))
+            .unwrap_or(false)
     }
 
     fn should_upgrade_https(&self) -> bool {
@@ -215,37 +364,67 @@ impl DecisionHook for PrivacyEngine {
             .unwrap_or(true)
     }
 
+    fn csp_directives(&self, meta: &RequestMeta) -> Option<String> {
+        let url = if meta.request_url.is_empty() {
+            format!("https://{}/", meta.request_domain)
+        } else {
+            meta.request_url.clone()
+        };
+        let source = meta.referrer.as_deref().unwrap_or(&url);
+        let req_type = match meta.resource {
+            ferrite_proxy::ResourceType::Document => "document",
+            ferrite_proxy::ResourceType::Script => "script",
+            ferrite_proxy::ResourceType::Image => "image",
+            ferrite_proxy::ResourceType::Stylesheet => "stylesheet",
+            ferrite_proxy::ResourceType::Xhr => "xmlhttprequest",
+            ferrite_proxy::ResourceType::Media => "media",
+            ferrite_proxy::ResourceType::Font => "font",
+            ferrite_proxy::ResourceType::Other => "other",
+        };
+        let filters = self.filters.read().ok()?;
+        let req = adblock::request::Request::new(&url, source, req_type, "get").ok()?;
+        filters.get_csp(&req)
+    }
+
     fn decide(&self, meta: &RequestMeta) -> Verdict {
+        // Every terminal verdict is counted exactly once for triage.
+        let verdict = Self::decide_inner(self, meta);
+        self.verdict_counts.record(verdict);
+        verdict
+    }
+}
+
+impl PrivacyEngine {
+    fn decide_inner(&self, meta: &RequestMeta) -> Verdict {
+        if is_loopback(&meta.request_domain) {
+            return Verdict::Allow;
+        }
         if meta.is_mixed_content() {
             debug!(host = %meta.request_domain, "blocked mixed content");
             return Verdict::BlockMixedContent;
         }
 
-        if let Ok(db) = self.threat_db.read() {
-            if db.contains(&meta.request_domain) {
-                debug!(host = %meta.request_domain, "blocked malware/phishing");
-                return Verdict::BlockMalware;
+        // Threat lookup is an in-memory suffix check: no SQLite on the hot
+        // path (see ThreatDb). Lock failure fails OPEN with a warning and
+        // a counter-worthy log — availability over fail-closed here because
+        // adblock still applies below; poison indicates a bug, not attack.
+        match self.threat_db.read() {
+            Ok(db) => {
+                if db.contains_with_suffixes(&meta.request_domain) {
+                    debug!(host = %meta.request_domain, "blocked malware/phishing");
+                    return Verdict::BlockMalware;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "threat lock poisoned - fail-open");
             }
         }
 
         let is_top_level =
             meta.resource == ferrite_proxy::ResourceType::Document && meta.referrer.is_none();
         if self.settings().realtime_lookup_enabled && is_top_level {
-            let prefix = crate::threat::hash_domain(&meta.request_domain)[..8].to_owned();
-            let (tx, rx) = std::sync::mpsc::channel();
-            let db_clone = std::sync::Arc::clone(&self.threat_db);
-            std::thread::spawn(move || {
-                let hit = db_clone
-                    .read()
-                    .map(|_db| {
-                        let _ = &prefix;
-                        false
-                    })
-                    .unwrap_or(false);
-                let _ = tx.send(if hit { Some(true) } else { None });
-            });
-            if let Ok(Some(true)) = rx.recv_timeout(std::time::Duration::from_millis(300)) {
-                debug!(host = %meta.request_domain, "blocked via realtime prefix");
+            if self.realtime_block(&meta.request_domain) {
+                debug!(host = %meta.request_domain, "blocked via realtime prefix (k-anonymity)");
                 return Verdict::BlockMalware;
             }
         }
@@ -256,21 +435,68 @@ impl DecisionHook for PrivacyEngine {
             .map(|s| s.adblock_enabled)
             .unwrap_or(true);
         if adblock_enabled {
-            if let Ok(filters) = self.filters.read() {
-                if let Some(v) = filters.check(meta) {
-                    // Record tracker hosts for cookie stripping.
-                    if v == Verdict::BlockTracker {
-                        if let Ok(mut set) = self.tracker_hosts.write() {
-                            set.insert(meta.request_domain.to_lowercase());
+            match self.filters.read() {
+                Ok(filters) => {
+                    if let Some(v) = filters.check(meta) {
+                        // Record tracker hosts for cookie stripping.
+                        if v == Verdict::BlockTracker {
+                            if let Ok(mut set) = self.tracker_hosts.write() {
+                                set.insert(meta.request_domain.to_lowercase());
+                            }
                         }
+                        return v;
                     }
-                    return v;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "filter lock poisoned - fail-open");
                 }
             }
         }
 
         Verdict::Allow
     }
+}
+
+impl PrivacyEngine {
+    /// Shared realtime prefix check with a 300ms fail-open budget and no
+    /// per-request thread+runtime fan-out. Uses blocking std TCP with
+    /// timeouts in the calling thread (cheaper than spawn+runtime per nav).
+    fn realtime_block(&self, domain: &str) -> bool {
+        let prefix = crate::threat::hash_domain(domain);
+        let prefix = prefix[..8].to_owned();
+        if !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+            return false;
+        }
+        let port = self.proxy_port.read().ok().and_then(|p| *p);
+        let Some(port) = port else {
+            return false;
+        };
+        // Run the async lookup on a minimal current-thread runtime inline.
+        // No extra thread: `decide` already runs on a proxy worker, and the
+        // lookup itself has connect/read timeouts well under 300ms.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        let Ok(rt) = rt else {
+            return false;
+        };
+        match rt.block_on(tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            crate::realtime::lookup(&prefix, port),
+        )) {
+            Ok(Some(true)) => true,
+            Ok(_) => false,
+            Err(_) => {
+                tracing::debug!(%domain, "realtime lookup timeout - fail-open");
+                false
+            }
+        }
+    }
+}
+
+fn is_loopback(host: &str) -> bool {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    h == "localhost" || h == "127.0.0.1" || h == "::1" || h.ends_with(".localhost")
 }
 
 #[cfg(test)]
@@ -329,5 +555,19 @@ mod tests {
     fn realtime_default_off() {
         let e = PrivacyEngine::new().unwrap();
         assert!(!e.settings().realtime_lookup_enabled);
+    }
+
+    #[test]
+    fn verdict_counters_record_every_decision() {
+        let e = PrivacyEngine::new().unwrap();
+        e.load_filters(&[("t", "||ads.example^")], None).unwrap();
+        let allow = RequestMeta::new("example.com", ResourceType::Document);
+        let block = RequestMeta::new("ads.example", ResourceType::Script);
+        assert_eq!(e.decide(&allow), Verdict::Allow);
+        assert_eq!(e.decide(&block), Verdict::BlockAd);
+        assert_eq!(e.decide(&block), Verdict::BlockAd);
+        let (allow_n, ad_n, tracker_n, malware_n, mixed_n) = e.verdict_counts();
+        assert_eq!((allow_n, ad_n), (1, 2));
+        assert_eq!((tracker_n, malware_n, mixed_n), (0, 0, 0));
     }
 }

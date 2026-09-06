@@ -11,3 +11,6 @@ tokio.workspace = true
 crossbeam-channel.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true

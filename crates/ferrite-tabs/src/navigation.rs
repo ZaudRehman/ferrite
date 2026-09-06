@@ -1,5 +1,5 @@
 //! Per-tab back/forward history.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NavigationHistory {
     back_stack: Vec<String>,
     forward_stack: Vec<String>,

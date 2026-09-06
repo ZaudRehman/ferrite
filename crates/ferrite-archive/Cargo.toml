@@ -1,0 +1,23 @@
+[package]
+name = "ferrite-archive"
+description = "Ferrite Sovereign Archive and native PDF engine — snapshotting, FTS5, and PDF rendering (Part 6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+crossbeam-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+dashmap.workspace = true
+zstd.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+regex.workspace = true
+once_cell.workspace = true
+zeroize = "1.7"
+memmap2 = "0.9"
+pdfium-render = { version = "0.9", optional = true }

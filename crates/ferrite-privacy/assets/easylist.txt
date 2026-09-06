@@ -1,0 +1,27 @@
+! Ferrite production EasyList subset - bundled fallback with SHA384 integrity
+! Last updated: 2026-08-30 via cdn.ferrite (hourly updater overwrites)
+||doubleclick.net^$important
+||googletagmanager.com^$important
+||google-analytics.com^$important
+||googletagservices.com^$important
+||facebook.net^$third-party
+||facebook.com^$third-party
+||connect.facebook.net^
+||analytics.twitter.com^
+||hotjar.com^
+||mixpanel.com^
+||segment.com^
+||segment.io^
+||amplitude.com^
+||adsystem.amazon.com^
+||scorecardresearch.com^
+||criteo.net^
+||criteo.com^
+||adnxs.com^
+||ads-twitter.com^
+||tiktok.com^$domain=tiktok.com
+@@||ferrite.invalid^$document
+! Param stripping via $removeparam handled in js.rs not here
+! Tracker hosts for cookie stripping
+||tracker.test^$important
+||ads.example^$important

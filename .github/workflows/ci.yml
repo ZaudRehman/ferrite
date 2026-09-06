@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Rust fmt
+        run: cargo fmt --check --all
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --all-features
+      - name: Cargo audit
+        run: cargo install cargo-audit && cargo audit
+      - name: Cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          arguments: --all-features
+          deny-attribute: deny
+      - name: SBOM
+        run: cargo install cargo-cyclonedx && cargo cyclonedx --format json -o sbom.json && cat sbom.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.0"
+      - name: Go vet
+        working-directory: relay
+        run: go vet ./...
+      - name: Go fmt
+        working-directory: relay
+        run: test -z "$(gofmt -l .)"
+      - name: Go tests
+        working-directory: relay
+        run: go test ./...
