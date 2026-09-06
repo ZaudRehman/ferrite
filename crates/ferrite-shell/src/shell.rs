@@ -907,23 +907,255 @@ fn cached_text_width(
     (w, Some(galley))
 }
 
-fn build_shell_ui(
+/// Bottom diagnostics strip (fps, tabs, net counters, downloads).
+#[allow(clippy::too_many_arguments)]
+fn draw_diagnostics(
+    ui: &mut Ui,
+    app: &mut AppContext,
+    diagnostics: bool,
+    proxy_requests: u64,
+    proxy_dropped: u64,
+    downloads_seen: usize,
+    last_download: Option<String>,
+    scale: f64,
+    logical: PhysicalSize<f32>,
+    frame_secs: f32,
+) {
+    if diagnostics {
+        let hover = ui.input(|i| i.pointer.hover_pos());
+        let fps = if frame_secs > 0.0 {
+            1.0 / frame_secs
+        } else {
+            0.0
+        };
+        egui::Panel::bottom("diagnostics")
+            .frame(egui::Frame::default().fill(SURFACE_1))
+            .show(ui, |ui| {
+                ui.set_min_height(56.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("diagnostics")
+                            .strong()
+                            .color(app.theme.resolved_interactive_accent()),
+                    );
+                    ui.label(
+                        RichText::new(format!("cursor: {hover:?}"))
+                            .color(app.theme.palette.foreground),
+                    );
+                    ui.label(
+                        RichText::new(format!("tabs: {}", app.tabs.len()))
+                            .color(app.theme.palette.foreground),
+                    );
+                    ui.label(
+                        RichText::new(format!("net {} (drop {})", proxy_requests, proxy_dropped))
+                            .font(crate::theme::ThemeConfig::telemetry_font(11.0))
+                            .color(app.theme.palette.foreground),
+                    );
+                    ui.label(
+                        RichText::new(match &last_download {
+                            Some(last) => format!("dl {downloads_seen} ({last})"),
+                            None => format!("dl {downloads_seen}"),
+                        })
+                        .font(crate::theme::ThemeConfig::telemetry_font(11.0))
+                        .color(app.theme.palette.foreground),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("scale {scale:.3}"))
+                            .color(app.theme.palette.foreground),
+                    );
+                    ui.label(
+                        RichText::new(format!(
+                            "logical {:.0}x{:.0}",
+                            logical.width, logical.height
+                        ))
+                        .color(app.theme.palette.foreground),
+                    );
+                    ui.label(
+                        RichText::new(format!("{fps:.1} fps")).color(app.theme.palette.foreground),
+                    );
+                    if let Some(active) = app.tabs.active_tab() {
+                        ui.label(
+                            RichText::new(format!("active: {}", active.url))
+                                .color(app.theme.palette.foreground),
+                        );
+                        if active.is_crashed {
+                            ui.colored_label(ACCENT_DANGER, "CRASHED");
+                        }
+                    }
+                });
+                egui::warn_if_debug_build(ui);
+            });
+    }
+}
+
+/// Central content area: webview host rect, empty state, crashed-tab UI.
+fn draw_central(
+    ui: &mut Ui,
+    app: &mut AppContext,
+    window: &Window,
+    content_rect_cell: &Cell<Option<Rect>>,
+) {
+    let active_snapshot = app
+        .tabs
+        .active_tab()
+        .map(|t| (t.id, t.url.clone(), t.is_crashed));
+    let central_resp = egui::CentralPanel::default()
+        .frame(egui::Frame::default().fill(app.theme.palette.substrate))
+        .show(ui, |ui| {
+            if let Some((id, url, is_crashed)) = active_snapshot.clone() {
+                if is_crashed {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(80.0);
+                        ui.label(
+                            RichText::new("This tab has crashed.")
+                                .heading()
+                                .color(ACCENT_DANGER),
+                        );
+                        ui.label(RichText::new(&url).color(app.theme.palette.foreground));
+                        ui.add_space(12.0);
+                        if ui.button("Reload Tab").clicked() {
+                            if let Some(tab) = app.tabs.get_tab_mut(id) {
+                                // History-preserving engine reload (load_url
+                                // would re-push history and clear forward).
+                                if let Err(e) = tab.reload() {
+                                    debug!(error = %e, "crashed-tab reload failed");
+                                }
+                            }
+                        }
+                        if ui.button("Close Tab").clicked() {
+                            let _ = app.tabs.close_tab(id);
+                        }
+                    });
+                    return;
+                }
+            }
+            if app.tabs.is_empty() {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(60.0);
+                    ui.label(
+                        RichText::new("Sovereign Browser")
+                            .heading()
+                            .size(36.0)
+                            .color(app.theme.palette.accent_primary),
+                    );
+                    ui.label(
+                        RichText::new("Foundation - Parts 1-3")
+                            .size(13.0)
+                            .color(app.theme.palette.foreground.gamma_multiply(0.75)),
+                    );
+                    ui.add_space(12.0);
+                    if ui.button("New Tab (Ctrl+T)").clicked() {
+                        open_tab(&mut app.tabs, window, "ferrite://newtab".to_owned());
+                    }
+                });
+            } else {
+                ui.label(
+                    RichText::new("Content area - wry webview child window renders here")
+                        .color(app.theme.palette.foreground.gamma_multiply(0.5)),
+                );
+                if let Some(tab) = app.tabs.active_tab() {
+                    if tab.url.starts_with("ferrite://") {
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!("Internal: {}", tab.url))
+                                .color(app.theme.resolved_interactive_accent()),
+                        );
+                    }
+                }
+            }
+        });
+    content_rect_cell.set(Some(central_resp.response.rect));
+}
+
+/// Tab search overlay (Ctrl+Shift+A): filter + switch, restoring discarded
+/// tabs instead of going blank.
+fn draw_tab_search(
     ui: &mut Ui,
     app: &mut AppContext,
     window: &Window,
     scale: f64,
-    logical: PhysicalSize<f32>,
-    frame_secs: f32,
-    diagnostics: bool,
-    proxy_requests: u64,
-    proxy_dropped: u64,
-    proxy_alive: bool,
-    fail_open_count: u64,
-    downloads_seen: usize,
-    last_download: Option<String>,
     content_rect_cell: &Cell<Option<Rect>>,
     tab_search_open: &mut bool,
     tab_search_query: &mut String,
+) {
+    if *tab_search_open {
+        let mut should_close = false;
+        let mut switch_to: Option<uuid::Uuid> = None;
+        egui::Window::new("Tab Search (Ctrl+Shift+A)")
+            .collapsible(false)
+            .resizable(true)
+            .default_size(egui::vec2(420.0, 280.0))
+            .show(ui.ctx(), |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(tab_search_query)
+                        .hint_text("Filter tabs by title or URL - Enter to switch, Esc to close")
+                        .desired_width(f32::INFINITY),
+                );
+                resp.request_focus();
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    should_close = true;
+                }
+                ui.separator();
+                let results = app.tabs.search(tab_search_query);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if results.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No tabs match")
+                                .color(app.theme.palette.foreground.gamma_multiply(0.5)),
+                        );
+                    } else {
+                        for tab in results {
+                            let label = format!("{} - {}", tab.title, tab.url);
+                            let btn =
+                                egui::Button::new(label).wrap_mode(egui::TextWrapMode::Truncate);
+                            if ui.add(btn).clicked() {
+                                switch_to = Some(tab.id);
+                                should_close = true;
+                            }
+                            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !should_close {
+                                // Enter picks first filtered tab.
+                                if let Some(first) = app.tabs.search(tab_search_query).first() {
+                                    switch_to = Some(first.id);
+                                    should_close = true;
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+        if let Some(id) = switch_to {
+            // Restore path (not bare switch_tab): discarded tabs rebuild
+            // their webview instead of going blank.
+            let bounds = content_rect_cell
+                .get()
+                .and_then(|r| egui_rect_to_wry_rect(r, scale));
+            let idx = app.tabs.iter().position(|t| t.id == id);
+            if let Some(idx) = idx {
+                if let Err(e) = app.tabs.switch_tab_with_window(window, idx, bounds) {
+                    debug!(error = %e, "tab search switch failed");
+                }
+            }
+            app.sync_theme_from_tabs();
+        }
+        if should_close {
+            *tab_search_open = false;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            *tab_search_open = false;
+        }
+    }
+}
+
+/// Top tab strip: pinned chips, scrollable regular tabs, new-tab button,
+/// count badge. Click actions defer to post-paint application.
+fn draw_tab_bar(
+    ui: &mut Ui,
+    app: &mut AppContext,
+    window: &Window,
+    scale: f64,
+    content_rect_cell: &Cell<Option<Rect>>,
 ) {
     egui::Panel::top("tab_bar")
         .frame(
@@ -1333,6 +1565,999 @@ fn build_shell_ui(
                 let _ = app.tabs.close_tab(id);
             }
         });
+}
+
+/// Trailing toolbar cluster: shield (with protection-degraded state),
+/// archive pin, inspector toggle, menu, plus the shield/menu popovers.
+fn draw_trailing_cluster(
+    ui: &mut Ui,
+    app: &mut AppContext,
+    proxy_requests: u64,
+    proxy_alive: bool,
+    fail_open_count: u64,
+) {
+    ui.add_space(6.0);
+    let shield_id = egui::Id::new("shield_popover_open");
+    let mut shield_pop = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(shield_id))
+        .unwrap_or(false);
+    let shield_count = proxy_requests;
+    // Protection-degraded state (Part 4 spec): the choke is a
+    // promise, so proxy-down or any fail-open decision must be
+    // visible, never log-only.
+    let degraded = !proxy_alive || fail_open_count > 0;
+    let shield_fg = if degraded {
+        crate::theme::ACCENT_DANGER
+    } else if shield_count > 0 {
+        crate::theme::ACCENT_PRIMARY
+    } else {
+        crate::theme::TEXT_MUTED
+    };
+    let shield_bg = if degraded {
+        crate::theme::ACCENT_DANGER.gamma_multiply(0.12)
+    } else if shield_count > 0 {
+        crate::theme::ACCENT_PRIMARY.gamma_multiply(0.12)
+    } else {
+        app.theme.palette.surface_2
+    };
+    let (shield_rect, shield_resp) =
+        ui.allocate_exact_size(egui::vec2(58.0, 28.0), egui::Sense::click());
+    {
+        let bg = if shield_resp.is_pointer_button_down_on() {
+            shield_bg.gamma_multiply(0.8)
+        } else if shield_resp.hovered() {
+            crate::theme::SURFACE_3
+        } else {
+            shield_bg
+        };
+        let stroke = if shield_resp.hovered() {
+            egui::Stroke::new(1.0, crate::theme::BORDER_ACTIVE)
+        } else {
+            egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE)
+        };
+        ui.painter()
+            .rect_filled(shield_rect, crate::theme::CORNER_SM, bg);
+        ui.painter().rect_stroke(
+            shield_rect,
+            crate::theme::CORNER_SM,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+        let icon_rect = egui::Rect::from_center_size(
+            egui::pos2(shield_rect.left() + 14.0, shield_rect.center().y),
+            egui::vec2(20.0, 20.0),
+        );
+        crate::icons::paint(
+            ui.painter(),
+            icon_rect,
+            if degraded {
+                crate::icons::Icon::Shield
+            } else if shield_count > 0 {
+                crate::icons::Icon::ShieldCheck
+            } else {
+                crate::icons::Icon::Shield
+            },
+            shield_fg,
+        );
+        ui.painter().text(
+            egui::pos2(shield_rect.right() - 8.0, shield_rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            format!("{}", shield_count),
+            crate::theme::ThemeConfig::technical_label_font(10.0),
+            shield_fg,
+        );
+    }
+    if shield_resp
+        .clone()
+        .on_hover_text(if degraded {
+            "Shield — protection degraded"
+        } else {
+            "Shield — blocked"
+        })
+        .clicked()
+    {
+        shield_pop = !shield_pop;
+        ui.ctx().data_mut(|d| d.insert_temp(shield_id, shield_pop));
+    }
+    let is_pinned = app
+        .tabs
+        .active_tab()
+        .map(|t| t.is_archive_view)
+        .unwrap_or(false);
+    let pin_resp = crate::icons::button(
+        ui,
+        egui::vec2(32.0, 28.0),
+        if is_pinned {
+            crate::icons::Icon::PinFilled
+        } else {
+            crate::icons::Icon::Bookmark
+        },
+        if is_pinned {
+            app.theme.palette.accent_archive
+        } else {
+            crate::theme::TEXT_MUTED
+        },
+        if is_pinned {
+            app.theme.palette.accent_archive.gamma_multiply(0.14)
+        } else {
+            app.theme.palette.surface_2
+        },
+    )
+    .on_hover_text("Pin to Archive");
+    let _ = pin_resp.clicked();
+    let devtools_id = egui::Id::new("devtools_open");
+    let devtools_open = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(devtools_id))
+        .unwrap_or(false);
+    let dt_resp = crate::icons::button(
+        ui,
+        egui::vec2(32.0, 28.0),
+        crate::icons::Icon::Terminal,
+        if devtools_open {
+            app.theme.resolved_interactive_accent()
+        } else {
+            crate::theme::TEXT_MUTED
+        },
+        if devtools_open {
+            app.theme.resolved_interactive_accent().gamma_multiply(0.15)
+        } else {
+            app.theme.palette.surface_2
+        },
+    )
+    .on_hover_text("Inspector F12");
+    if dt_resp.clicked() {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(devtools_id, !devtools_open));
+    }
+    let menu_id = egui::Id::new("menu_popover_open");
+    let mut menu_open = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(menu_id))
+        .unwrap_or(false);
+    let menu_resp = crate::icons::button(
+        ui,
+        egui::vec2(32.0, 28.0),
+        crate::icons::Icon::Menu,
+        crate::theme::TEXT_MUTED,
+        app.theme.palette.surface_2,
+    )
+    .on_hover_text("Ferrite Menu");
+    if menu_resp.clicked() {
+        menu_open = !menu_open;
+        ui.ctx().data_mut(|d| d.insert_temp(menu_id, menu_open));
+    }
+    if shield_pop {
+        let below = shield_rect.left_bottom() + egui::vec2(0.0, 4.0);
+        egui::Area::new(egui::Id::new("shield_popover_panel"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(below)
+            .show(ui.ctx(), |inner| {
+                egui::Frame::default()
+                    .fill(app.theme.palette.surface_2)
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE))
+                    .corner_radius(crate::theme::CORNER_SM)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(inner, |panel| {
+                        panel.set_min_size(egui::vec2(240.0, 0.0));
+                        panel.label(
+                            RichText::new("Privacy Protection")
+                                .strong()
+                                .size(13.0)
+                                .color(app.theme.palette.foreground),
+                        );
+                        panel.add_space(4.0);
+                        if degraded {
+                            if !proxy_alive {
+                                panel.label(
+                                    RichText::new("Proxy down — traffic is direct")
+                                        .size(12.0)
+                                        .color(crate::theme::ACCENT_DANGER)
+                                        .font(egui::FontId::monospace(12.0)),
+                                );
+                            }
+                            if fail_open_count > 0 {
+                                panel.label(
+                                    RichText::new(format!(
+                                        "{} fail-open decisions",
+                                        fail_open_count
+                                    ))
+                                    .size(12.0)
+                                    .color(crate::theme::ACCENT_DANGER)
+                                    .font(egui::FontId::monospace(12.0)),
+                                );
+                            }
+                            panel.add_space(4.0);
+                        }
+                        panel.label(
+                            RichText::new(format!("{} requests blocked", proxy_requests))
+                                .size(12.0)
+                                .color(crate::theme::TEXT_SECONDARY)
+                                .font(egui::FontId::monospace(12.0)),
+                        );
+                        panel.add_space(4.0);
+                        let sep_rect = egui::Rect::from_min_size(
+                            panel.cursor().left_bottom(),
+                            egui::vec2(panel.available_width(), 1.0),
+                        );
+                        panel.allocate_rect(sep_rect, egui::Sense::hover());
+                        panel
+                            .painter()
+                            .rect_filled(sep_rect, 0.0, crate::theme::BORDER_SUBTLE);
+                        panel.add_space(4.0);
+                        panel.label(
+                            RichText::new(if degraded {
+                                "Protection degraded — see above"
+                            } else {
+                                "Blockers active for this session"
+                            })
+                            .size(11.0)
+                            .color(if degraded {
+                                crate::theme::ACCENT_DANGER
+                            } else {
+                                crate::theme::TEXT_MUTED
+                            }),
+                        );
+                    });
+            });
+        if shield_resp.clicked_elsewhere() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            ui.ctx().data_mut(|d| d.insert_temp(shield_id, false));
+        }
+    }
+    if menu_open {
+        let below = menu_resp.rect.left_bottom() + egui::vec2(0.0, 4.0);
+        egui::Area::new(egui::Id::new("menu_popover_panel"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(below)
+            .show(ui.ctx(), |inner| {
+                egui::Frame::default()
+                    .fill(app.theme.palette.surface_2)
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE))
+                    .corner_radius(crate::theme::CORNER_SM)
+                    .inner_margin(egui::Margin::symmetric(0, 4))
+                    .show(inner, |panel| {
+                        panel.set_min_size(egui::vec2(200.0, 0.0));
+                        let items = [
+                            ("New Tab", "Ctrl+T"),
+                            ("New Window", ""),
+                            ("---", ""),
+                            ("History", ""),
+                            ("Downloads", ""),
+                            ("Bookmarks", ""),
+                            ("---", ""),
+                            ("Settings", ""),
+                            ("Password Manager", ""),
+                            ("Archive", ""),
+                            ("---", ""),
+                            ("DevTools", ""),
+                        ];
+                        for (label, shortcut) in &items {
+                            if *label == "---" {
+                                let sep_rect = egui::Rect::from_min_size(
+                                    panel.cursor().left_bottom(),
+                                    egui::vec2(panel.available_width(), 1.0),
+                                );
+                                panel.allocate_rect(sep_rect, egui::Sense::hover());
+                                panel.painter().rect_filled(
+                                    sep_rect,
+                                    0.0,
+                                    crate::theme::BORDER_SUBTLE,
+                                );
+                                panel.add_space(4.0);
+                                continue;
+                            }
+                            let row = panel.add(
+                                egui::Button::new(
+                                    RichText::new(*label)
+                                        .size(12.5)
+                                        .font(egui::FontId::monospace(12.5)),
+                                )
+                                .fill(egui::Color32::TRANSPARENT)
+                                .corner_radius(crate::theme::CORNER_SM)
+                                .min_size(egui::vec2(200.0, 28.0)),
+                            );
+                            if row.hovered() {
+                                panel.painter().rect_filled(
+                                    row.rect,
+                                    crate::theme::CORNER_SM,
+                                    app.theme.palette.surface_3.gamma_multiply(0.3),
+                                );
+                            }
+                            if !shortcut.is_empty() {
+                                panel.painter().text(
+                                    egui::pos2(row.rect.right() - 8.0, row.rect.center().y),
+                                    egui::Align2::RIGHT_CENTER,
+                                    *shortcut,
+                                    egui::FontId::monospace(11.0),
+                                    crate::theme::TEXT_MUTED,
+                                );
+                            }
+                        }
+                    });
+            });
+        if menu_resp.clicked_elsewhere() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            ui.ctx().data_mut(|d| d.insert_temp(menu_id, false));
+        }
+    }
+}
+
+/// Omnibox bar contents: nav buttons, URL pill / input field, engine
+/// selector + popover, autocomplete suggestions + popup.
+fn draw_omnibox_contents(ui: &mut Ui, app: &mut AppContext, window: &Window) {
+    ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+    let can_back = app
+        .tabs
+        .active_tab()
+        .map(|t| t.can_go_back())
+        .unwrap_or(false);
+    let can_forward = app
+        .tabs
+        .active_tab()
+        .map(|t| t.can_go_forward())
+        .unwrap_or(false);
+    let is_loading = app.tabs.active_tab().map(|t| t.is_loading).unwrap_or(false);
+    ui.add_enabled_ui(can_back, |ui| {
+        let r = crate::icons::button(
+            ui,
+            egui::vec2(32.0, 28.0),
+            crate::icons::Icon::ArrowLeft,
+            app.theme.palette.foreground,
+            app.theme.palette.surface_2,
+        )
+        .on_hover_text("Back (Alt+←)");
+        if r.clicked() {
+            if let Some(tab) = app.tabs.active_tab_mut() {
+                if let Some(url) = tab.go_back() {
+                    let u = url.clone();
+                    if let Err(e) = tab.load_traversal(u.clone()) {
+                        debug!(error = %e, "back traversal failed");
+                    }
+                    app.autocomplete.insert(
+                        u,
+                        tab.title.clone(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0),
+                    );
+                }
+            }
+        }
+    });
+    ui.add_enabled_ui(can_forward, |ui| {
+        let r = crate::icons::button(
+            ui,
+            egui::vec2(32.0, 28.0),
+            crate::icons::Icon::ArrowRight,
+            app.theme.palette.foreground,
+            app.theme.palette.surface_2,
+        )
+        .on_hover_text("Forward (Alt+→)");
+        if r.clicked() {
+            if let Some(tab) = app.tabs.active_tab_mut() {
+                if let Some(url) = tab.go_forward() {
+                    if let Err(e) = tab.load_traversal(url) {
+                        debug!(error = %e, "forward traversal failed");
+                    }
+                }
+            }
+        }
+    });
+    // Reload / Stop
+    let (reload_icon, reload_tip, reload_fg) = if is_loading {
+        (
+            crate::icons::Icon::X,
+            "Stop (Esc)",
+            app.theme.palette.accent_danger,
+        )
+    } else {
+        (
+            crate::icons::Icon::RotateCw,
+            "Reload (Ctrl+R)",
+            app.theme.palette.foreground,
+        )
+    };
+    let rr = crate::icons::button(
+        ui,
+        egui::vec2(32.0, 28.0),
+        reload_icon,
+        reload_fg,
+        app.theme.palette.surface_2,
+    )
+    .on_hover_text(reload_tip);
+    if rr.clicked() {
+        if is_loading {
+            if let Some(tab) = app.tabs.active_tab_mut() {
+                if let Err(e) = tab.stop() {
+                    debug!(error = %e, "stop failed");
+                }
+            }
+        } else if let Some(tab) = app.tabs.active_tab_mut() {
+            let _ = tab.set_visible(true);
+            if let Err(e) = tab.reload() {
+                debug!(error = %e, "reload failed");
+            }
+        }
+    }
+    let hr = crate::icons::button(
+        ui,
+        egui::vec2(32.0, 28.0),
+        crate::icons::Icon::House,
+        app.theme.palette.foreground,
+        app.theme.palette.surface_2,
+    )
+    .on_hover_text("Home (ferrite://newtab)");
+    if hr.clicked() {
+        if let Some(tab) = app.tabs.active_tab_mut() {
+            let _ = tab.load_url("ferrite://newtab".to_owned());
+        } else {
+            open_tab(&mut app.tabs, window, "ferrite://newtab".to_owned());
+        }
+        app.omnibox.clear();
+        app.omnibox.request_focus();
+    }
+    ui.add_space(4.0);
+    // ── Omnibox pill — Chrome 32h 16r SURFACE_2 flex 320-720 centered ──
+    let avail_raw = ui.available_width();
+    let avail = if avail_raw.is_finite() {
+        (avail_raw - 140.0).clamp(320.0, 720.0)
+    } else {
+        520.0
+    };
+    // engine popover state
+    let engine_popover_id = egui::Id::new("engine_popover_open");
+    let mut pop_open = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(engine_popover_id))
+        .unwrap_or(false);
+    let focused_prev = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(egui::Id::new("omnibox_focused")))
+        .unwrap_or(false);
+    let active_url_raw = app.tabs.active_tab().map(|t| t.url.as_str()).unwrap_or("");
+    let display_for_highlight = if active_url_raw == "ferrite://newtab" || active_url_raw.is_empty()
+    {
+        String::new()
+    } else {
+        active_url_raw.to_owned()
+    };
+    let should_highlight =
+        !focused_prev && app.omnibox.input.is_empty() && !display_for_highlight.is_empty();
+    // security for leading icon
+    let sec_is_internal = active_url_raw.starts_with("ferrite://");
+    let sec_is_https = active_url_raw.starts_with("https://");
+    let sec_icon = if sec_is_internal {
+        crate::icons::Icon::Shield
+    } else if sec_is_https {
+        crate::icons::Icon::Lock
+    } else {
+        crate::icons::Icon::Info
+    };
+    let sec_color = if sec_is_internal {
+        app.theme.palette.accent_interactive
+    } else if sec_is_https {
+        crate::theme::TEXT_SECONDARY
+    } else {
+        crate::theme::TEXT_MUTED
+    };
+    let (focused_now, rect) = if should_highlight {
+        let r = egui::Frame::default()
+            .fill(app.theme.palette.surface_2)
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(crate::theme::CORNER_OMNIBOX)
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_min_size(egui::vec2(avail, 32.0));
+                ui.set_max_width(avail);
+                let lr = ui
+                    .allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover())
+                    .0;
+                crate::icons::paint(ui.painter(), lr, sec_icon, sec_color);
+                ui.add_space(6.0);
+                let parsed = url::Url::parse(&display_for_highlight).ok();
+                let host = parsed.as_ref().and_then(|u| u.host_str()).unwrap_or("");
+                let scheme = parsed
+                    .as_ref()
+                    .map(|u| u.scheme().to_owned())
+                    .unwrap_or_default();
+                let path = parsed
+                    .as_ref()
+                    .map(|u| {
+                        format!(
+                            "{}{}",
+                            u.path(),
+                            u.query().map(|q| format!("?{q}")).unwrap_or_default()
+                        )
+                    })
+                    .unwrap_or_default();
+                let domain_hl = {
+                    let parts: Vec<&str> = host.split('.').collect();
+                    if parts.len() >= 2 {
+                        format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
+                    } else {
+                        host.to_owned()
+                    }
+                };
+                let resp = ui.horizontal(|ui| {
+                    if !scheme.is_empty() {
+                        ui.label(
+                            RichText::new(format!("{}://", scheme))
+                                .size(13.0)
+                                .color(app.theme.palette.foreground.gamma_multiply(0.5))
+                                .font(egui::FontId::monospace(13.0)),
+                        );
+                    }
+                    if !domain_hl.is_empty() {
+                        let sub = if host.len() > domain_hl.len() {
+                            host[..host.len() - domain_hl.len()].to_owned()
+                        } else {
+                            String::new()
+                        };
+                        if !sub.is_empty() {
+                            ui.label(
+                                RichText::new(sub)
+                                    .size(13.0)
+                                    .color(app.theme.palette.foreground.gamma_multiply(0.5))
+                                    .font(egui::FontId::monospace(13.0)),
+                            );
+                        }
+                        ui.label(
+                            RichText::new(domain_hl)
+                                .size(13.0)
+                                .color(app.theme.palette.foreground)
+                                .font(egui::FontId::monospace(13.0)),
+                        );
+                    } else if !host.is_empty() {
+                        ui.label(
+                            RichText::new(host)
+                                .size(13.0)
+                                .color(app.theme.palette.foreground)
+                                .font(egui::FontId::monospace(13.0)),
+                        );
+                    }
+                    if !path.is_empty() && path != "/" {
+                        ui.label(
+                            RichText::new(path)
+                                .size(13.0)
+                                .color(app.theme.palette.foreground.gamma_multiply(0.5))
+                                .font(egui::FontId::monospace(13.0)),
+                        );
+                    }
+                    if display_for_highlight.is_empty() {
+                        ui.label(
+                            RichText::new("Search or enter URL (Ctrl+L)")
+                                .size(13.0)
+                                .color(app.theme.palette.foreground.gamma_multiply(0.4))
+                                .font(egui::FontId::monospace(13.0)),
+                        );
+                    }
+                });
+                // trailing star
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let sr = ui
+                        .allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover())
+                        .0;
+                    crate::icons::paint(
+                        ui.painter(),
+                        sr,
+                        crate::icons::Icon::Star,
+                        crate::theme::TEXT_MUTED,
+                    );
+                });
+                let rect = resp.response.rect;
+                if resp.response.interact(egui::Sense::click()).clicked() {
+                    app.omnibox.set_input(display_for_highlight.clone());
+                    app.omnibox.request_focus();
+                }
+                rect
+            })
+            .inner;
+        let foc = false;
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(egui::Id::new("omnibox_rect"), r);
+            d.insert_temp(egui::Id::new("omnibox_focused"), foc);
+        });
+        app.omnibox.focused = foc;
+        ui.painter().rect_stroke(
+            r,
+            crate::theme::CORNER_OMNIBOX,
+            egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE),
+            egui::StrokeKind::Inside,
+        );
+        (foc, r)
+    } else {
+        let field = egui::Frame::default()
+            .fill(app.theme.palette.surface_2)
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(crate::theme::CORNER_OMNIBOX)
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_min_size(egui::vec2(avail, 32.0));
+                ui.set_max_width(avail);
+                ui.horizontal(|ui| {
+                    let lr = ui
+                        .allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover())
+                        .0;
+                    crate::icons::paint(ui.painter(), lr, sec_icon, sec_color);
+                    ui.add_space(6.0);
+                    let mut input = app.omnibox.input.clone();
+                    let wants_focus = app.omnibox.consume_focus();
+                    if input == "ferrite://newtab" {
+                        input.clear();
+                    }
+                    let resp = egui::TextEdit::singleline(&mut input)
+                        .font(egui::TextStyle::Monospace)
+                        .id_salt("ferrite_omnibox_input")
+                        .hint_text("Search or enter URL (Ctrl+L)")
+                        .desired_width((avail - 60.0).max(200.0))
+                        .show(ui);
+                    if wants_focus {
+                        resp.response.request_focus();
+                    }
+                    if resp.response.changed() {
+                        app.omnibox.set_input(input.clone());
+                    }
+                    // trailing star + clear
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let sr = ui
+                            .allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover())
+                            .0;
+                        crate::icons::paint(
+                            ui.painter(),
+                            sr,
+                            crate::icons::Icon::Star,
+                            crate::theme::TEXT_MUTED,
+                        );
+                        if !input.is_empty() {
+                            let cr = ui
+                                .allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click())
+                                .0;
+                            let (cr_rect, c_resp) = (
+                                cr,
+                                ui.interact(
+                                    cr,
+                                    egui::Id::new("omnibox_clear"),
+                                    egui::Sense::click(),
+                                ),
+                            );
+                            crate::icons::paint(
+                                ui.painter(),
+                                cr_rect,
+                                crate::icons::Icon::X,
+                                crate::theme::TEXT_MUTED,
+                            );
+                            if c_resp.clicked() {
+                                app.omnibox.clear();
+                            }
+                        }
+                    });
+                    (resp, input)
+                })
+                .inner
+            });
+        let (resp, _input) = field.inner;
+        let foc = resp.response.has_focus();
+        let r = resp.response.rect;
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(egui::Id::new("omnibox_rect"), r);
+            d.insert_temp(egui::Id::new("omnibox_focused"), foc);
+        });
+        app.omnibox.focused = foc;
+        ui.painter().rect_stroke(
+            r,
+            crate::theme::CORNER_OMNIBOX,
+            egui::Stroke::new(
+                1.0,
+                if foc {
+                    crate::theme::BORDER_ACTIVE
+                } else {
+                    crate::theme::BORDER_SUBTLE
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        if foc && !focused_prev {
+            let id = resp.response.id;
+            let mut st = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            let len = app.omnibox.input.chars().count();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(len),
+            )));
+            egui::TextEdit::store_state(ui.ctx(), id, st);
+        }
+        (foc, r)
+    };
+    let _ = rect;
+    // engine selector small pill after omnibox
+    let trigger_resp = ui.add(
+        egui::Button::new(
+            RichText::new(format!("v {}", app.omnibox.registry.current().name))
+                .size(11.0)
+                .font(egui::FontId::monospace(11.0)),
+        )
+        .fill(app.theme.palette.surface_2)
+        .corner_radius(crate::theme::CORNER_OMNIBOX)
+        .min_size(egui::vec2(64.0, 28.0)),
+    );
+    if trigger_resp.clicked() {
+        pop_open = !pop_open;
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(engine_popover_id, pop_open));
+    }
+    if pop_open {
+        let below = trigger_resp.rect.left_bottom() + egui::vec2(0.0, 4.0);
+        let mut keep_open = true;
+        egui::Area::new(egui::Id::new("engine_popover_panel"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(below)
+            .show(ui.ctx(), |inner| {
+                egui::Frame::default()
+                    .fill(app.theme.palette.surface_2)
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE))
+                    .corner_radius(crate::theme::CORNER_SM)
+                    .inner_margin(egui::Margin::same(4))
+                    .show(inner, |panel| {
+                        let engines = app.omnibox.registry.all();
+                        for (i, engine) in engines.iter().enumerate() {
+                            let selected = app.omnibox.registry.current_id() == engine.id;
+                            let row = panel.add_enabled(
+                                true,
+                                egui::Button::new(
+                                    RichText::new(engine.name)
+                                        .size(12.5)
+                                        .font(egui::FontId::monospace(12.5)),
+                                )
+                                .fill(if selected {
+                                    app.theme.palette.surface_3
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                })
+                                .corner_radius(crate::theme::CORNER_SM)
+                                .min_size(egui::vec2(150.0, 20.0)),
+                            );
+                            if row.clicked() {
+                                let prev_input = app.omnibox.input.clone();
+                                let _ = app.omnibox.registry.set_current(engine.id);
+                                persist_omnibox_engine(engine.id);
+                                if !prev_input.trim().is_empty() {
+                                    if let Ok(url) = app.omnibox.url_for_input(&prev_input) {
+                                        if let Some(tab) = app.tabs.active_tab_mut() {
+                                            let _ = tab.load_url(url.clone());
+                                            app.autocomplete.insert(
+                                                url,
+                                                prev_input,
+                                                std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .map(|d| d.as_millis() as i64)
+                                                    .unwrap_or(0),
+                                            );
+                                        }
+                                    }
+                                }
+                                keep_open = false;
+                            }
+                            if i + 1 < engines.len() {
+                                let sep_rect = egui::Rect::from_min_size(
+                                    panel.cursor().left_bottom(),
+                                    egui::vec2(panel.available_width(), 1.0),
+                                );
+                                panel.allocate_rect(sep_rect, egui::Sense::hover());
+                                panel.painter().rect_filled(
+                                    sep_rect,
+                                    0.0,
+                                    crate::theme::BORDER_SUBTLE,
+                                );
+                            }
+                        }
+                    });
+            });
+        if !keep_open
+            || trigger_resp.clicked_elsewhere()
+            || ui.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(engine_popover_id, false));
+        }
+    }
+    let now_i = std::time::Instant::now();
+    let effective = app
+        .omnibox
+        .effective_query(now_i)
+        .map(str::to_owned)
+        .unwrap_or_default();
+    let suggestions = if effective.is_empty() {
+        Vec::new()
+    } else {
+        app.autocomplete.query(&effective, 5)
+    };
+    let sel_id = egui::Id::new("omni_sug_sel");
+    let mut sel = ui.ctx().data(|d| d.get_temp::<usize>(sel_id)).unwrap_or(0);
+    if !suggestions.is_empty() {
+        sel = sel.min(suggestions.len() - 1);
+    }
+    if focused_now {
+        let (up, down) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::ArrowDown),
+            )
+        });
+        if (!suggestions.is_empty()) && (up || down) {
+            if up {
+                sel = sel.saturating_sub(1);
+            } else {
+                sel = (sel + 1).min(suggestions.len() - 1);
+            }
+            ui.ctx().data_mut(|d| d.insert_temp(sel_id, sel));
+        }
+    }
+    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let submit_via_lost_focus = enter_pressed && !focused_now && focused_prev;
+    let pick_suggestion = |app: &mut AppContext, url: String, title: String| {
+        if let Some(tab) = app.tabs.active_tab_mut() {
+            if let Err(e) = tab.load_url(url.clone()) {
+                debug!(error = %e, "suggestion navigation failed");
+            }
+        } else {
+            open_tab(&mut app.tabs, window, url.clone());
+        }
+        app.autocomplete.insert(
+            url,
+            title,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        );
+        app.omnibox.clear();
+    };
+    if enter_pressed && focused_now && !suggestions.is_empty() && sel < suggestions.len() {
+        let sug = suggestions[sel].clone();
+        pick_suggestion(app, sug.url, sug.title);
+    } else if submit_via_lost_focus {
+        let raw = app.omnibox.input.clone();
+        if let Ok(action) = app.omnibox.classify(&raw) {
+            let url = match action {
+                OmniboxAction::Navigate { url } => url,
+                OmniboxAction::Search { search_url, .. } => search_url,
+                OmniboxAction::Internal { uri } => uri,
+            };
+            pick_suggestion(app, url, raw);
+        }
+    }
+    // OmniboxPopupView — Area Foreground anchored, 320-720 pill width, 32px rows
+    if !suggestions.is_empty() && focused_now {
+        let w = if rect.width().is_finite() {
+            rect.width().clamp(320.0, 720.0)
+        } else {
+            520.0
+        };
+        let pos = rect.left_bottom() + egui::vec2(0.0, 4.0);
+        let mut clicked_idx: Option<usize> = None;
+        egui::Area::new(egui::Id::new("omnibox_suggestions"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(app.theme.palette.surface_2)
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE))
+                    .corner_radius(crate::theme::CORNER_SM)
+                    .inner_margin(egui::Margin::symmetric(0, 4))
+                    .show(ui, |ui| {
+                        ui.set_min_size(egui::vec2(w, 0.0));
+                        for (i, sug) in suggestions.iter().enumerate() {
+                            let is_sel = i == sel;
+                            let row_resp = ui
+                                .allocate_ui_with_layout(
+                                    egui::vec2(w, 32.0),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        if is_sel {
+                                            let bar_rect =
+                                                ui.allocate_space(egui::vec2(3.0, 28.0)).1;
+                                            ui.painter().rect_filled(
+                                                bar_rect,
+                                                0.0,
+                                                app.theme.resolved_interactive_accent(),
+                                            );
+                                            ui.add_space(4.0);
+                                        } else {
+                                            ui.add_space(7.0);
+                                        }
+                                        let icon_r = ui
+                                            .allocate_exact_size(
+                                                egui::vec2(16.0, 16.0),
+                                                egui::Sense::hover(),
+                                            )
+                                            .0;
+                                        crate::icons::paint(
+                                            ui.painter(),
+                                            icon_r,
+                                            crate::icons::Icon::Clock,
+                                            crate::theme::TEXT_MUTED,
+                                        );
+                                        ui.add_space(4.0);
+                                        ui.vertical(|ui| {
+                                            ui.add_space(2.0);
+                                            let title_color = if is_sel {
+                                                app.theme.palette.foreground
+                                            } else {
+                                                app.theme.palette.foreground.gamma_multiply(0.9)
+                                            };
+                                            ui.label(
+                                                RichText::new(&sug.title)
+                                                    .size(13.0)
+                                                    .color(title_color)
+                                                    .font(egui::FontId::monospace(13.0)),
+                                            );
+                                            if sug.url != sug.title && !sug.url.is_empty() {
+                                                ui.label(
+                                                    RichText::new(&sug.url)
+                                                        .size(11.0)
+                                                        .color(crate::theme::TEXT_MUTED)
+                                                        .font(egui::FontId::monospace(11.0)),
+                                                );
+                                            }
+                                        });
+                                    },
+                                )
+                                .response;
+                            let row_rect = row_resp.rect;
+                            let row_interact = ui.allocate_rect(row_rect, egui::Sense::click());
+                            if row_interact.clicked() {
+                                clicked_idx = Some(i);
+                            }
+                            if is_sel || row_interact.hovered() {
+                                let bg = if is_sel {
+                                    app.theme.palette.surface_3
+                                } else {
+                                    app.theme.palette.surface_3.gamma_multiply(0.3)
+                                };
+                                ui.painter()
+                                    .rect_filled(row_rect, crate::theme::CORNER_SM, bg);
+                            }
+                            if i + 1 < suggestions.len() {
+                                let sep_y = row_rect.bottom();
+                                ui.painter().line_segment(
+                                    [
+                                        egui::pos2(row_rect.left() + 16.0, sep_y),
+                                        egui::pos2(row_rect.right(), sep_y),
+                                    ],
+                                    egui::Stroke::new(0.5, crate::theme::BORDER_SUBTLE),
+                                );
+                            }
+                        }
+                    });
+            });
+        if let Some(idx) = clicked_idx {
+            if let Some(sug) = suggestions.get(idx) {
+                pick_suggestion(app, sug.url.clone(), sug.title.clone());
+            }
+        }
+    }
+}
+
+fn build_shell_ui(
+    ui: &mut Ui,
+    app: &mut AppContext,
+    window: &Window,
+    scale: f64,
+    logical: PhysicalSize<f32>,
+    frame_secs: f32,
+    diagnostics: bool,
+    proxy_requests: u64,
+    proxy_dropped: u64,
+    proxy_alive: bool,
+    fail_open_count: u64,
+    downloads_seen: usize,
+    last_download: Option<String>,
+    content_rect_cell: &Cell<Option<Rect>>,
+    tab_search_open: &mut bool,
+    tab_search_query: &mut String,
+) {
+    draw_tab_bar(ui, app, window, scale, content_rect_cell);
     egui::Panel::top("omnibox_bar")
         .frame(
             egui::Frame::default()
@@ -1342,1230 +2567,33 @@ fn build_shell_ui(
         )
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
-                let can_back = app
-                    .tabs
-                    .active_tab()
-                    .map(|t| t.can_go_back())
-                    .unwrap_or(false);
-                let can_forward = app
-                    .tabs
-                    .active_tab()
-                    .map(|t| t.can_go_forward())
-                    .unwrap_or(false);
-                let is_loading = app.tabs.active_tab().map(|t| t.is_loading).unwrap_or(false);
-                ui.add_enabled_ui(can_back, |ui| {
-                    let r = crate::icons::button(
-                        ui,
-                        egui::vec2(32.0, 28.0),
-                        crate::icons::Icon::ArrowLeft,
-                        app.theme.palette.foreground,
-                        app.theme.palette.surface_2,
-                    )
-                    .on_hover_text("Back (Alt+←)");
-                    if r.clicked() {
-                        if let Some(tab) = app.tabs.active_tab_mut() {
-                            if let Some(url) = tab.go_back() {
-                                let u = url.clone();
-                                if let Err(e) = tab.load_traversal(u.clone()) {
-                                    debug!(error = %e, "back traversal failed");
-                                }
-                                app.autocomplete.insert(
-                                    u,
-                                    tab.title.clone(),
-                                    std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_millis() as i64)
-                                        .unwrap_or(0),
-                                );
-                            }
-                        }
-                    }
-                });
-                ui.add_enabled_ui(can_forward, |ui| {
-                    let r = crate::icons::button(
-                        ui,
-                        egui::vec2(32.0, 28.0),
-                        crate::icons::Icon::ArrowRight,
-                        app.theme.palette.foreground,
-                        app.theme.palette.surface_2,
-                    )
-                    .on_hover_text("Forward (Alt+→)");
-                    if r.clicked() {
-                        if let Some(tab) = app.tabs.active_tab_mut() {
-                            if let Some(url) = tab.go_forward() {
-                                if let Err(e) = tab.load_traversal(url) {
-                                    debug!(error = %e, "forward traversal failed");
-                                }
-                            }
-                        }
-                    }
-                });
-                // Reload / Stop
-                let (reload_icon, reload_tip, reload_fg) = if is_loading {
-                    (
-                        crate::icons::Icon::X,
-                        "Stop (Esc)",
-                        app.theme.palette.accent_danger,
-                    )
-                } else {
-                    (
-                        crate::icons::Icon::RotateCw,
-                        "Reload (Ctrl+R)",
-                        app.theme.palette.foreground,
-                    )
-                };
-                let rr = crate::icons::button(
-                    ui,
-                    egui::vec2(32.0, 28.0),
-                    reload_icon,
-                    reload_fg,
-                    app.theme.palette.surface_2,
-                )
-                .on_hover_text(reload_tip);
-                if rr.clicked() {
-                    if is_loading {
-                        if let Some(tab) = app.tabs.active_tab_mut() {
-                            if let Err(e) = tab.stop() {
-                                debug!(error = %e, "stop failed");
-                            }
-                        }
-                    } else if let Some(tab) = app.tabs.active_tab_mut() {
-                        let _ = tab.set_visible(true);
-                        if let Err(e) = tab.reload() {
-                            debug!(error = %e, "reload failed");
-                        }
-                    }
-                }
-                let hr = crate::icons::button(
-                    ui,
-                    egui::vec2(32.0, 28.0),
-                    crate::icons::Icon::House,
-                    app.theme.palette.foreground,
-                    app.theme.palette.surface_2,
-                )
-                .on_hover_text("Home (ferrite://newtab)");
-                if hr.clicked() {
-                    if let Some(tab) = app.tabs.active_tab_mut() {
-                        let _ = tab.load_url("ferrite://newtab".to_owned());
-                    } else {
-                        open_tab(&mut app.tabs, window, "ferrite://newtab".to_owned());
-                    }
-                    app.omnibox.clear();
-                    app.omnibox.request_focus();
-                }
-                ui.add_space(4.0);
-                // ── Omnibox pill — Chrome 32h 16r SURFACE_2 flex 320-720 centered ──
-                let avail_raw = ui.available_width();
-                let avail = if avail_raw.is_finite() {
-                    (avail_raw - 140.0).clamp(320.0, 720.0)
-                } else {
-                    520.0
-                };
-                // engine popover state
-                let engine_popover_id = egui::Id::new("engine_popover_open");
-                let mut pop_open = ui
-                    .ctx()
-                    .data(|d| d.get_temp::<bool>(engine_popover_id))
-                    .unwrap_or(false);
-                let focused_prev = ui
-                    .ctx()
-                    .data(|d| d.get_temp::<bool>(egui::Id::new("omnibox_focused")))
-                    .unwrap_or(false);
-                let active_url_raw = app.tabs.active_tab().map(|t| t.url.as_str()).unwrap_or("");
-                let display_for_highlight =
-                    if active_url_raw == "ferrite://newtab" || active_url_raw.is_empty() {
-                        String::new()
-                    } else {
-                        active_url_raw.to_owned()
-                    };
-                let should_highlight = !focused_prev
-                    && app.omnibox.input.is_empty()
-                    && !display_for_highlight.is_empty();
-                // security for leading icon
-                let sec_is_internal = active_url_raw.starts_with("ferrite://");
-                let sec_is_https = active_url_raw.starts_with("https://");
-                let sec_icon = if sec_is_internal {
-                    crate::icons::Icon::Shield
-                } else if sec_is_https {
-                    crate::icons::Icon::Lock
-                } else {
-                    crate::icons::Icon::Info
-                };
-                let sec_color = if sec_is_internal {
-                    app.theme.palette.accent_interactive
-                } else if sec_is_https {
-                    crate::theme::TEXT_SECONDARY
-                } else {
-                    crate::theme::TEXT_MUTED
-                };
-                let (focused_now, rect) = if should_highlight {
-                    let r = egui::Frame::default()
-                        .fill(app.theme.palette.surface_2)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(crate::theme::CORNER_OMNIBOX)
-                        .inner_margin(egui::Margin::symmetric(10, 6))
-                        .show(ui, |ui| {
-                            ui.set_min_size(egui::vec2(avail, 32.0));
-                            ui.set_max_width(avail);
-                            let lr = ui
-                                .allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover())
-                                .0;
-                            crate::icons::paint(ui.painter(), lr, sec_icon, sec_color);
-                            ui.add_space(6.0);
-                            let parsed = url::Url::parse(&display_for_highlight).ok();
-                            let host = parsed.as_ref().and_then(|u| u.host_str()).unwrap_or("");
-                            let scheme = parsed
-                                .as_ref()
-                                .map(|u| u.scheme().to_owned())
-                                .unwrap_or_default();
-                            let path = parsed
-                                .as_ref()
-                                .map(|u| {
-                                    format!(
-                                        "{}{}",
-                                        u.path(),
-                                        u.query().map(|q| format!("?{q}")).unwrap_or_default()
-                                    )
-                                })
-                                .unwrap_or_default();
-                            let domain_hl = {
-                                let parts: Vec<&str> = host.split('.').collect();
-                                if parts.len() >= 2 {
-                                    format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
-                                } else {
-                                    host.to_owned()
-                                }
-                            };
-                            let resp = ui.horizontal(|ui| {
-                                if !scheme.is_empty() {
-                                    ui.label(
-                                        RichText::new(format!("{}://", scheme))
-                                            .size(13.0)
-                                            .color(app.theme.palette.foreground.gamma_multiply(0.5))
-                                            .font(egui::FontId::monospace(13.0)),
-                                    );
-                                }
-                                if !domain_hl.is_empty() {
-                                    let sub = if host.len() > domain_hl.len() {
-                                        host[..host.len() - domain_hl.len()].to_owned()
-                                    } else {
-                                        String::new()
-                                    };
-                                    if !sub.is_empty() {
-                                        ui.label(
-                                            RichText::new(sub)
-                                                .size(13.0)
-                                                .color(
-                                                    app.theme
-                                                        .palette
-                                                        .foreground
-                                                        .gamma_multiply(0.5),
-                                                )
-                                                .font(egui::FontId::monospace(13.0)),
-                                        );
-                                    }
-                                    ui.label(
-                                        RichText::new(domain_hl)
-                                            .size(13.0)
-                                            .color(app.theme.palette.foreground)
-                                            .font(egui::FontId::monospace(13.0)),
-                                    );
-                                } else if !host.is_empty() {
-                                    ui.label(
-                                        RichText::new(host)
-                                            .size(13.0)
-                                            .color(app.theme.palette.foreground)
-                                            .font(egui::FontId::monospace(13.0)),
-                                    );
-                                }
-                                if !path.is_empty() && path != "/" {
-                                    ui.label(
-                                        RichText::new(path)
-                                            .size(13.0)
-                                            .color(app.theme.palette.foreground.gamma_multiply(0.5))
-                                            .font(egui::FontId::monospace(13.0)),
-                                    );
-                                }
-                                if display_for_highlight.is_empty() {
-                                    ui.label(
-                                        RichText::new("Search or enter URL (Ctrl+L)")
-                                            .size(13.0)
-                                            .color(app.theme.palette.foreground.gamma_multiply(0.4))
-                                            .font(egui::FontId::monospace(13.0)),
-                                    );
-                                }
-                            });
-                            // trailing star
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let sr = ui
-                                        .allocate_exact_size(
-                                            egui::vec2(20.0, 20.0),
-                                            egui::Sense::hover(),
-                                        )
-                                        .0;
-                                    crate::icons::paint(
-                                        ui.painter(),
-                                        sr,
-                                        crate::icons::Icon::Star,
-                                        crate::theme::TEXT_MUTED,
-                                    );
-                                },
-                            );
-                            let rect = resp.response.rect;
-                            if resp.response.interact(egui::Sense::click()).clicked() {
-                                app.omnibox.set_input(display_for_highlight.clone());
-                                app.omnibox.request_focus();
-                            }
-                            rect
-                        })
-                        .inner;
-                    let foc = false;
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(egui::Id::new("omnibox_rect"), r);
-                        d.insert_temp(egui::Id::new("omnibox_focused"), foc);
-                    });
-                    app.omnibox.focused = foc;
-                    ui.painter().rect_stroke(
-                        r,
-                        crate::theme::CORNER_OMNIBOX,
-                        egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE),
-                        egui::StrokeKind::Inside,
-                    );
-                    (foc, r)
-                } else {
-                    let field = egui::Frame::default()
-                        .fill(app.theme.palette.surface_2)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(crate::theme::CORNER_OMNIBOX)
-                        .inner_margin(egui::Margin::symmetric(10, 6))
-                        .show(ui, |ui| {
-                            ui.set_min_size(egui::vec2(avail, 32.0));
-                            ui.set_max_width(avail);
-                            ui.horizontal(|ui| {
-                                let lr = ui
-                                    .allocate_exact_size(
-                                        egui::vec2(18.0, 18.0),
-                                        egui::Sense::hover(),
-                                    )
-                                    .0;
-                                crate::icons::paint(ui.painter(), lr, sec_icon, sec_color);
-                                ui.add_space(6.0);
-                                let mut input = app.omnibox.input.clone();
-                                let wants_focus = app.omnibox.consume_focus();
-                                if input == "ferrite://newtab" {
-                                    input.clear();
-                                }
-                                let resp = egui::TextEdit::singleline(&mut input)
-                                    .font(egui::TextStyle::Monospace)
-                                    .id_salt("ferrite_omnibox_input")
-                                    .hint_text("Search or enter URL (Ctrl+L)")
-                                    .desired_width((avail - 60.0).max(200.0))
-                                    .show(ui);
-                                if wants_focus {
-                                    resp.response.request_focus();
-                                }
-                                if resp.response.changed() {
-                                    app.omnibox.set_input(input.clone());
-                                }
-                                // trailing star + clear
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let sr = ui
-                                            .allocate_exact_size(
-                                                egui::vec2(20.0, 20.0),
-                                                egui::Sense::hover(),
-                                            )
-                                            .0;
-                                        crate::icons::paint(
-                                            ui.painter(),
-                                            sr,
-                                            crate::icons::Icon::Star,
-                                            crate::theme::TEXT_MUTED,
-                                        );
-                                        if !input.is_empty() {
-                                            let cr = ui
-                                                .allocate_exact_size(
-                                                    egui::vec2(18.0, 18.0),
-                                                    egui::Sense::click(),
-                                                )
-                                                .0;
-                                            let (cr_rect, c_resp) = (
-                                                cr,
-                                                ui.interact(
-                                                    cr,
-                                                    egui::Id::new("omnibox_clear"),
-                                                    egui::Sense::click(),
-                                                ),
-                                            );
-                                            crate::icons::paint(
-                                                ui.painter(),
-                                                cr_rect,
-                                                crate::icons::Icon::X,
-                                                crate::theme::TEXT_MUTED,
-                                            );
-                                            if c_resp.clicked() {
-                                                app.omnibox.clear();
-                                            }
-                                        }
-                                    },
-                                );
-                                (resp, input)
-                            })
-                            .inner
-                        });
-                    let (resp, _input) = field.inner;
-                    let foc = resp.response.has_focus();
-                    let r = resp.response.rect;
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(egui::Id::new("omnibox_rect"), r);
-                        d.insert_temp(egui::Id::new("omnibox_focused"), foc);
-                    });
-                    app.omnibox.focused = foc;
-                    ui.painter().rect_stroke(
-                        r,
-                        crate::theme::CORNER_OMNIBOX,
-                        egui::Stroke::new(
-                            1.0,
-                            if foc {
-                                crate::theme::BORDER_ACTIVE
-                            } else {
-                                crate::theme::BORDER_SUBTLE
-                            },
-                        ),
-                        egui::StrokeKind::Inside,
-                    );
-                    if foc && !focused_prev {
-                        let id = resp.response.id;
-                        let mut st = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-                        let len = app.omnibox.input.chars().count();
-                        st.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                            egui::text::CCursor::new(0),
-                            egui::text::CCursor::new(len),
-                        )));
-                        egui::TextEdit::store_state(ui.ctx(), id, st);
-                    }
-                    (foc, r)
-                };
-                let _ = rect;
-                // engine selector small pill after omnibox
-                let trigger_resp = ui.add(
-                    egui::Button::new(
-                        RichText::new(format!("v {}", app.omnibox.registry.current().name))
-                            .size(11.0)
-                            .font(egui::FontId::monospace(11.0)),
-                    )
-                    .fill(app.theme.palette.surface_2)
-                    .corner_radius(crate::theme::CORNER_OMNIBOX)
-                    .min_size(egui::vec2(64.0, 28.0)),
-                );
-                if trigger_resp.clicked() {
-                    pop_open = !pop_open;
-                    ui.ctx()
-                        .data_mut(|d| d.insert_temp(engine_popover_id, pop_open));
-                }
-                if pop_open {
-                    let below = trigger_resp.rect.left_bottom() + egui::vec2(0.0, 4.0);
-                    let mut keep_open = true;
-                    egui::Area::new(egui::Id::new("engine_popover_panel"))
-                        .order(egui::Order::Foreground)
-                        .fixed_pos(below)
-                        .show(ui.ctx(), |inner| {
-                            egui::Frame::default()
-                                .fill(app.theme.palette.surface_2)
-                                .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE))
-                                .corner_radius(crate::theme::CORNER_SM)
-                                .inner_margin(egui::Margin::same(4))
-                                .show(inner, |panel| {
-                                    let engines = app.omnibox.registry.all();
-                                    for (i, engine) in engines.iter().enumerate() {
-                                        let selected =
-                                            app.omnibox.registry.current_id() == engine.id;
-                                        let row = panel.add_enabled(
-                                            true,
-                                            egui::Button::new(
-                                                RichText::new(engine.name)
-                                                    .size(12.5)
-                                                    .font(egui::FontId::monospace(12.5)),
-                                            )
-                                            .fill(if selected {
-                                                app.theme.palette.surface_3
-                                            } else {
-                                                egui::Color32::TRANSPARENT
-                                            })
-                                            .corner_radius(crate::theme::CORNER_SM)
-                                            .min_size(egui::vec2(150.0, 20.0)),
-                                        );
-                                        if row.clicked() {
-                                            let prev_input = app.omnibox.input.clone();
-                                            let _ = app.omnibox.registry.set_current(engine.id);
-                                            persist_omnibox_engine(engine.id);
-                                            if !prev_input.trim().is_empty() {
-                                                if let Ok(url) =
-                                                    app.omnibox.url_for_input(&prev_input)
-                                                {
-                                                    if let Some(tab) = app.tabs.active_tab_mut() {
-                                                        let _ = tab.load_url(url.clone());
-                                                        app.autocomplete.insert(
-                                                            url,
-                                                            prev_input,
-                                                            std::time::SystemTime::now()
-                                                                .duration_since(
-                                                                    std::time::UNIX_EPOCH,
-                                                                )
-                                                                .map(|d| d.as_millis() as i64)
-                                                                .unwrap_or(0),
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                            keep_open = false;
-                                        }
-                                        if i + 1 < engines.len() {
-                                            let sep_rect = egui::Rect::from_min_size(
-                                                panel.cursor().left_bottom(),
-                                                egui::vec2(panel.available_width(), 1.0),
-                                            );
-                                            panel.allocate_rect(sep_rect, egui::Sense::hover());
-                                            panel.painter().rect_filled(
-                                                sep_rect,
-                                                0.0,
-                                                crate::theme::BORDER_SUBTLE,
-                                            );
-                                        }
-                                    }
-                                });
-                        });
-                    if !keep_open
-                        || trigger_resp.clicked_elsewhere()
-                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                    {
-                        ui.ctx()
-                            .data_mut(|d| d.insert_temp(engine_popover_id, false));
-                    }
-                }
-                let now_i = std::time::Instant::now();
-                let effective = app
-                    .omnibox
-                    .effective_query(now_i)
-                    .map(str::to_owned)
-                    .unwrap_or_default();
-                let suggestions = if effective.is_empty() {
-                    Vec::new()
-                } else {
-                    app.autocomplete.query(&effective, 5)
-                };
-                let sel_id = egui::Id::new("omni_sug_sel");
-                let mut sel = ui.ctx().data(|d| d.get_temp::<usize>(sel_id)).unwrap_or(0);
-                if !suggestions.is_empty() {
-                    sel = sel.min(suggestions.len() - 1);
-                }
-                if focused_now {
-                    let (up, down) = ui.input(|i| {
-                        (
-                            i.key_pressed(egui::Key::ArrowUp),
-                            i.key_pressed(egui::Key::ArrowDown),
-                        )
-                    });
-                    if (!suggestions.is_empty()) && (up || down) {
-                        if up {
-                            sel = sel.saturating_sub(1);
-                        } else {
-                            sel = (sel + 1).min(suggestions.len() - 1);
-                        }
-                        ui.ctx().data_mut(|d| d.insert_temp(sel_id, sel));
-                    }
-                }
-                let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let submit_via_lost_focus = enter_pressed && !focused_now && focused_prev;
-                let pick_suggestion = |app: &mut AppContext, url: String, title: String| {
-                    if let Some(tab) = app.tabs.active_tab_mut() {
-                        if let Err(e) = tab.load_url(url.clone()) {
-                            debug!(error = %e, "suggestion navigation failed");
-                        }
-                    } else {
-                        open_tab(&mut app.tabs, window, url.clone());
-                    }
-                    app.autocomplete.insert(
-                        url,
-                        title,
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as i64)
-                            .unwrap_or(0),
-                    );
-                    app.omnibox.clear();
-                };
-                if enter_pressed
-                    && focused_now
-                    && !suggestions.is_empty()
-                    && sel < suggestions.len()
-                {
-                    let sug = suggestions[sel].clone();
-                    pick_suggestion(app, sug.url, sug.title);
-                } else if submit_via_lost_focus {
-                    let raw = app.omnibox.input.clone();
-                    if let Ok(action) = app.omnibox.classify(&raw) {
-                        let url = match action {
-                            OmniboxAction::Navigate { url } => url,
-                            OmniboxAction::Search { search_url, .. } => search_url,
-                            OmniboxAction::Internal { uri } => uri,
-                        };
-                        pick_suggestion(app, url, raw);
-                    }
-                }
-                // OmniboxPopupView — Area Foreground anchored, 320-720 pill width, 32px rows
-                if !suggestions.is_empty() && focused_now {
-                    let w = if rect.width().is_finite() {
-                        rect.width().clamp(320.0, 720.0)
-                    } else {
-                        520.0
-                    };
-                    let pos = rect.left_bottom() + egui::vec2(0.0, 4.0);
-                    let mut clicked_idx: Option<usize> = None;
-                    egui::Area::new(egui::Id::new("omnibox_suggestions"))
-                        .fixed_pos(pos)
-                        .order(egui::Order::Foreground)
-                        .show(ui.ctx(), |ui| {
-                            egui::Frame::default()
-                                .fill(app.theme.palette.surface_2)
-                                .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE))
-                                .corner_radius(crate::theme::CORNER_SM)
-                                .inner_margin(egui::Margin::symmetric(0, 4))
-                                .show(ui, |ui| {
-                                    ui.set_min_size(egui::vec2(w, 0.0));
-                                    for (i, sug) in suggestions.iter().enumerate() {
-                                        let is_sel = i == sel;
-                                        let row_resp = ui
-                                            .allocate_ui_with_layout(
-                                                egui::vec2(w, 32.0),
-                                                egui::Layout::left_to_right(egui::Align::Center),
-                                                |ui| {
-                                                    if is_sel {
-                                                        let bar_rect = ui
-                                                            .allocate_space(egui::vec2(3.0, 28.0))
-                                                            .1;
-                                                        ui.painter().rect_filled(
-                                                            bar_rect,
-                                                            0.0,
-                                                            app.theme.resolved_interactive_accent(),
-                                                        );
-                                                        ui.add_space(4.0);
-                                                    } else {
-                                                        ui.add_space(7.0);
-                                                    }
-                                                    let icon_r = ui
-                                                        .allocate_exact_size(
-                                                            egui::vec2(16.0, 16.0),
-                                                            egui::Sense::hover(),
-                                                        )
-                                                        .0;
-                                                    crate::icons::paint(
-                                                        ui.painter(),
-                                                        icon_r,
-                                                        crate::icons::Icon::Clock,
-                                                        crate::theme::TEXT_MUTED,
-                                                    );
-                                                    ui.add_space(4.0);
-                                                    ui.vertical(|ui| {
-                                                        ui.add_space(2.0);
-                                                        let title_color = if is_sel {
-                                                            app.theme.palette.foreground
-                                                        } else {
-                                                            app.theme
-                                                                .palette
-                                                                .foreground
-                                                                .gamma_multiply(0.9)
-                                                        };
-                                                        ui.label(
-                                                            RichText::new(&sug.title)
-                                                                .size(13.0)
-                                                                .color(title_color)
-                                                                .font(egui::FontId::monospace(
-                                                                    13.0,
-                                                                )),
-                                                        );
-                                                        if sug.url != sug.title
-                                                            && !sug.url.is_empty()
-                                                        {
-                                                            ui.label(
-                                                                RichText::new(&sug.url)
-                                                                    .size(11.0)
-                                                                    .color(crate::theme::TEXT_MUTED)
-                                                                    .font(egui::FontId::monospace(
-                                                                        11.0,
-                                                                    )),
-                                                            );
-                                                        }
-                                                    });
-                                                },
-                                            )
-                                            .response;
-                                        let row_rect = row_resp.rect;
-                                        let row_interact =
-                                            ui.allocate_rect(row_rect, egui::Sense::click());
-                                        if row_interact.clicked() {
-                                            clicked_idx = Some(i);
-                                        }
-                                        if is_sel || row_interact.hovered() {
-                                            let bg = if is_sel {
-                                                app.theme.palette.surface_3
-                                            } else {
-                                                app.theme.palette.surface_3.gamma_multiply(0.3)
-                                            };
-                                            ui.painter().rect_filled(
-                                                row_rect,
-                                                crate::theme::CORNER_SM,
-                                                bg,
-                                            );
-                                        }
-                                        if i + 1 < suggestions.len() {
-                                            let sep_y = row_rect.bottom();
-                                            ui.painter().line_segment(
-                                                [
-                                                    egui::pos2(row_rect.left() + 16.0, sep_y),
-                                                    egui::pos2(row_rect.right(), sep_y),
-                                                ],
-                                                egui::Stroke::new(0.5, crate::theme::BORDER_SUBTLE),
-                                            );
-                                        }
-                                    }
-                                });
-                        });
-                    if let Some(idx) = clicked_idx {
-                        if let Some(sug) = suggestions.get(idx) {
-                            pick_suggestion(app, sug.url.clone(), sug.title.clone());
-                        }
-                    }
-                }
+                draw_omnibox_contents(ui, app, window);
                 // ── Trailing cluster — Shield, Bookmark, Terminal, Menu (outside pill, 32×28) ──
-                ui.add_space(6.0);
-                let shield_id = egui::Id::new("shield_popover_open");
-                let mut shield_pop = ui
-                    .ctx()
-                    .data(|d| d.get_temp::<bool>(shield_id))
-                    .unwrap_or(false);
-                let shield_count = proxy_requests;
-                // Protection-degraded state (Part 4 spec): the choke is a
-                // promise, so proxy-down or any fail-open decision must be
-                // visible, never log-only.
-                let degraded = !proxy_alive || fail_open_count > 0;
-                let shield_fg = if degraded {
-                    crate::theme::ACCENT_DANGER
-                } else if shield_count > 0 {
-                    crate::theme::ACCENT_PRIMARY
-                } else {
-                    crate::theme::TEXT_MUTED
-                };
-                let shield_bg = if degraded {
-                    crate::theme::ACCENT_DANGER.gamma_multiply(0.12)
-                } else if shield_count > 0 {
-                    crate::theme::ACCENT_PRIMARY.gamma_multiply(0.12)
-                } else {
-                    app.theme.palette.surface_2
-                };
-                let (shield_rect, shield_resp) =
-                    ui.allocate_exact_size(egui::vec2(58.0, 28.0), egui::Sense::click());
-                {
-                    let bg = if shield_resp.is_pointer_button_down_on() {
-                        shield_bg.gamma_multiply(0.8)
-                    } else if shield_resp.hovered() {
-                        crate::theme::SURFACE_3
-                    } else {
-                        shield_bg
-                    };
-                    let stroke = if shield_resp.hovered() {
-                        egui::Stroke::new(1.0, crate::theme::BORDER_ACTIVE)
-                    } else {
-                        egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE)
-                    };
-                    ui.painter()
-                        .rect_filled(shield_rect, crate::theme::CORNER_SM, bg);
-                    ui.painter().rect_stroke(
-                        shield_rect,
-                        crate::theme::CORNER_SM,
-                        stroke,
-                        egui::StrokeKind::Inside,
-                    );
-                    let icon_rect = egui::Rect::from_center_size(
-                        egui::pos2(shield_rect.left() + 14.0, shield_rect.center().y),
-                        egui::vec2(20.0, 20.0),
-                    );
-                    crate::icons::paint(
-                        ui.painter(),
-                        icon_rect,
-                        if degraded {
-                            crate::icons::Icon::Shield
-                        } else if shield_count > 0 {
-                            crate::icons::Icon::ShieldCheck
-                        } else {
-                            crate::icons::Icon::Shield
-                        },
-                        shield_fg,
-                    );
-                    ui.painter().text(
-                        egui::pos2(shield_rect.right() - 8.0, shield_rect.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        format!("{}", shield_count),
-                        crate::theme::ThemeConfig::technical_label_font(10.0),
-                        shield_fg,
-                    );
-                }
-                if shield_resp
-                    .clone()
-                    .on_hover_text(if degraded {
-                        "Shield — protection degraded"
-                    } else {
-                        "Shield — blocked"
-                    })
-                    .clicked()
-                {
-                    shield_pop = !shield_pop;
-                    ui.ctx().data_mut(|d| d.insert_temp(shield_id, shield_pop));
-                }
-                let is_pinned = app
-                    .tabs
-                    .active_tab()
-                    .map(|t| t.is_archive_view)
-                    .unwrap_or(false);
-                let pin_resp = crate::icons::button(
-                    ui,
-                    egui::vec2(32.0, 28.0),
-                    if is_pinned {
-                        crate::icons::Icon::PinFilled
-                    } else {
-                        crate::icons::Icon::Bookmark
-                    },
-                    if is_pinned {
-                        app.theme.palette.accent_archive
-                    } else {
-                        crate::theme::TEXT_MUTED
-                    },
-                    if is_pinned {
-                        app.theme.palette.accent_archive.gamma_multiply(0.14)
-                    } else {
-                        app.theme.palette.surface_2
-                    },
-                )
-                .on_hover_text("Pin to Archive");
-                let _ = pin_resp.clicked();
-                let devtools_id = egui::Id::new("devtools_open");
-                let devtools_open = ui
-                    .ctx()
-                    .data(|d| d.get_temp::<bool>(devtools_id))
-                    .unwrap_or(false);
-                let dt_resp = crate::icons::button(
-                    ui,
-                    egui::vec2(32.0, 28.0),
-                    crate::icons::Icon::Terminal,
-                    if devtools_open {
-                        app.theme.resolved_interactive_accent()
-                    } else {
-                        crate::theme::TEXT_MUTED
-                    },
-                    if devtools_open {
-                        app.theme.resolved_interactive_accent().gamma_multiply(0.15)
-                    } else {
-                        app.theme.palette.surface_2
-                    },
-                )
-                .on_hover_text("Inspector F12");
-                if dt_resp.clicked() {
-                    ui.ctx()
-                        .data_mut(|d| d.insert_temp(devtools_id, !devtools_open));
-                }
-                let menu_id = egui::Id::new("menu_popover_open");
-                let mut menu_open = ui
-                    .ctx()
-                    .data(|d| d.get_temp::<bool>(menu_id))
-                    .unwrap_or(false);
-                let menu_resp = crate::icons::button(
-                    ui,
-                    egui::vec2(32.0, 28.0),
-                    crate::icons::Icon::Menu,
-                    crate::theme::TEXT_MUTED,
-                    app.theme.palette.surface_2,
-                )
-                .on_hover_text("Ferrite Menu");
-                if menu_resp.clicked() {
-                    menu_open = !menu_open;
-                    ui.ctx().data_mut(|d| d.insert_temp(menu_id, menu_open));
-                }
-                if shield_pop {
-                    let below = shield_rect.left_bottom() + egui::vec2(0.0, 4.0);
-                    egui::Area::new(egui::Id::new("shield_popover_panel"))
-                        .order(egui::Order::Foreground)
-                        .fixed_pos(below)
-                        .show(ui.ctx(), |inner| {
-                            egui::Frame::default()
-                                .fill(app.theme.palette.surface_2)
-                                .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE))
-                                .corner_radius(crate::theme::CORNER_SM)
-                                .inner_margin(egui::Margin::same(8))
-                                .show(inner, |panel| {
-                                    panel.set_min_size(egui::vec2(240.0, 0.0));
-                                    panel.label(
-                                        RichText::new("Privacy Protection")
-                                            .strong()
-                                            .size(13.0)
-                                            .color(app.theme.palette.foreground),
-                                    );
-                                    panel.add_space(4.0);
-                                    if degraded {
-                                        if !proxy_alive {
-                                            panel.label(
-                                                RichText::new("Proxy down — traffic is direct")
-                                                    .size(12.0)
-                                                    .color(crate::theme::ACCENT_DANGER)
-                                                    .font(egui::FontId::monospace(12.0)),
-                                            );
-                                        }
-                                        if fail_open_count > 0 {
-                                            panel.label(
-                                                RichText::new(format!(
-                                                    "{} fail-open decisions",
-                                                    fail_open_count
-                                                ))
-                                                .size(12.0)
-                                                .color(crate::theme::ACCENT_DANGER)
-                                                .font(egui::FontId::monospace(12.0)),
-                                            );
-                                        }
-                                        panel.add_space(4.0);
-                                    }
-                                    panel.label(
-                                        RichText::new(format!(
-                                            "{} requests blocked",
-                                            proxy_requests
-                                        ))
-                                        .size(12.0)
-                                        .color(crate::theme::TEXT_SECONDARY)
-                                        .font(egui::FontId::monospace(12.0)),
-                                    );
-                                    panel.add_space(4.0);
-                                    let sep_rect = egui::Rect::from_min_size(
-                                        panel.cursor().left_bottom(),
-                                        egui::vec2(panel.available_width(), 1.0),
-                                    );
-                                    panel.allocate_rect(sep_rect, egui::Sense::hover());
-                                    panel.painter().rect_filled(
-                                        sep_rect,
-                                        0.0,
-                                        crate::theme::BORDER_SUBTLE,
-                                    );
-                                    panel.add_space(4.0);
-                                    panel.label(
-                                        RichText::new(if degraded {
-                                            "Protection degraded — see above"
-                                        } else {
-                                            "Blockers active for this session"
-                                        })
-                                        .size(11.0)
-                                        .color(
-                                            if degraded {
-                                                crate::theme::ACCENT_DANGER
-                                            } else {
-                                                crate::theme::TEXT_MUTED
-                                            },
-                                        ),
-                                    );
-                                });
-                        });
-                    if shield_resp.clicked_elsewhere()
-                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                    {
-                        ui.ctx().data_mut(|d| d.insert_temp(shield_id, false));
-                    }
-                }
-                if menu_open {
-                    let below = menu_resp.rect.left_bottom() + egui::vec2(0.0, 4.0);
-                    egui::Area::new(egui::Id::new("menu_popover_panel"))
-                        .order(egui::Order::Foreground)
-                        .fixed_pos(below)
-                        .show(ui.ctx(), |inner| {
-                            egui::Frame::default()
-                                .fill(app.theme.palette.surface_2)
-                                .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE))
-                                .corner_radius(crate::theme::CORNER_SM)
-                                .inner_margin(egui::Margin::symmetric(0, 4))
-                                .show(inner, |panel| {
-                                    panel.set_min_size(egui::vec2(200.0, 0.0));
-                                    let items = [
-                                        ("New Tab", "Ctrl+T"),
-                                        ("New Window", ""),
-                                        ("---", ""),
-                                        ("History", ""),
-                                        ("Downloads", ""),
-                                        ("Bookmarks", ""),
-                                        ("---", ""),
-                                        ("Settings", ""),
-                                        ("Password Manager", ""),
-                                        ("Archive", ""),
-                                        ("---", ""),
-                                        ("DevTools", ""),
-                                    ];
-                                    for (label, shortcut) in &items {
-                                        if *label == "---" {
-                                            let sep_rect = egui::Rect::from_min_size(
-                                                panel.cursor().left_bottom(),
-                                                egui::vec2(panel.available_width(), 1.0),
-                                            );
-                                            panel.allocate_rect(sep_rect, egui::Sense::hover());
-                                            panel.painter().rect_filled(
-                                                sep_rect,
-                                                0.0,
-                                                crate::theme::BORDER_SUBTLE,
-                                            );
-                                            panel.add_space(4.0);
-                                            continue;
-                                        }
-                                        let row = panel.add(
-                                            egui::Button::new(
-                                                RichText::new(*label)
-                                                    .size(12.5)
-                                                    .font(egui::FontId::monospace(12.5)),
-                                            )
-                                            .fill(egui::Color32::TRANSPARENT)
-                                            .corner_radius(crate::theme::CORNER_SM)
-                                            .min_size(egui::vec2(200.0, 28.0)),
-                                        );
-                                        if row.hovered() {
-                                            panel.painter().rect_filled(
-                                                row.rect,
-                                                crate::theme::CORNER_SM,
-                                                app.theme.palette.surface_3.gamma_multiply(0.3),
-                                            );
-                                        }
-                                        if !shortcut.is_empty() {
-                                            panel.painter().text(
-                                                egui::pos2(
-                                                    row.rect.right() - 8.0,
-                                                    row.rect.center().y,
-                                                ),
-                                                egui::Align2::RIGHT_CENTER,
-                                                *shortcut,
-                                                egui::FontId::monospace(11.0),
-                                                crate::theme::TEXT_MUTED,
-                                            );
-                                        }
-                                    }
-                                });
-                        });
-                    if menu_resp.clicked_elsewhere()
-                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                    {
-                        ui.ctx().data_mut(|d| d.insert_temp(menu_id, false));
-                    }
-                }
+                draw_trailing_cluster(ui, app, proxy_requests, proxy_alive, fail_open_count);
             });
         });
-    if diagnostics {
-        let hover = ui.input(|i| i.pointer.hover_pos());
-        let fps = if frame_secs > 0.0 {
-            1.0 / frame_secs
-        } else {
-            0.0
-        };
-        egui::Panel::bottom("diagnostics")
-            .frame(egui::Frame::default().fill(SURFACE_1))
-            .show(ui, |ui| {
-                ui.set_min_height(56.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("diagnostics")
-                            .strong()
-                            .color(app.theme.resolved_interactive_accent()),
-                    );
-                    ui.label(
-                        RichText::new(format!("cursor: {hover:?}"))
-                            .color(app.theme.palette.foreground),
-                    );
-                    ui.label(
-                        RichText::new(format!("tabs: {}", app.tabs.len()))
-                            .color(app.theme.palette.foreground),
-                    );
-                    ui.label(
-                        RichText::new(format!("net {} (drop {})", proxy_requests, proxy_dropped))
-                            .font(crate::theme::ThemeConfig::telemetry_font(11.0))
-                            .color(app.theme.palette.foreground),
-                    );
-                    ui.label(
-                        RichText::new(match &last_download {
-                            Some(last) => format!("dl {downloads_seen} ({last})"),
-                            None => format!("dl {downloads_seen}"),
-                        })
-                        .font(crate::theme::ThemeConfig::telemetry_font(11.0))
-                        .color(app.theme.palette.foreground),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("scale {scale:.3}"))
-                            .color(app.theme.palette.foreground),
-                    );
-                    ui.label(
-                        RichText::new(format!(
-                            "logical {:.0}x{:.0}",
-                            logical.width, logical.height
-                        ))
-                        .color(app.theme.palette.foreground),
-                    );
-                    ui.label(
-                        RichText::new(format!("{fps:.1} fps")).color(app.theme.palette.foreground),
-                    );
-                    if let Some(active) = app.tabs.active_tab() {
-                        ui.label(
-                            RichText::new(format!("active: {}", active.url))
-                                .color(app.theme.palette.foreground),
-                        );
-                        if active.is_crashed {
-                            ui.colored_label(ACCENT_DANGER, "CRASHED");
-                        }
-                    }
-                });
-                egui::warn_if_debug_build(ui);
-            });
-    }
-    let active_snapshot = app
-        .tabs
-        .active_tab()
-        .map(|t| (t.id, t.url.clone(), t.is_crashed));
-    let central_resp = egui::CentralPanel::default()
-        .frame(egui::Frame::default().fill(app.theme.palette.substrate))
-        .show(ui, |ui| {
-            if let Some((id, url, is_crashed)) = active_snapshot.clone() {
-                if is_crashed {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(80.0);
-                        ui.label(
-                            RichText::new("This tab has crashed.")
-                                .heading()
-                                .color(ACCENT_DANGER),
-                        );
-                        ui.label(RichText::new(&url).color(app.theme.palette.foreground));
-                        ui.add_space(12.0);
-                        if ui.button("Reload Tab").clicked() {
-                            if let Some(tab) = app.tabs.get_tab_mut(id) {
-                                // History-preserving engine reload (load_url
-                                // would re-push history and clear forward).
-                                if let Err(e) = tab.reload() {
-                                    debug!(error = %e, "crashed-tab reload failed");
-                                }
-                            }
-                        }
-                        if ui.button("Close Tab").clicked() {
-                            let _ = app.tabs.close_tab(id);
-                        }
-                    });
-                    return;
-                }
-            }
-            if app.tabs.is_empty() {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(60.0);
-                    ui.label(
-                        RichText::new("Sovereign Browser")
-                            .heading()
-                            .size(36.0)
-                            .color(app.theme.palette.accent_primary),
-                    );
-                    ui.label(
-                        RichText::new("Foundation - Parts 1-3")
-                            .size(13.0)
-                            .color(app.theme.palette.foreground.gamma_multiply(0.75)),
-                    );
-                    ui.add_space(12.0);
-                    if ui.button("New Tab (Ctrl+T)").clicked() {
-                        open_tab(&mut app.tabs, window, "ferrite://newtab".to_owned());
-                    }
-                });
-            } else {
-                ui.label(
-                    RichText::new("Content area - wry webview child window renders here")
-                        .color(app.theme.palette.foreground.gamma_multiply(0.5)),
-                );
-                if let Some(tab) = app.tabs.active_tab() {
-                    if tab.url.starts_with("ferrite://") {
-                        ui.separator();
-                        ui.label(
-                            RichText::new(format!("Internal: {}", tab.url))
-                                .color(app.theme.resolved_interactive_accent()),
-                        );
-                    }
-                }
-            }
-        });
-    content_rect_cell.set(Some(central_resp.response.rect));
-
-    if *tab_search_open {
-        let mut should_close = false;
-        let mut switch_to: Option<uuid::Uuid> = None;
-        egui::Window::new("Tab Search (Ctrl+Shift+A)")
-            .collapsible(false)
-            .resizable(true)
-            .default_size(egui::vec2(420.0, 280.0))
-            .show(ui.ctx(), |ui| {
-                let resp = ui.add(
-                    egui::TextEdit::singleline(tab_search_query)
-                        .hint_text("Filter tabs by title or URL - Enter to switch, Esc to close")
-                        .desired_width(f32::INFINITY),
-                );
-                resp.request_focus();
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    should_close = true;
-                }
-                ui.separator();
-                let results = app.tabs.search(tab_search_query);
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    if results.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No tabs match")
-                                .color(app.theme.palette.foreground.gamma_multiply(0.5)),
-                        );
-                    } else {
-                        for tab in results {
-                            let label = format!("{} - {}", tab.title, tab.url);
-                            let btn =
-                                egui::Button::new(label).wrap_mode(egui::TextWrapMode::Truncate);
-                            if ui.add(btn).clicked() {
-                                switch_to = Some(tab.id);
-                                should_close = true;
-                            }
-                            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !should_close {
-                                // Enter picks first filtered tab.
-                                if let Some(first) = app.tabs.search(tab_search_query).first() {
-                                    switch_to = Some(first.id);
-                                    should_close = true;
-                                }
-                            }
-                        }
-                    }
-                });
-            });
-        if let Some(id) = switch_to {
-            // Restore path (not bare switch_tab): discarded tabs rebuild
-            // their webview instead of going blank.
-            let bounds = content_rect_cell
-                .get()
-                .and_then(|r| egui_rect_to_wry_rect(r, scale));
-            let idx = app.tabs.iter().position(|t| t.id == id);
-            if let Some(idx) = idx {
-                if let Err(e) = app.tabs.switch_tab_with_window(window, idx, bounds) {
-                    debug!(error = %e, "tab search switch failed");
-                }
-            }
-            app.sync_theme_from_tabs();
-        }
-        if should_close {
-            *tab_search_open = false;
-        }
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            *tab_search_open = false;
-        }
-    }
+    draw_diagnostics(
+        ui,
+        app,
+        diagnostics,
+        proxy_requests,
+        proxy_dropped,
+        downloads_seen,
+        last_download,
+        scale,
+        logical,
+        frame_secs,
+    );
+    draw_central(ui, app, window, content_rect_cell);
+    draw_tab_search(
+        ui,
+        app,
+        window,
+        scale,
+        content_rect_cell,
+        tab_search_open,
+        tab_search_query,
+    );
 }
 
 /// Open a tab, logging refusals (limit/invalid URL) instead of failing
