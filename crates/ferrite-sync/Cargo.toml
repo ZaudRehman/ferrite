@@ -23,7 +23,7 @@ mdns-sd = "0.13"
 rcgen.workspace = true
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 bincode = { version = "2", features = ["serde"] }
-base64 = "0.22"
+base64 = "0.23"
 sha2.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"] }
 rand = "0.8"

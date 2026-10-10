@@ -24,4 +24,4 @@ ferrite-vault.workspace = true
 ferrite-proxy.workspace = true
 url.workspace = true
 aes-gcm = "0.11.1"
-base64 = "0.22"
+base64 = "0.23"
