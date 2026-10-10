@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; script-src 'unsafe-inline'">
+<title>Ferrite</title>
+<style>/*__FERRITE_THEME__*/</style>
+<style>
+  :root{ color-scheme: dark; }
+  *{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html,body{ margin:0; padding:0; height:100%; background:var(--f-bg); color:var(--f-fg); font-family:var(--f-font-ui); overscroll-behavior:none; }
+  #app{ display:flex; flex-direction:column; height:100dvh; }
+  /* Top strip: domain + status only (no tab strip on mobile). */
+  #topbar{ display:flex; align-items:center; gap:8px; padding:8px 12px env(safe-area-inset-right) 8px 12px; background:var(--f-surface-1); border-bottom:1px solid var(--f-border); min-height:48px; }
+  #lock{ font-size:14px; color:var(--f-muted); }
+  #disp{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+  #disp .sub{ color:var(--f-muted); }
+  #disp .dom{ color:var(--f-fg); font-weight:600; }
+  #disp .path{ color:var(--f-muted); }
+  #sh{ position:relative; border:1px solid var(--f-border); background:var(--f-surface-2); color:var(--f-fg); border-radius:8px; min-width:44px; min-height:44px; font-size:16px; }
+  #shb{ position:absolute; top:2px; right:2px; background:var(--f-danger); color:#fff; border-radius:8px; font-size:10px; padding:0 4px; }
+  #shb.zero{ display:none; }
+  /* Content viewport is the webview below (shell positions content tabs
+     under this chrome layer). This layer only draws chrome. */
+  #stage{ flex:1; position:relative; min-height:0; }
+  /* Bottom toolbar: thumb-reachable primary actions. */
+  #toolbar{ display:flex; align-items:center; justify-content:space-around; gap:4px; padding:6px 8px calc(8px + env(safe-area-inset-bottom)); background:var(--f-surface-1); border-top:1px solid var(--f-border); }
+  #toolbar button{ flex:1; max-width:72px; min-height:48px; background:none; border:0; color:var(--f-fg); font-size:11px; display:flex; flex-direction:column; align-items:center; gap:2px; border-radius:8px; }
+  #toolbar button:active{ background:var(--f-surface-2); }
+  #toolbar button .ic{ font-size:20px; line-height:1; }
+  #toolbar button svg.ic{ width:22px; height:22px; }
+  #lock svg.ic{ width:14px; height:14px; display:block; }
+  #star svg.ic{ width:18px; height:18px; }
+  #findbar button svg.ic{ width:16px; height:16px; }
+  #findbar button.up svg.ic{ transform:rotate(180deg); }
+  #tabcount{ position:relative; }
+  #tabcount .n{ position:absolute; top:2px; right:8px; background:var(--f-accent); color:var(--f-bg); border-radius:8px; font-size:10px; padding:0 5px; font-weight:700; }
+  /* Omnibox sheet: slides over content when focused. */
+  #omnisheet{ display:none; position:absolute; inset:0; background:var(--f-bg); z-index:40; flex-direction:column; }
+  #omnisheet.open{ display:flex; }
+  #omnirow{ display:flex; gap:8px; padding:10px 12px; border-bottom:1px solid var(--f-border); }
+  #omni{ flex:1; min-height:48px; font-size:16px; background:var(--f-surface-1); border:1px solid var(--f-border); color:var(--f-fg); border-radius:8px; padding:8px 12px; }
+  #omnicancel{ min-width:64px; min-height:48px; background:none; border:0; color:var(--f-accent); font-size:16px; }
+  #ghost{ color:var(--f-muted); font-size:13px; padding:4px 14px; min-height:18px; }
+  #sugs{ flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+  #sugs .sug{ display:flex; gap:10px; align-items:center; padding:12px 14px; border-bottom:1px solid var(--f-border); font-size:15px; min-height:52px; }
+  #sugs .sug .k{ color:var(--f-muted); font-size:11px; text-transform:uppercase; }
+  #sugs .sug .u{ color:var(--f-muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* Tab switcher: full-screen card grid. */
+  #switcher{ display:none; position:absolute; inset:0; background:var(--f-bg); z-index:30; flex-direction:column; }
+  #switcher.open{ display:flex; }
+  #swhead{ display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid var(--f-border); }
+  #swhead h2{ margin:0; font-size:17px; }
+  #swhead button{ min-width:48px; min-height:44px; background:var(--f-surface-1); border:1px solid var(--f-border); color:var(--f-fg); border-radius:8px; font-size:15px; }
+  #swgrid{ flex:1; overflow-y:auto; padding:12px; display:grid; grid-template-columns:1fr 1fr; gap:10px; align-content:start; }
+  .swcard{ background:var(--f-surface-1); border:1px solid var(--f-border); border-radius:10px; padding:10px; min-height:120px; display:flex; flex-direction:column; gap:6px; }
+  .swcard.active{ border-color:var(--f-accent); }
+  .swcard .t{ font-size:14px; font-weight:600; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .swcard .u{ font-size:11px; color:var(--f-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .swcard .row{ margin-top:auto; display:flex; gap:8px; }
+  .swcard .row button{ flex:1; min-height:40px; background:var(--f-surface-2); border:1px solid var(--f-border); color:var(--f-fg); border-radius:8px; }
+  /* Bottom sheet menu. */
+  #sheet{ display:none; position:absolute; left:0; right:0; bottom:0; max-height:70%; overflow-y:auto; background:var(--f-surface-1); border-top:1px solid var(--f-border); border-radius:14px 14px 0 0; z-index:35; padding:8px 0 calc(12px + env(safe-area-inset-bottom)); }
+  #sheet.open{ display:block; }
+  #sheet button.m{ display:flex; width:100%; gap:12px; align-items:center; padding:14px 18px; background:none; border:0; color:var(--f-fg); font-size:16px; min-height:52px; text-align:left; }
+  #sheet button.m:active{ background:var(--f-surface-2); }
+  /* Toast, find bar, dialogs. */
+  #toast{ display:none; position:absolute; left:12px; right:12px; bottom:76px; background:var(--f-surface-2); border:1px solid var(--f-border); border-radius:10px; padding:12px 14px; z-index:50; font-size:14px; }
+  #toast.open{ display:flex; gap:10px; align-items:center; }
+  #toast button{ margin-left:auto; min-height:40px; background:var(--f-accent); border:0; border-radius:8px; padding:8px 14px; font-size:14px; color:var(--f-bg); }
+  #findbar{ display:none; position:absolute; top:0; left:0; right:0; background:var(--f-surface-1); border-bottom:1px solid var(--f-border); z-index:45; padding:8px 12px; gap:8px; align-items:center; }
+  #findbar.open{ display:flex; }
+  #findq{ flex:1; min-height:44px; font-size:16px; background:var(--f-surface-2); border:1px solid var(--f-border); color:var(--f-fg); border-radius:8px; padding:6px 10px; }
+  #findbar button{ min-width:48px; min-height:44px; background:var(--f-surface-2); border:1px solid var(--f-border); color:var(--f-fg); border-radius:8px; }
+  #shieldpop{ display:none; position:absolute; top:52px; right:8px; width:min(320px,90vw); background:var(--f-surface-1); border:1px solid var(--f-border); border-radius:10px; z-index:45; padding:12px 14px; font-size:14px; }
+  #shieldpop.open{ display:block; }
+  #shieldpop button{ min-height:44px; width:100%; margin-top:8px; background:var(--f-surface-2); border:1px solid var(--f-border); color:var(--f-fg); border-radius:8px; font-size:15px; }
+  #zoompop{ display:none; position:absolute; bottom:76px; left:12px; right:12px; background:var(--f-surface-1); border:1px solid var(--f-border); border-radius:10px; z-index:45; padding:10px 14px; align-items:center; gap:12px; }
+  #zoompop.open{ display:flex; }
+  #zoompop button{ min-width:52px; min-height:48px; font-size:18px; background:var(--f-surface-2); border:1px solid var(--f-border); color:var(--f-fg); border-radius:8px; }
+  /* Panel: single scrollable surface (tabs/history/bookmarks/downloads). */
+  #panel{ display:none; position:absolute; inset:0; background:var(--f-bg); z-index:32; flex-direction:column; }
+  #panel.open{ display:flex; }
+  #paneltabs{ display:flex; gap:4px; padding:8px 12px; border-bottom:1px solid var(--f-border); overflow-x:auto; }
+  #paneltabs button{ min-height:44px; padding:8px 14px; background:none; border:0; color:var(--f-muted); font-size:15px; white-space:nowrap; }
+  #paneltabs button.on{ color:var(--f-fg); border-bottom:2px solid var(--f-accent); }
+  #panelbody{ flex:1; overflow-y:auto; padding:6px 0 20px; }
+  #panelbody .row{ display:flex; gap:10px; align-items:center; padding:12px 14px; border-bottom:1px solid var(--f-border); font-size:15px; min-height:52px; }
+  #panelbody .row .u{ color:var(--f-muted); font-size:12px; }
+  #panelbody .row button{ margin-left:auto; min-height:40px; padding:6px 12px; background:var(--f-surface-2); border:1px solid var(--f-border); color:var(--f-fg); border-radius:8px; }
+  #infobar{ display:none; background:var(--f-warning); color:#000; padding:10px 14px; font-size:14px; z-index:20; }
+  #infobar.open{ display:flex; gap:10px; align-items:center; }
+  #infobar button{ margin-left:auto; min-height:40px; padding:6px 12px; border:1px solid #000; background:none; border-radius:8px; font-weight:700; }
+  .sr{ position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+  @media (prefers-reduced-motion:reduce){ *{ animation:none!important; transition:none!important; } }
+</style>
+</head>
+<body>
+<div id="app" role="application" aria-label="Ferrite browser">
+  <div id="topbar">
+    <span id="lock" aria-hidden="true"></span>
+    <div id="disp" title="Tap address bar to edit"></div>
+    <button id="star" title="Bookmark this page" aria-label="Bookmark this page" style="min-width:44px;min-height:44px;background:none;border:0;color:var(--f-fg);font-size:18px;">☆</button>
+    <button id="sh" title="Privacy status" aria-label="Privacy status"><span id="shi"></span><span class="bdg zero" id="shb">0</span></button>
+  </div>
+  <div id="infobar" role="alert"></div>
+  <div id="stage">
+    <div id="findbar" role="search">
+      <input id="findq" type="search" placeholder="Find in page" aria-label="Find in page">
+      <button id="findprev" title="Previous" aria-label="Previous">↑</button>
+      <button id="findnext" title="Next" aria-label="Next">↓</button>
+      <button id="findx" title="Close (Escape)">✕</button>
+    </div>
+    <div id="shieldpop" role="dialog" aria-label="Privacy status"></div>
+    <div id="zoompop" role="dialog" aria-label="Page zoom"></div>
+    <div id="omnisheet" role="dialog" aria-label="Address and search">
+      <div id="omnirow">
+        <input id="omni" role="combobox" aria-expanded="false" aria-autocomplete="both" aria-label="Address and search" type="text" placeholder="Search or enter address" spellcheck="false" autocomplete="off" autocapitalize="off">
+        <button id="omnicancel">Cancel</button>
+      </div>
+      <div id="ghost" aria-hidden="true"></div>
+      <div id="sugs" role="listbox"></div>
+    </div>
+    <div id="switcher" role="dialog" aria-label="Tabs">
+      <div id="swhead"><h2>Tabs</h2><button id="swclose">Done</button></div>
+      <div id="swgrid" role="tablist"></div>
+    </div>
+    <div id="panel" role="complementary" aria-label="Library">
+      <div id="paneltabs" role="tablist">
+        <button data-sec="tabs" role="tab">Tabs</button>
+        <button data-sec="history" role="tab">History</button>
+        <button data-sec="bookmarks" role="tab">Bookmarks</button>
+        <button data-sec="downloads" role="tab">Downloads</button>
+        <button data-sec="reading" role="tab">Reading</button>
+      </div>
+      <div id="panelbody"></div>
+    </div>
+    <div id="sheet" role="menu" aria-label="Menu"></div>
+    <div id="toast" role="status"></div>
+  </div>
+  <div id="toolbar" role="toolbar" aria-label="Browser">
+    <button id="back" aria-label="Back"><span class="ic">‹</span>Back</button>
+    <button id="fwd" aria-label="Forward"><span class="ic">›</span>Fwd</button>
+    <button id="rel" aria-label="Reload"><span class="ic">↻</span>Reload</button>
+    <button id="tabcount" aria-label="Tabs"><span class="ic">▢</span>Tabs<span class="n" id="tabn">0</span></button>
+    <button id="sharebtn" aria-label="Share"><span class="ic">⤴</span>Share</button>
+    <button id="menu" aria-label="Menu"><span class="ic">☰</span>Menu</button>
+  </div>
+</div>
+<div class="sr" aria-live="polite" id="sr-live"></div>
+<script>
+(function(){
+  "use strict";
+  var S=null;
+  function post(o){ try{ window.ipc.postMessage(JSON.stringify(o)); }catch(e){} }
+  function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  // Icon kit: Phosphor Icons (MIT License, phosphoricons.com), inlined so
+  // they stay CSP-safe (no fetches, no icon font) and tint via currentColor
+  // with every theme pack. Three weights form the state language:
+  // Regular = default/off, Bold = lit (shield while blocking),
+  // Fill = toggled-on (saved star, active mute).
+  var ICONS={
+    back:{r:'<path d="M224,128a8,8,0,0,1-8,8H59.31l58.35,58.34a8,8,0,0,1-11.32,11.32l-72-72a8,8,0,0,1,0-11.32l72-72a8,8,0,0,1,11.32,11.32L59.31,120H216A8,8,0,0,1,224,128Z"/>'},
+    fwd:{r:'<path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z"/>'},
+    reload:{r:'<path d="M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16H211.4L184.81,71.64l-.25-.24a80,80,0,1,0-1.67,114.78,8,8,0,0,1,11,11.63A95.44,95.44,0,0,1,128,224h-1.32A96,96,0,1,1,195.75,60L224,85.8V56a8,8,0,1,1,16,0Z"/>'},
+    x:{r:'<path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/>'},
+    camera:{r:'<rect x="32" y="88" width="192" height="120" rx="24" fill="none" stroke="currentColor" stroke-width="16"/><circle cx="128" cy="148" r="30" fill="none" stroke="currentColor" stroke-width="16"/><path d="M92 88l14-28h44l14 28" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>'},
+    mic:{r:'<rect x="104" y="32" width="48" height="96" rx="24" fill="none" stroke="currentColor" stroke-width="16"/><path d="M64 128a64 64 0 0 0 128 0" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round"/><line x1="128" y1="192" x2="128" y2="224" stroke="currentColor" stroke-width="16" stroke-linecap="round"/><line x1="96" y1="224" x2="160" y2="224" stroke="currentColor" stroke-width="16" stroke-linecap="round"/>'},
+    pinmap:{r:'<path d="M128 224s88-88 88-136a88 88 0 1 0-176 0c0 48 88 136 88 136Z" fill="none" stroke="currentColor" stroke-width="16" stroke-linejoin="round"/><circle cx="128" cy="88" r="24" fill="none" stroke="currentColor" stroke-width="16"/>'},
+    bell:{r:'<path d="M208 160v-40a80 80 0 1 0-160 0v40l-24 40h208Z" fill="none" stroke="currentColor" stroke-width="16" stroke-linejoin="round"/><path d="M104 200a24 24 0 0 0 48 0" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round"/>'},
+    clip:{r:'<rect x="64" y="56" width="128" height="168" rx="16" fill="none" stroke="currentColor" stroke-width="16"/><rect x="100" y="32" width="56" height="32" rx="8" fill="none" stroke="currentColor" stroke-width="16"/>'},
+    home:{r:'<path d="M219.31,108.68l-80-80a16,16,0,0,0-22.62,0l-80,80A15.87,15.87,0,0,0,32,120v96a8,8,0,0,0,8,8h64a8,8,0,0,0,8-8V160h32v56a8,8,0,0,0,8,8h64a8,8,0,0,0,8-8V120A15.87,15.87,0,0,0,219.31,108.68ZM208,208H160V152a8,8,0,0,0-8-8H104a8,8,0,0,0-8,8v56H48V120l80-80,80,80Z"/>'},
+    shield:{
+      r:'<path d="M208,40H48A16,16,0,0,0,32,56v56c0,52.72,25.52,84.67,46.93,102.19,23.06,18.86,46,25.26,47,25.53a8,8,0,0,0,4.2,0c1-.27,23.91-6.67,47-25.53C198.48,196.67,224,164.72,224,112V56A16,16,0,0,0,208,40Zm0,72c0,37.07-13.66,67.16-40.6,89.42A129.3,129.3,0,0,1,128,223.62a128.25,128.25,0,0,1-38.92-21.81C61.82,179.51,48,149.3,48,112l0-56,160,0ZM82.34,141.66a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32l-56,56a8,8,0,0,1-11.32,0Z"/>',
+      b:'<path d="M208,36H48A20,20,0,0,0,28,56v56c0,54.29,26.32,87.22,48.4,105.29,23.71,19.39,47.44,26,48.44,26.29a12.1,12.1,0,0,0,6.32,0c1-.28,24.73-6.9,48.44-26.29,22.08-18.07,48.4-51,48.4-105.29V56A20,20,0,0,0,208,36Zm-4,76c0,35.71-13.09,64.69-38.91,86.15A126.28,126.28,0,0,1,128,219.38a126.14,126.14,0,0,1-37.09-21.23C65.09,176.69,52,147.71,52,112V60H204ZM79.51,144.49a12,12,0,1,1,17-17L112,143l47.51-47.52a12,12,0,0,1,17,17l-56,56a12,12,0,0,1-17,0Z"/>'},
+    lock:{r:'<path d="M208,80H176V56a48,48,0,0,0-96,0V80H48A16,16,0,0,0,32,96V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V96A16,16,0,0,0,208,80ZM96,56a32,32,0,0,1,64,0V80H96ZM208,208H48V96H208V208Zm-68-56a12,12,0,1,1-12-12A12,12,0,0,1,140,152Z"/>'},
+    info:{r:'<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm16-40a8,8,0,0,1-8,8,16,16,0,0,1-16-16V128a8,8,0,0,1,0-16,16,16,0,0,1,16,16v40A8,8,0,0,1,144,176ZM112,84a12,12,0,1,1,12,12A12,12,0,0,1,112,84Z"/>'},
+    pin:{r:'<path d="M235.32,81.37,174.63,20.69a16,16,0,0,0-22.63,0L98.37,74.49c-10.66-3.34-35-7.37-60.4,13.14a16,16,0,0,0-1.29,23.78L85,159.71,42.34,202.34a8,8,0,0,0,11.32,11.32L96.29,171l48.29,48.29A16,16,0,0,0,155.9,224c.38,0,.75,0,1.13,0a15.93,15.93,0,0,0,11.64-6.33c19.64-26.1,17.75-47.32,13.19-60L235.33,104A16,16,0,0,0,235.32,81.37ZM224,92.69h0l-57.27,57.46a8,8,0,0,0-1.49,9.22c9.46,18.93-1.8,38.59-9.34,48.62L48,100.08c12.08-9.74,23.64-12.31,32.48-12.31A40.13,40.13,0,0,1,96.81,91a8,8,0,0,0,9.25-1.51L163.32,32,224,92.68Z"/>'},
+    terminal:{r:'<path d="M128,128a8,8,0,0,1-3,6.25l-40,32a8,8,0,1,1-10-12.5L107.19,128,75,102.25a8,8,0,1,1,10-12.5l40,32A8,8,0,0,1,128,128Zm48,24H136a8,8,0,0,0,0,16h40a8,8,0,0,0,0-16Zm56-96V200a16,16,0,0,1-16,16H40a16,16,0,0,1-16-16V56A16,16,0,0,1,40,40H216A16,16,0,0,1,232,56ZM216,200V56H40V200H216Z"/>'},
+    menu:{r:'<path d="M224,128a8,8,0,0,1-8,8H40a8,8,0,0,1,0-16H216A8,8,0,0,1,224,128ZM40,72H216a8,8,0,0,0,0-16H40a8,8,0,0,0,0,16ZM216,184H40a8,8,0,0,0,0,16H216a8,8,0,0,0,0-16Z"/>'},
+    plus:{r:'<path d="M224,128a8,8,0,0,1-8,8H136v80a8,8,0,0,1-16,0V136H40a8,8,0,0,1,0-16h80V40a8,8,0,0,1,16,0v80h80A8,8,0,0,1,224,128Z"/>'},
+    audio:{r:'<path d="M155.51,24.81a8,8,0,0,0-8.42.88L77.25,80H32A16,16,0,0,0,16,96v64a16,16,0,0,0,16,16H77.25l69.84,54.31A8,8,0,0,0,160,224V32A8,8,0,0,0,155.51,24.81ZM32,96H72v64H32ZM144,207.64,88,164.09V91.91l56-43.55Zm54-106.08a40,40,0,0,1,0,52.88,8,8,0,0,1-12-10.58,24,24,0,0,0,0-31.72,8,8,0,0,1,12-10.58ZM248,128a79.9,79.9,0,0,1-20.37,53.34,8,8,0,0,1-11.92-10.67,64,64,0,0,0,0-85.33,8,8,0,1,1,11.92-10.67A79.83,79.83,0,0,1,248,128Z"/>'},
+    muted:{f:'<path d="M213.92,210.62a8,8,0,1,1-11.84,10.76L160,175.09v48.6a8.29,8.29,0,0,1-3.91,7.18,8,8,0,0,1-9-.56l-65.55-51A4,4,0,0,1,80,176.18V87.09L42.08,45.38A8,8,0,1,1,53.92,34.62Zm-27.21-55.46a8,8,0,0,0,11.29-.7,40,40,0,0,0,0-52.88,8,8,0,1,0-12,10.57,24,24,0,0,1,0,31.72A8,8,0,0,0,186.71,155.16Zm40.92-80.49a8,8,0,1,0-11.92,10.66,64,64,0,0,1,0,85.34,8,8,0,1,0,11.92,10.66,80,80,0,0,0,0-106.66ZM153,119.87a4,4,0,0,0,7-2.7V32.25a8.27,8.27,0,0,0-2.88-6.4,8,8,0,0,0-10-.16L103.83,59.33a4,4,0,0,0-.5,5.85ZM60,80H32A16,16,0,0,0,16,96v64a16,16,0,0,0,16,16H60a4,4,0,0,0,4-4V84A4,4,0,0,0,60,80Z"/>'},
+    alert:{r:'<path d="M236.8,188.09,149.35,36.22h0a24.76,24.76,0,0,0-42.7,0L19.2,188.09a23.51,23.51,0,0,0,0,23.72A24.35,24.35,0,0,0,40.55,224h174.9a24.35,24.35,0,0,0,21.33-12.19A23.51,23.51,0,0,0,236.8,188.09ZM222.93,203.8a8.5,8.5,0,0,1-7.48,4.2H40.55a8.5,8.5,0,0,1-7.48-4.2,7.59,7.59,0,0,1,0-7.72L120.52,44.21a8.75,8.75,0,0,1,15,0l87.45,151.87A7.59,7.59,0,0,1,222.93,203.8ZM120,144V104a8,8,0,0,1,16,0v40a8,8,0,0,1-16,0Zm20,36a12,12,0,1,1-12-12A12,12,0,0,1,140,180Z"/>'},
+    disc:{r:'<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Z"/>'},
+    check:{r:'<path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z"/>'},
+    caret:{r:'<path d="M216.49,104.49l-80,80a12,12,0,0,1-17,0l-80-80a12,12,0,0,1,17-17L128,159l71.51-71.52a12,12,0,0,1,17,17Z"/>'},
+    folder:{r:'<path d="M216,68H133.39l-26-29.29a20,20,0,0,0-15-6.71H40A20,20,0,0,0,20,52V200.62A19.41,19.41,0,0,0,39.38,220H216.89A19.13,19.13,0,0,0,236,200.89V88A20,20,0,0,0,216,68ZM44,56H90.61l10.67,12H44ZM212,196H44V92H212Z"/>'},
+    star:{
+      r:'<path d="M239.18,97.26A16.38,16.38,0,0,0,224.92,86l-59-4.76L143.14,26.15a16.36,16.36,0,0,0-30.27,0L90.11,81.23,31.08,86a16.46,16.46,0,0,0-9.37,28.86l45,38.83L53,211.75a16.38,16.38,0,0,0,24.5,17.82L128,198.49l50.53,31.08A16.4,16.4,0,0,0,203,211.75l-13.76-58.07,45-38.83A16.43,16.43,0,0,0,239.18,97.26Zm-15.34,5.47-48.7,42a8,8,0,0,0-2.56,7.91l14.88,62.8a.37.37,0,0,1-.17.48c-.18.14-.23.11-.38,0l-54.72-33.65a8,8,0,0,0-8.38,0L69.09,215.94c-.15.09-.19.12-.38,0a.37.37,0,0,1-.17-.48l14.88-62.8a8,8,0,0,0-2.56-7.91l-48.7-42c-.12-.1-.23-.19-.13-.5s.18-.27.33-.29l63.92-5.16A8,8,0,0,0,103,91.86l24.62-59.61c.08-.17.11-.25.35-.25s.27.08.35.25L153,91.86a8,8,0,0,0,6.75,4.92l63.92,5.16c.15,0,.24,0,.33.29S224,102.63,223.84,102.73Z"/>',
+      f:'<path d="M234.29,114.85l-45,38.83L203,211.75a16.4,16.4,0,0,1-24.5,17.82L128,198.49,77.47,229.57A16.4,16.4,0,0,1,53,211.75l13.76-58.07-45-38.83A16.46,16.46,0,0,1,31.08,86l59-4.76,22.76-55.08a16.36,16.36,0,0,1,30.27,0l22.75,55.08,59,4.76a16.46,16.46,0,0,1,9.37,28.86Z"/>'},
+    dl:{r:'<path d="M208,32H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Zm0,16V152h-28.7A15.86,15.86,0,0,0,168,156.69L148.69,176H107.31L88,156.69A15.86,15.86,0,0,0,76.69,152H48V48Zm0,160H48V168H76.69L96,187.31A15.86,15.86,0,0,0,107.31,192h41.38A15.86,15.86,0,0,0,160,187.31L179.31,168H208v40ZM90.34,125.66a8,8,0,0,1,11.32-11.32L120,132.69V72a8,8,0,0,1,16,0v60.69l18.34-18.35a8,8,0,0,1,11.32,11.32l-32,32a8,8,0,0,1-11.32,0Z"/>'},
+    clock:{r:'<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm64-88a8,8,0,0,1-8,8H128a8,8,0,0,1-8-8V72a8,8,0,0,1,16,0v48h48A8,8,0,0,1,192,128Z"/>'},
+    side:{r:'<path d="M216,40H40A16,16,0,0,0,24,56V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40ZM40,56h72V200H40ZM216,200H128V56h88V200Z"/>'},
+    read:{r:'<path d="M232,48H160a40,40,0,0,0-32,16A40,40,0,0,0,96,48H24a8,8,0,0,0-8,8V200a8,8,0,0,0,8,8H96a24,24,0,0,1,24,24,8,8,0,0,0,16,0,24,24,0,0,1,24-24h72a8,8,0,0,0,8-8V56A8,8,0,0,0,232,48ZM96,192H32V64H96a24,24,0,0,1,24,24V200A39.81,39.81,0,0,0,96,192Zm128,0H160a39.81,39.81,0,0,0-24,8V88a24,24,0,0,1,24-24h64ZM160,88H96a8,8,0,0,1,0-16h64a8,8,0,0,1,0,16Zm48,32H96a8,8,0,0,1,0-16h112a8,8,0,0,1,0,16Z"/>'},
+    pip:{r:'<rect x="32" y="48" width="192" height="144" rx="16" fill="none" stroke="currentColor" stroke-width="16"/><rect x="132" y="116" width="76" height="60" rx="8"/>'},
+    share:{r:'<circle cx="64" cy="128" r="24" fill="none" stroke="currentColor" stroke-width="16"/><circle cx="192" cy="64" r="24" fill="none" stroke="currentColor" stroke-width="16"/><circle cx="192" cy="192" r="24" fill="none" stroke="currentColor" stroke-width="16"/><line x1="85" y1="117" x2="171" y2="75" stroke="currentColor" stroke-width="16" stroke-linecap="round"/><line x1="85" y1="139" x2="171" y2="181" stroke="currentColor" stroke-width="16" stroke-linecap="round"/>'},
+    find:{r:'<path d="M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"/>'},
+    aa:{r:'<path d="M87.24,52.59a8,8,0,0,0-14.48,0l-64,136a8,8,0,1,0,14.48,6.81L39.9,160h80.2l16.66,35.4a8,8,0,1,0,14.48-6.81ZM47.43,144,80,74.79,112.57,144ZM200,96c-12.76,0-22.73,3.47-29.63,10.32a8,8,0,0,0,11.26,11.36c3.8-3.77,10-5.68,18.37-5.68,13.23,0,24,9,24,20v3.22A42.76,42.76,0,0,0,200,128c-22.06,0-40,16.15-40,36s17.94,36,40,36a42.73,42.73,0,0,0,24-7.25,8,8,0,0,0,16-.75V132C240,112.15,222.06,96,200,96Zm0,88c-13.23,0-24-9-24-20s10.77-20,24-20,24,9,24,20S213.23,184,200,184Z"/>'},
+    // Detective (Phosphor Icons, MIT, phosphoricons.com): incognito
+    // entry and indicator. Regular weight only; Bold/Fill requests fall
+    // back to Regular via icon(), lit state carried by accent color.
+    detective:{r:'<path d="M248,112H220.08l-47.5-65.41a16,16,0,0,0-25.31-.72l-12.85,14.9-.2.23a7.95,7.95,0,0,1-12.44,0l-.2-.23-12.85-14.9a16,16,0,0,0-25.31.72L35.92,112H8a8,8,0,0,0,0,16H248a8,8,0,0,0,0-16ZM96.34,56l.19.23,12.85,14.89a24,24,0,0,0,37.24,0l12.85-14.89c.06-.08.1-.15.17-.23l40.66,56H55.69ZM180,144a36,36,0,0,0-35.77,32H111.77a36,36,0,1,0-1.83,16h36.12A36,36,0,1,0,180,144ZM76,200a20,20,0,1,1,20-20A20,20,0,0,1,76,200Zm104,0a20,20,0,1,1,20-20A20,20,0,0,1,180,200Z"/>'}
+  };
+  // Weight-aware render: Regular default, Bold lit, Fill toggled-on.
+  // Unknown weights fall back to Regular (never a blank icon).
+  function icon(n,w){ var e=ICONS[n]||{}; return '<svg class="ic" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">'+(e[w]||e.r||'')+'</svg>'; }
+  // Static toolbar glyphs (set once, after the kit above).
+  setIc('back','back'); setIc('fwd','fwd'); setIc('rel','reload');
+  setIc('tabcount','caret'); setIc('sharebtn','share'); setIc('menu','menu');
+  function setIc(btn, name){ try{ var s=document.querySelector('#'+btn+' .ic'); if(s) s.innerHTML=icon(name); }catch(e){} }
+  // Find-bar chevrons (previous points up via the .up rule above).
+  document.getElementById('findprev').innerHTML=icon('caret'); document.getElementById('findprev').classList.add('up');
+  document.getElementById('findnext').innerHTML=icon('caret');
+  document.getElementById('findx').innerHTML=icon('x');
+
+  // ---- state render (same contract as desktop: full replace per push) ----
+  window.__ferriteChrome=function(s){
+    S=s||{};
+    renderTop(); renderTabs(); renderToolbar(); renderToast(); renderFind(); renderShield(); renderZoom(); renderInfo(); renderPanel(); renderPerm();
+  };
+  window.__ferriteTheme=function(css){ try{ var el=document.getElementById('pk'); if(el) el.textContent=css; }catch(e){} };
+  function renderTop(){
+    var d=(S&&S.disp)||{sch:'',sub:'',dom:'',path:''};
+    document.getElementById('disp').innerHTML='<span class="sub">'+esc(d.sch)+esc(d.sub)+'</span><span class="dom">'+esc(d.dom)+'</span><span class="path">'+esc(d.path)+'</span>';
+    document.getElementById('lock').innerHTML=(S&&S.sec==='lock')?icon('lock'):(S&&S.sec==='info'?icon('info'):'');
+    var b=document.getElementById('shb'), n=(S&&S.status&&S.status.blocked)||0;
+    b.textContent=String(n); b.className=n?'bdg':'bdg zero';
+    document.getElementById('shi').innerHTML=icon('shield');
+  }
+  function renderToolbar(){
+    var tabs=(S&&S.tabs)||[];
+    document.getElementById('tabn').textContent=String(tabs.length);
+    // Star reflects the active tab (same toggle_star as desktop).
+    document.getElementById('star').innerHTML=icon('star',(S&&S.starred)?'f':'r');
+  }
+  document.getElementById('star').addEventListener('click',function(){
+    var tabs=(S&&S.tabs)||[], active=null;
+    for(var i=0;i<tabs.length;i++){ if(tabs[i].active) active=tabs[i]; }
+    if(active&&(active.url||active.title)) post({cmd:'toggle_star',url:active.url||'',title:active.title||active.url||''});
+  });
+  // ---- tabs (switcher grid; strip physics don't exist on phones) ----
+  function renderTabs(){
+    var g=document.getElementById('swgrid'); g.textContent='';
+    ((S&&S.tabs)||[]).forEach(function(t){
+      var c=document.createElement('div'); c.className='swcard'+(t.active?' active':''); c.setAttribute('role','tab'); c.setAttribute('aria-selected',t.active?'true':'false');
+      var title=document.createElement('div'); title.className='t'; title.textContent=t.title||t.url||'New Tab'; c.appendChild(title);
+      var u=document.createElement('div'); u.className='u'; u.textContent=t.url||''; c.appendChild(u);
+      var row=document.createElement('div'); row.className='row';
+      var open=document.createElement('button'); open.textContent='Open';
+      open.onclick=(function(id){return function(){ post({cmd:'select_tab',id:id}); closeSwitcher(); };})(t.id);
+      var shut=document.createElement('button'); shut.textContent='Close'; shut.setAttribute('aria-label','Close tab');
+      shut.onclick=(function(id){return function(){ post({cmd:'close_tab',id:id}); };})(t.id);
+      row.appendChild(open); row.appendChild(shut); c.appendChild(row);
+      g.appendChild(c);
+    });
+    var add=document.createElement('div'); add.className='swcard';
+    var nt=document.createElement('button'); nt.textContent='+ New Tab'; nt.style.minHeight='120px';
+    nt.onclick=function(){ post({cmd:'new_tab'}); closeSwitcher(); };
+    add.appendChild(nt); g.appendChild(add);
+  }
+  function openSwitcher(){ document.getElementById('switcher').classList.add('open'); renderTabs(); }
+  function closeSwitcher(){ document.getElementById('switcher').classList.remove('open'); }
+  // ---- omnibox sheet ----
+  var entryText='', provId=null;
+  function openOmni(focus){
+    document.getElementById('omnisheet').classList.add('open');
+    var o=document.getElementById('omni');
+    if(S&&typeof S.omnibox_text==='string'&&document.activeElement!==o){ o.value=S.omnibox_text; entryText=o.value; }
+    if(focus!==false){ try{ o.focus(); }catch(e){} }
+    renderSugs();
+  }
+  function closeOmni(){ document.getElementById('omnisheet').classList.remove('open'); provId=null; }
+  function submitText(fallback){
+    var o=document.getElementById('omni');
+    return (o.value||'').slice(0,1800)||fallback||'';
+  }
+  var omni=document.getElementById('omni');
+  omni.addEventListener('input',function(){ post({cmd:'omnibox_input',text:submitText(null)}); renderSugs(); });
+  omni.addEventListener('keydown',function(e){
+    if(e.key==='Enter'){ post({cmd:'omnibox_submit',text:submitText(null),url:null,provider:provId}); closeOmni(); }
+  });
+  document.getElementById('omnicancel').addEventListener('click',function(){ closeOmni(); post({cmd:'focus_content'}); });
+  document.getElementById('disp').addEventListener('click',function(){ post({cmd:'focus_omnibox'}); openOmni(true); });
+  function renderSugs(){
+    var box=document.getElementById('sugs'); box.textContent='';
+    ((S&&S.suggestions)||[]).forEach(function(g,i){
+      var r=document.createElement('div'); r.className='sug'; r.setAttribute('role','option'); r.id='sug-'+i;
+      var main=document.createElement('div');
+      var t=document.createElement('div'); t.textContent=g.title||g.url||''; main.appendChild(t);
+      if(g.url){ var u=document.createElement('div'); u.className='u'; u.textContent=g.url; main.appendChild(u); }
+      r.appendChild(main);
+      if(g.kind){ var k=document.createElement('span'); k.className='k'; k.textContent=g.kind; r.appendChild(k); }
+      r.onclick=(function(g){return function(){
+        if(g.tab){ post({cmd:'select_tab',id:g.tab}); closeOmni(); return; }
+        post({cmd:'omnibox_submit',text:g.title||g.url||'',url:g.url||null,provider:provId}); closeOmni();
+      };})(g);
+      box.appendChild(r);
+    });
+    var gh=document.getElementById('ghost');
+    if(gh) gh.textContent=(S&&S.omnibox_text)||'';
+  }
+  // ---- menu sheet (same menu_item ids as desktop) ----
+  var MENU=[['new-tab','New Tab'],['find','Find in Page'],['share','Share This Page'],['bookmark-page','Bookmark This Page'],['history','History'],['downloads','Downloads'],['bookmarks','Bookmarks'],['settings','Settings'],['passwords','Password Manager']];
+  function openSheet(){
+    var sh=document.getElementById('sheet'); sh.textContent='';
+    MENU.forEach(function(m){
+      var b=document.createElement('button'); b.className='m'; b.textContent=m[1]; b.setAttribute('role','menuitem');
+      b.onclick=(function(id){return function(){ closeSheet(); post({cmd:'menu_item',id:id}); };})(m[0]);
+      sh.appendChild(b);
+    });
+    // Direct (non-menu) actions live here too: text size opens the
+    // zoom stepper, translate runs only when the shell offers it.
+    var z=document.createElement('button'); z.className='m'; z.textContent='Text size'; z.setAttribute('role','menuitem');
+    z.onclick=function(){ closeSheet(); zoomOpen=true; renderZoom(); };
+    sh.appendChild(z);
+    if(S&&S.translate_offer){
+      var tr=document.createElement('button'); tr.className='m'; tr.textContent='Translate this page'; tr.setAttribute('role','menuitem');
+      tr.onclick=function(){ closeSheet(); post({cmd:'translate_page'}); };
+      sh.appendChild(tr);
+    }
+  }
+  function closeSheet(){ document.getElementById('sheet').classList.remove('open'); }
+  // ---- toast (seq-paired actions, same as desktop) ----
+  function renderToast(){
+    var el=document.getElementById('toast'), t=S&&S.status&&S.status.toast;
+    if(!t){ el.classList.remove('open'); el.textContent=''; return; }
+    el.textContent=''; el.classList.add('open');
+    var s=document.createElement('span'); s.textContent=t.text||''; el.appendChild(s);
+    if(t.action){
+      var b=document.createElement('button'); b.textContent=t.action==='undo'?'Undo':'Open';
+      b.onclick=(function(seq){return function(){ post({cmd:'toast_action',seq:seq}); };})(t.seq);
+      el.appendChild(b);
+    }
+    var x=document.createElement('button'); x.innerHTML=icon('x'); x.setAttribute('aria-label','Dismiss');
+    x.onclick=(function(seq){return function(){ post({cmd:'toast_dismiss',seq:seq}); };})(t.seq);
+    el.appendChild(x);
+    var sr=document.getElementById('sr-live'); if(sr) sr.textContent=t.text||'';
+  }
+  // ---- find bar ----
+  function renderFind(){
+    var open=S&&S.find_open;
+    document.getElementById('findbar').classList.toggle('open',!!open);
+    if(open){ var q=document.getElementById('findq'); if(q.value!==(S.find_query||'')) q.value=S.find_query||''; }
+  }
+  var findDeb=null;
+  document.getElementById('findq').addEventListener('input',function(){
+    var q=this; clearTimeout(findDeb);
+    findDeb=setTimeout(function(){ post({cmd:'find_search',query:q.value.slice(0,500),case:!!(S&&S.find_case)}); },150);
+  });
+  document.getElementById('findnext').addEventListener('click',function(){ post({cmd:'find_next'}); });
+  document.getElementById('findprev').addEventListener('click',function(){ post({cmd:'find_prev'}); });
+  document.getElementById('findx').addEventListener('click',function(){ post({cmd:'find_close'}); post({cmd:'focus_content'}); });
+  // ---- shield (read counts + pause, host derived shell-side) ----
+  function renderShield(){
+    var pop=document.getElementById('shieldpop');
+    if(!pop.classList.contains('open')) return;
+    pop.textContent='';
+    var st=S&&S.status||{};
+    var rows=[['Ads',st.blocked_ad],['Trackers',st.blocked_tracker],['Malware',st.blocked_malware],['Mixed content',st.blocked_mixed]];
+    rows.forEach(function(r){
+      var d=document.createElement('div'); d.textContent=r[0]+': '+(r[1]||0); pop.appendChild(d);
+    });
+    var b=document.createElement('button'); b.textContent=(S&&S.site_paused)?'Resume protection':'Pause for this site';
+    b.onclick=function(){ post({cmd:'shield_pause'}); };
+    pop.appendChild(b);
+  }
+  document.getElementById('sh').addEventListener('click',function(){
+    document.getElementById('shieldpop').classList.toggle('open'); renderShield();
+  });
+  // ---- zoom (local open state; percentages from the shell push) ----
+  var zoomOpen=false;
+  function renderZoom(){
+    var pop=document.getElementById('zoompop');
+    if(!zoomOpen){ pop.classList.remove('open'); return; }
+    pop.classList.add('open'); pop.textContent='';
+    var pct=document.createElement('span'); pct.textContent=(S.zoom_pct||100)+'%'; pop.appendChild(pct);
+    [['−','zoom_out'],['Reset','zoom_reset'],['+','zoom_in']].forEach(function(z){
+      var b=document.createElement('button'); b.textContent=z[0];
+      b.onclick=(function(c){return function(){ post({cmd:c}); };})(z[1]);
+      pop.appendChild(b);
+    });
+    var x=document.createElement('button'); x.innerHTML=icon('x'); x.setAttribute('aria-label','Close text size');
+    x.onclick=function(){ zoomOpen=false; renderZoom(); };
+    pop.appendChild(x);
+  }
+  // ---- infobar (crash/session offers) ----
+  function renderInfo(){
+    var bar=document.getElementById('infobar');
+    var msg=null, cmd=null;
+    if(S&&S.crash_offer){ msg='Ferrite closed unexpectedly.'; cmd='crash_restore'; }
+    bar.classList.toggle('open',!!msg);
+    if(!msg){ bar.textContent=''; return; }
+    bar.textContent=''; var s=document.createElement('span'); s.textContent=msg; bar.appendChild(s);
+    var b=document.createElement('button'); b.textContent='Restore';
+    b.onclick=function(){ post({cmd:cmd}); };
+    bar.appendChild(b);
+    var d=document.createElement('button'); d.textContent='Dismiss';
+    d.onclick=function(){ post({cmd:'crash_dismiss'}); };
+    bar.appendChild(d);
+  }
+  // ---- panel (one scroll: tabs/history/bookmarks/downloads/reading) ----
+  var panelSec='tabs';
+  function renderPanel(){
+    var open=S&&S.panel_open, body=document.getElementById('panelbody');
+    document.getElementById('panel').classList.toggle('open',!!open);
+    if(!open) return;
+    var tabs=document.querySelectorAll('#paneltabs button');
+    for(var i=0;i<tabs.length;i++) tabs[i].classList.toggle('on',tabs[i].getAttribute('data-sec')===panelSec);
+    body.textContent='';
+    if(panelSec==='tabs'){
+      ((S&&S.tabs)||[]).forEach(function(t){
+        body.appendChild(panelRow(t.title||t.url||'New Tab',t.url||'',function(){ post({cmd:'select_tab',id:t.id}); },'Open'));
+      });
+    } else if(panelSec==='history'){
+      post({cmd:'panel_history',q:''});
+    } else if(panelSec==='bookmarks'){
+      // Bookmarks ride the shared panel push (same hook as desktop):
+      // select the section and the shell pushes __ferritePanelBookmarks.
+      post({cmd:'panel_section',id:'bookmarks'});
+    } else if(panelSec==='downloads'){
+      post({cmd:'downloads_recent'});
+    } else if(panelSec==='reading'){
+      post({cmd:'reading_list'});
+    }
+  }
+  function panelRow(title,sub,fn,action){
+    var r=document.createElement('div'); r.className='row';
+    var m=document.createElement('div');
+    var t=document.createElement('div'); t.textContent=title; m.appendChild(t);
+    if(sub){ var u=document.createElement('div'); u.className='u'; u.textContent=sub; m.appendChild(u); }
+    r.appendChild(m);
+    var b=document.createElement('button'); b.textContent=action||'Open'; b.onclick=fn; r.appendChild(b);
+    return r;
+  }
+  // Pushed lists land here (same hooks as desktop).
+  window.__ferritePanelHistory=function(items){ if(panelSec!=='history')return; var body=document.getElementById('panelbody'); body.textContent=''; (items||[]).forEach(function(h){ body.appendChild(panelRow(h.title||h.url,h.url,function(){ post({cmd:'navigate',url:h.url}); },'Open')); }); };
+  window.__ferritePanelBookmarks=function(items){ if(panelSec!=='bookmarks')return; var body=document.getElementById('panelbody'); body.textContent=''; (items||[]).forEach(function(b){ body.appendChild(panelRow(b.title||b.url,b.url,function(){ post({cmd:'navigate',url:b.url}); },'Open')); }); };
+  window.__ferriteDownloadsRecent=function(items){ if(panelSec!=='downloads')return; var body=document.getElementById('panelbody'); body.textContent=''; (items||[]).forEach(function(d){
+    var r=document.createElement('div'); r.className='row';
+    var m=document.createElement('div'); var t=document.createElement('div'); t.textContent=d.filename||d.url; m.appendChild(t);
+    if(d.url){ var u=document.createElement('div'); u.className='u'; u.textContent=d.url; m.appendChild(u); }
+    r.appendChild(m);
+    var open=document.createElement('button'); open.textContent='Open';
+    open.onclick=(function(id){return function(){ post({cmd:'dl_bubble_open',id:id}); };})(d.id);
+    r.appendChild(open);
+    var st=String(d.state||'').toLowerCase();
+    if(st.indexOf('fail')>=0||st.indexOf('interrupt')>=0||st.indexOf('cancel')>=0){
+      var retry=document.createElement('button'); retry.textContent='Retry';
+      retry.onclick=(function(id){return function(){ post({cmd:'dl_bubble_retry',id:id}); };})(d.id);
+      r.appendChild(retry);
+    }
+    body.appendChild(r);
+  }); };
+  window.__ferritePanelReading=function(items){ if(panelSec!=='reading')return; var body=document.getElementById('panelbody'); body.textContent=''; (items||[]).forEach(function(r){ body.appendChild(panelRow(r.title||r.url,r.url,function(){ post({cmd:'navigate',url:r.url}); },'Open')); }); };
+  var ptabs=document.querySelectorAll('#paneltabs button');
+  for(var pi=0;pi<ptabs.length;pi++){ (function(b){ b.addEventListener('click',function(){ panelSec=b.getAttribute('data-sec'); renderPanel(); }); })(ptabs[pi]); }
+  // ---- permission requests (same broker as desktop: allow once, //
+  // always, or dismiss into the quiet backoff; never auto-grant) ----
+  function renderPerm(){
+    var old=document.getElementById('permpop');
+    if(old) old.parentNode.removeChild(old);
+    var reqs=(S&&S.perm)||[];
+    if(!reqs.length) return;
+    var pop=document.createElement('div'); pop.id='permpop'; pop.setAttribute('role','alert');
+    pop.style.cssText='position:absolute;top:52px;left:8px;right:8px;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:10px;z-index:46;padding:12px 14px;font-size:14px;';
+    reqs.slice(0,3).forEach(function(r){
+      var d=document.createElement('div'); d.textContent=(r.label||r.kind||'Permission')+' · '+(r.origin||'');
+      pop.appendChild(d);
+      var row=document.createElement('div'); row.style.cssText='display:flex;gap:8px;margin:8px 0;';
+      [['Once',false],['Always',true]].forEach(function(a){
+        var b=document.createElement('button'); b.textContent=a[0]; b.style.cssText='flex:1;min-height:44px;background:var(--f-surface-2);border:1px solid var(--f-border);color:var(--f-fg);border-radius:8px;';
+        b.onclick=(function(rr,al){return function(){ pop.parentNode.removeChild(pop); post({cmd:'perm_decide',origin:rr.origin,kind:rr.kind,always:al}); };})(r,a[1]);
+        row.appendChild(b);
+      });
+      var n=document.createElement('button'); n.textContent='Not now'; n.style.cssText='flex:1;min-height:44px;background:none;border:1px solid var(--f-border);color:var(--f-fg);border-radius:8px;';
+      n.onclick=function(){ if(pop.parentNode)pop.parentNode.removeChild(pop); };
+      row.appendChild(n);
+      pop.appendChild(row);
+    });
+    document.getElementById('stage').appendChild(pop);
+  }
+  // ---- toolbar wiring ----
+  document.getElementById('back').addEventListener('click',function(){ post({cmd:'go_back',steps:1}); });
+  document.getElementById('fwd').addEventListener('click',function(){ post({cmd:'go_forward',steps:1}); });
+  document.getElementById('rel').addEventListener('click',function(){ post({cmd:'reload'}); });
+  document.getElementById('tabcount').addEventListener('click',function(){ openSwitcher(); });
+  document.getElementById('sharebtn').addEventListener('click',function(){ post({cmd:'share'}); });
+  document.getElementById('menu').addEventListener('click',function(){ openSheet(); });
+  document.getElementById('swclose').addEventListener('click',function(){ closeSwitcher(); post({cmd:'focus_content'}); });
+  // Dismiss overlays on background tap of the stage (panels, not content).
+  document.getElementById('stage').addEventListener('click',function(e){
+    if(e.target===this){ closeSheet(); document.getElementById('shieldpop').classList.remove('open'); }
+  });
+  // Bootstraps from the shell push, exactly like desktop.
+  post({cmd:'request_state'});
+})();
+</script>
+</body>
+</html>

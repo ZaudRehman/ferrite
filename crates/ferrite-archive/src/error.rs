@@ -9,6 +9,9 @@ pub enum ArchiveError {
     #[error("storage error: {0}")]
     Storage(String),
 
+    #[error("crypto error: {0}")]
+    Crypto(String),
+
     #[error("compression error: {0}")]
     Compression(String),
 

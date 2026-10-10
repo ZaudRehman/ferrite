@@ -2,3 +2,7 @@
 /CHECKSUM
 /INTERNAL
 .env
+*.exe
+/relay/ferrite-blobs/
+/ferrite-blobs/
+/graphify-out/

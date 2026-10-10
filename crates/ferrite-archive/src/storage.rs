@@ -1,4 +1,4 @@
-//! SQLite storage for snapshots and FTS5.
+//! SQLite store for snapshots, quarantine rows, and the FTS5 index.
 
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
@@ -12,7 +12,11 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub fn open(path: impl AsRef<Path>) -> ArchiveResult<Self> {
+    /// Open (or create) the file store under `key`. Mirrors the vault
+    /// contract: legacy pre-SQLCipher files are rejected, never silently
+    /// re-encrypted; a configured key without the `sqlcipher` feature
+    /// fails fast instead of writing plaintext; wrong keys fail closed.
+    pub fn open(path: impl AsRef<Path>, key: &[u8]) -> ArchiveResult<Self> {
         let p = path.as_ref();
         if let Some(parent) = p.parent() {
             if !parent.as_os_str().is_empty() {
@@ -20,9 +24,55 @@ impl Storage {
                     .map_err(|e| ArchiveError::Storage(e.to_string()))?;
             }
         }
+        // Header triage, mirroring the vault: only plaintext SQLite files
+        // are identifiable by magic. Opaque bytes may be SQLCipher (whose
+        // header page is encrypted too), legacy-XOR, or corruption: only a
+        // key attempt distinguishes them, so magic alone never decides.
+        // Plaintext files are refused (never silently adopted); opaque
+        // files without a key to verify them are refused with guidance.
+        let mut opaque_without_key = false;
+        if p.exists() {
+            if let Ok(data) = std::fs::read(p) {
+                if !data.is_empty() && !data.starts_with(b"SQLite format 3\0") {
+                    if key.is_empty() {
+                        opaque_without_key = true;
+                    }
+                } else if !data.is_empty() {
+                    return Err(ArchiveError::Storage(format!(
+                        "legacy plaintext archive file at {}: move it aside to start fresh",
+                        p.display()
+                    )));
+                }
+            }
+        }
+        if opaque_without_key {
+            return Err(ArchiveError::Storage(format!(
+                "unreadable archive file at {} with no key to verify it (legacy format or wrong setup): move it aside to start fresh",
+                p.display()
+            )));
+        }
+        if !key.is_empty() && key.len() != 32 {
+            return Err(ArchiveError::Crypto(
+                "archive key must be exactly 32 bytes".to_owned(),
+            ));
+        }
+        if !key.is_empty() && !cfg!(feature = "sqlcipher") {
+            return Err(ArchiveError::Crypto(
+                "archive key configured but built without `sqlcipher` feature: refusing plaintext fallback (build with --features sqlcipher)".to_owned(),
+            ));
+        }
         let conn = Connection::open(p).map_err(|e| ArchiveError::Storage(e.to_string()))?;
+        if !key.is_empty() {
+            let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+            let pragma = format!("PRAGMA key = \"x'{hex}'\"; PRAGMA cipher_compatibility = 4;");
+            conn.execute_batch(&pragma)
+                .map_err(|e| ArchiveError::Storage(format!("sqlcipher key: {e}")))?;
+            conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map_err(|e| ArchiveError::Storage(format!("sqlcipher key rejected (NOTADB): {e}")))?;
+        }
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
-        // Boot integrity gate: refuse corrupt files instead of half-working.
         let ok: String = conn
             .query_row("PRAGMA integrity_check", [], |r| r.get(0))
             .map_err(|e| ArchiveError::Storage(format!("integrity check failed: {e}")))?;
@@ -46,6 +96,45 @@ impl Storage {
         Ok(s)
     }
 
+    /// Re-encrypt this database under `new_key` (key rotation). Same
+    /// contract as the vault's rekey: keyed databases and the `sqlcipher`
+    /// feature only (rekeying an unkeyed file would silently encrypt it),
+    /// verified under the new key before returning. Callers track
+    /// keyed-ness (the store itself retains no key).
+    pub fn rekey(&self, keyed: bool, new_key: &[u8]) -> ArchiveResult<()> {
+        if new_key.len() != 32 {
+            return Err(ArchiveError::Crypto(
+                "rotation key must be exactly 32 bytes".to_owned(),
+            ));
+        }
+        if !keyed {
+            return Err(ArchiveError::Crypto(
+                "rekey refused: database is not keyed (would encrypt plaintext)".to_owned(),
+            ));
+        }
+        #[cfg(not(feature = "sqlcipher"))]
+        {
+            Err(ArchiveError::Crypto(
+                "rekey requires the `sqlcipher` feature".to_owned(),
+            ))
+        }
+        #[cfg(feature = "sqlcipher")]
+        {
+            let hex: String = new_key.iter().map(|b| format!("{b:02x}")).collect();
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+            conn.execute_batch(&format!("PRAGMA rekey = \"x'{hex}'\";"))
+                .map_err(|e| ArchiveError::Storage(format!("sqlcipher rekey: {e}")))?;
+            conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map_err(|e| ArchiveError::Storage(format!("rekey verify failed: {e}")))?;
+            Ok(())
+        }
+    }
+
     fn init_schema(&self) -> ArchiveResult<()> {
         let conn = self
             .conn
@@ -53,6 +142,11 @@ impl Storage {
             .map_err(|e| ArchiveError::Storage(e.to_string()))?;
         conn.execute_batch(
             r#"
+            -- Incremental auto-vacuum for databases created from here on
+            -- (same discipline as the vault: freed snapshot pages are
+            -- tracked for `incremental_vacuum`, existing files convert
+            -- on first fragmented open via `reclaim_space`).
+            PRAGMA auto_vacuum=INCREMENTAL;
             CREATE TABLE IF NOT EXISTS web_snapshots(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL,
@@ -83,6 +177,44 @@ impl Storage {
         Ok(())
     }
 
+    /// Reclaim free pages (same contract as the vault's `reclaim_space`:
+    /// bounded sweep, one-time conversion rebuild only when fragmented).
+    /// Snapshots evict oldest-first elsewhere; this only compacts what
+    /// eviction and expiry already freed.
+    pub fn reclaim_space(&self) -> ArchiveResult<usize> {
+        const CONVERT_FREELIST_PAGES: i64 = 2000;
+        const SWEEP_PAGES: u32 = 500;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+        let mode: i64 = conn
+            .query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
+            .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+        if mode != 2 {
+            let free: i64 = conn
+                .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+                .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+            if free < CONVERT_FREELIST_PAGES {
+                return Ok(0);
+            }
+            conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL;")
+                .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+            conn.execute_batch("VACUUM;")
+                .map_err(|e| ArchiveError::Storage(format!("vacuum rebuild: {e}")))?;
+        }
+        let before: i64 = conn
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+            .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+        conn.execute_batch(&format!("PRAGMA incremental_vacuum({SWEEP_PAGES});"))
+            .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+        let after: i64 = conn
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+            .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+        Ok(before.saturating_sub(after).max(0) as usize)
+    }
+
+    /// Row plus FTS row in one transaction.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_snapshot(
         &self,
@@ -98,8 +230,6 @@ impl Storage {
             .conn
             .lock()
             .map_err(|e| ArchiveError::Storage(e.to_string()))?;
-        // Single transaction: a crash between row and FTS inserts must not
-        // leave orphan rows or missing index entries.
         conn.execute_batch("BEGIN IMMEDIATE;")
             .map_err(|e| ArchiveError::Storage(e.to_string()))?;
         let id: ArchiveResult<i64> = (|| {
@@ -129,6 +259,7 @@ impl Storage {
         }
     }
 
+    /// Quarantine insert. Not indexed, not served. Keeps newest 1000.
     pub fn insert_unsanitized(
         &self,
         url: &str,
@@ -147,8 +278,6 @@ impl Storage {
         )
         .map_err(|e| ArchiveError::Storage(e.to_string()))?;
         let id = conn.last_insert_rowid();
-        // Bounded retention: unsanitized rows were previously never evicted
-        // (unbounded growth). Keep the newest 1000.
         let _ = conn.execute(
             "DELETE FROM web_snapshots_unsanitized WHERE id NOT IN (SELECT id FROM web_snapshots_unsanitized ORDER BY id DESC LIMIT 1000)",
             [],
@@ -157,13 +286,16 @@ impl Storage {
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn get_latest(&self, url: &str) -> ArchiveResult<Option<(i64, Vec<u8>, String, i64)>> {
+    pub fn get_latest(
+        &self,
+        url: &str,
+    ) -> ArchiveResult<Option<(i64, Vec<u8>, String, i64, bool)>> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| ArchiveError::Storage(e.to_string()))?;
         let mut stmt = conn
-            .prepare("SELECT id, zstd_blob, headers, timestamp FROM web_snapshots WHERE url=?1 ORDER BY timestamp DESC LIMIT 1")
+            .prepare("SELECT id, zstd_blob, headers, timestamp, is_pinned FROM web_snapshots WHERE url=?1 ORDER BY timestamp DESC LIMIT 1")
             .map_err(|e| ArchiveError::Storage(e.to_string()))?;
         let row = stmt
             .query_row([url], |r| {
@@ -172,6 +304,7 @@ impl Storage {
                     r.get::<_, Vec<u8>>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4).unwrap_or(0) != 0,
                 ))
             })
             .optional()
@@ -179,6 +312,7 @@ impl Storage {
         Ok(row)
     }
 
+    /// LIKE wildcards in the input are escaped.
     #[allow(clippy::type_complexity)]
     pub fn query_fuzzy_domain(
         &self,
@@ -207,9 +341,7 @@ impl Storage {
         Ok(row)
     }
 
-    /// Escape FTS5 query syntax by quoting every token as a phrase.
-    /// Raw user input like `OR`, `"`, `*`, `NEAR(` otherwise throws or
-    /// changes query semantics (FTS injection).
+    /// Tokens are quoted, so operators match literally. Limit max 100.
     pub fn search_fts(&self, query: &str, limit: usize) -> ArchiveResult<Vec<(String, String)>> {
         let escaped = escape_fts_query(query);
         if escaped.is_empty() {
@@ -278,86 +410,94 @@ impl Storage {
         Ok(v)
     }
 
+    /// Delete oldest unpinned rows until under budget. Pinned rows exempt.
+    /// Loops victim passes (bounded) so over-budget stores larger than one
+    /// 10000-row window still converge instead of reporting success over
+    /// budget.
     pub fn evict_lru(&self, max_bytes: i64) -> ArchiveResult<usize> {
+        const MAX_PASSES: usize = 100;
         let conn = self
             .conn
             .lock()
             .map_err(|e| ArchiveError::Storage(e.to_string()))?;
-        let total: i64 = conn
-            .query_row(
-                "SELECT COALESCE(SUM(size),0) FROM web_snapshots WHERE is_pinned=0",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(|e| ArchiveError::Storage(e.to_string()))?;
-        if total <= max_bytes {
-            return Ok(0);
-        }
-        let mut to_free = total - max_bytes;
-        // Bound the scan: oldest-first with a 10k-row cap keeps per-ingest
-        // work flat instead of loading millions of rows into a Vec.
-        let mut stmt = conn
-            .prepare("SELECT id, size FROM web_snapshots WHERE is_pinned=0 ORDER BY timestamp ASC LIMIT 10000")
-            .map_err(|e| ArchiveError::Storage(e.to_string()))?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
-            .map_err(|e| ArchiveError::Storage(e.to_string()))?;
-        let ids: Vec<(i64, i64)> = rows
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| ArchiveError::Storage(e.to_string()))?;
-        drop(stmt);
-        // Select victims first (oldest-first until the budget is met), then
-        // delete in bounded IN-chunks inside one transaction.
-        let mut victims: Vec<i64> = Vec::new();
-        for (id, size) in &ids {
-            if to_free <= 0 {
-                break;
-            }
-            victims.push(*id);
-            to_free -= size;
-        }
-        if victims.is_empty() {
-            return Ok(0);
-        }
-        conn.execute_batch("BEGIN IMMEDIATE;")
-            .map_err(|e| ArchiveError::Storage(e.to_string()))?;
-        let mut ok = true;
-        for chunk in victims.chunks(100) {
-            let mut ids_sql = String::from("(");
-            for (i, id) in chunk.iter().enumerate() {
-                if i > 0 {
-                    ids_sql.push(',');
-                }
-                ids_sql.push_str(&id.to_string());
-            }
-            ids_sql.push(')');
-            // Row + FTS delete in the same transaction (no orphans). IDs
-            // come from our own integer query, never user input.
-            if conn
-                .execute(
-                    &format!("DELETE FROM web_snapshots WHERE id IN {ids_sql}"),
+        let mut total_evicted = 0usize;
+        for _ in 0..MAX_PASSES {
+            let total: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(size),0) FROM web_snapshots WHERE is_pinned=0",
                     [],
+                    |r| r.get(0),
                 )
-                .is_err()
-                || conn
+                .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+            if total <= max_bytes {
+                return Ok(total_evicted);
+            }
+            let mut to_free = total - max_bytes;
+            let ids: Vec<(i64, i64)> = {
+                let mut stmt = conn
+                    .prepare("SELECT id, size FROM web_snapshots WHERE is_pinned=0 ORDER BY timestamp ASC LIMIT 10000")
+                    .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+                    .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| ArchiveError::Storage(e.to_string()))?
+            };
+            let mut victims: Vec<i64> = Vec::new();
+            for (id, size) in &ids {
+                if to_free <= 0 {
+                    break;
+                }
+                victims.push(*id);
+                to_free -= size;
+            }
+            if victims.is_empty() {
+                // Under-budget check above still fails but nothing is
+                // evictable (e.g. zero-size rows): stop instead of spinning.
+                return Ok(total_evicted);
+            }
+            conn.execute_batch("BEGIN IMMEDIATE;")
+                .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+            let mut ok = true;
+            for chunk in victims.chunks(100) {
+                let mut ids_sql = String::from("(");
+                for (i, id) in chunk.iter().enumerate() {
+                    if i > 0 {
+                        ids_sql.push(',');
+                    }
+                    ids_sql.push_str(&id.to_string());
+                }
+                ids_sql.push(')');
+                // Ids come from the integer scan above, never user input.
+                if conn
                     .execute(
-                        &format!("DELETE FROM web_snapshots_fts WHERE snapshot_id IN {ids_sql}"),
+                        &format!("DELETE FROM web_snapshots WHERE id IN {ids_sql}"),
                         [],
                     )
                     .is_err()
-            {
-                ok = false;
-                break;
+                    || conn
+                        .execute(
+                            &format!(
+                                "DELETE FROM web_snapshots_fts WHERE snapshot_id IN {ids_sql}"
+                            ),
+                            [],
+                        )
+                        .is_err()
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                conn.execute_batch("COMMIT;")
+                    .map_err(|e| ArchiveError::Storage(e.to_string()))?;
+                total_evicted += victims.len();
+            } else {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(ArchiveError::Storage("evict batch failed".to_owned()));
             }
         }
-        if ok {
-            conn.execute_batch("COMMIT;")
-                .map_err(|e| ArchiveError::Storage(e.to_string()))?;
-            Ok(victims.len())
-        } else {
-            let _ = conn.execute_batch("ROLLBACK;");
-            Err(ArchiveError::Storage("evict batch failed".to_owned()))
-        }
+        Ok(total_evicted)
     }
 
     pub fn delete_snapshot(&self, id: i64) -> ArchiveResult<()> {
@@ -419,7 +559,6 @@ impl Storage {
     }
 }
 
-/// Escape LIKE wildcards so fuzzy-directory input matches literally.
 fn escape_like(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -431,10 +570,6 @@ fn escape_like(s: &str) -> String {
     out
 }
 
-/// Quote every whitespace-separated token as an FTS5 phrase (`"a b"`),
-/// doubling embedded quotes. Operators (`OR`, `*`, `NEAR(`, `-`, column
-/// filters) become literals instead of syntax. Empty/whitespace input
-/// yields an empty string (caller returns no rows).
 fn escape_fts_query(query: &str) -> String {
     let mut out = String::new();
     for token in query.split_whitespace().take(32) {
@@ -472,5 +607,110 @@ mod tests {
         assert_eq!(escape_fts_query("a*b"), "\"a*b\"");
         assert_eq!(escape_fts_query("   "), "");
         assert_eq!(escape_fts_query("say \"hi\""), "\"say\" \"\"\"hi\"\"\"");
+    }
+
+    fn temp_db(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ferrite_test_{}_{}",
+            name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("archive.db")
+    }
+
+    #[test]
+    fn keyed_file_requires_sqlcipher_without_plaintext_fallback() {
+        let path = temp_db("keyed");
+        let dir = path.parent().unwrap().to_owned();
+        let key = vec![0xAA; 32];
+        #[cfg(feature = "sqlcipher")]
+        {
+            let s = Storage::open(&path, &key).unwrap();
+            drop(s);
+            let data = std::fs::read(&path).unwrap();
+            assert!(!data.starts_with(b"SQLite format 3\0"));
+            // Wrong key fails closed, never decodes garbage.
+            assert!(Storage::open(&path, &vec![0xBB; 32]).is_err());
+            // Same key reopens.
+            assert!(Storage::open(&path, &key).is_ok());
+        }
+        #[cfg(not(feature = "sqlcipher"))]
+        {
+            let err = Storage::open(&path, &key).unwrap_err().to_string();
+            assert!(err.contains("sqlcipher"), "got: {err}");
+            assert!(!path.exists());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rekey_refuses_unkeyed_and_short_keys() {
+        // Memory stores are never keyed: rekey would encrypt, so refuse.
+        let s = Storage::open_in_memory().unwrap();
+        let err = s.rekey(false, &[0xAA; 32]).unwrap_err().to_string();
+        assert!(err.contains("not keyed"), "got: {err}");
+        let err = s.rekey(true, &[0xAA; 16]).unwrap_err().to_string();
+        assert!(err.contains("32 bytes"), "got: {err}");
+        // Keyed without the feature fails closed (never encrypts silently).
+        #[cfg(not(feature = "sqlcipher"))]
+        {
+            let err = s.rekey(true, &[0xAA; 32]).unwrap_err().to_string();
+            assert!(err.contains("sqlcipher"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn legacy_non_sqlite_file_is_rejected() {
+        let path = temp_db("legacy");
+        let dir = path.parent().unwrap().to_owned();
+        std::fs::write(&path, b"LEGACY-BLOB").unwrap();
+        let err = Storage::open(&path, &[]).unwrap_err().to_string();
+        assert!(err.contains("legacy"), "got: {err}");
+        // Bad key length fails before touching disk.
+        let err = Storage::open(&path, &[0xAA; 16]).unwrap_err().to_string();
+        assert!(
+            err.contains("legacy") || err.contains("32 bytes"),
+            "got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reclaim_space_is_safe_on_fresh_db() {
+        let s = Storage::open_in_memory().unwrap();
+        // Fresh database: nothing to reclaim, never an error.
+        assert_eq!(s.reclaim_space().unwrap(), 0);
+    }
+
+    #[test]
+    fn evict_loops_past_single_window_until_under_budget() {
+        let s = Storage::open_in_memory().unwrap();
+        // 11,000 rows x 1000 bytes = 11 MB; a 500 KB budget needs 10,500
+        // evictions, more than one 10000-row window. Single-pass code
+        // reports success still over budget.
+        for i in 0..11_000 {
+            s.insert_snapshot(
+                &format!("https://evict.test/{i}"),
+                i,
+                "",
+                &[0xAA; 16],
+                1000,
+                false,
+                "text",
+            )
+            .unwrap();
+        }
+        assert_eq!(s.total_size().unwrap(), 11_000_000);
+        let evicted = s.evict_lru(500_000).unwrap();
+        assert!(evicted > 10_000, "must loop past one window, got {evicted}");
+        assert!(
+            s.total_size().unwrap() <= 500_000,
+            "must reach budget, size={}",
+            s.total_size().unwrap()
+        );
     }
 }

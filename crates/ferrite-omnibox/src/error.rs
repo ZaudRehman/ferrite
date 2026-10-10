@@ -2,7 +2,6 @@
 
 use thiserror::Error;
 
-/// All fallible outcomes from the omnibox layer.
 pub type OmniboxResult<T> = Result<T, OmniboxError>;
 
 #[derive(Debug, Error, PartialEq, Eq)]

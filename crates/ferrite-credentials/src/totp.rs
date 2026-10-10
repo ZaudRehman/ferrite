@@ -1,4 +1,4 @@
-//! TOTP handling.
+//! TOTP secrets. SHA1, 6 digits, 30 second period.
 
 use totp_rs::{Algorithm, Secret, TOTP};
 use zeroize::Zeroize;

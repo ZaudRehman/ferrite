@@ -1,4 +1,5 @@
-//! Password and passphrase generation.
+//! Password and passphrase generation. CSPRNG with rejection sampling,
+//! no modulo bias.
 
 use ring::rand::{SecureRandom, SystemRandom};
 
@@ -79,7 +80,6 @@ pub fn generate_passphrase(cfg: &PassphraseConfig) -> GeneratedPassword {
     let sys = SystemRandom::new();
     let list = eff_wordlist();
     assert!(list.len() >= 7776, "EFF wordlist 7776 required");
-    // For 7776 >256, use two-byte sampling unbiased via rejection on u16
     let mut words = Vec::new();
     for _ in 0..cfg.words {
         loop {

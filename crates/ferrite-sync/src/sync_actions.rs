@@ -1,7 +1,10 @@
-//! Full SyncAction coverage per 5.2 (every promised category).
+//! Sync actions across every promised category.
 
 use serde::{Deserialize, Serialize};
 
+/// Closed set. Trust exceptions and extensions have no variant: exceptions
+/// are device specific, extension folders are local only. History needs
+/// explicit opt in.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Copy)]
 pub enum SyncCategory {
     Bookmarks,
@@ -34,6 +37,9 @@ pub enum SyncAction {
         url: String,
         title: String,
         parent_folder_id: Option<String>,
+        /// Fractional sibling position. Defaults to 0.0 for old snapshots.
+        #[serde(default)]
+        sort_order: f64,
         hlc_timestamp: u64,
     },
     DeleteBookmark {
@@ -146,6 +152,11 @@ pub enum CrdtMessage {
     FetchArchiveBodyResponse {
         snapshot_id: String,
         compressed_html: Vec<u8>,
+        /// HLC of the snapshot row at the sender. Old peers omit it
+        /// (default 0): receivers fill empty bodies but never overwrite
+        /// a filled body with an unguarded (0) payload.
+        #[serde(default)]
+        hlc_timestamp: u64,
     },
     /// Best-effort live-tab presence push (ephemeral, never persisted).
     /// Replaces the deleted Raft-based PushTab: tab presence needs no

@@ -1,0 +1,23 @@
+[Desktop Entry]
+Version=1.5
+Type=Application
+Name=Ferrite
+GenericName=Web Browser
+Comment=Privacy-first desktop browser
+Exec=ferrite %U
+Icon=com.ferrite.Browser
+Terminal=false
+Categories=Network;WebBrowser;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;text/html;
+StartupWMClass=ferrite
+StartupNotify=true
+Keywords=browser;privacy;web;
+Actions=Incognito;NewWindow;
+
+[Desktop Action Incognito]
+Name=New Incognito Window
+Exec=ferrite --incognito
+
+[Desktop Action NewWindow]
+Name=New Window
+Exec=ferrite

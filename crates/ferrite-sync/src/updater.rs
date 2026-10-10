@@ -1,11 +1,7 @@
-//! Updater engine per Part 13 5.1-5.6 - self_update + differential + channels + staged rollout + rollback.
-//!
-//! Trust model: every release is Ed25519-signed by the release root key.
-//! `verify_sha256` never passes on empty expectations, version comparison is
-//! real semver (prerelease < release), and swaps are fsync'd + health-gated.
-//! Without a provisioned release root (`provision_release_root`), update
-//! checks fail closed.
+//! Release updater. Every release is Ed25519 signed. Without a provisioned
+//! root, checks fail closed. Swaps are fsync sealed and health gated.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -41,74 +37,151 @@ pub struct Manifest {
     pub stable: ChannelRelease,
     pub beta: ChannelRelease,
     pub dev: ChannelRelease,
+    /// Signed rollback directive. Lets the server pull clients back to a
+    /// known good build. Absent by default, old manifests keep working.
+    #[serde(default)]
+    pub downgrade: Option<ChannelRelease>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRelease {
     pub version: String,
     pub rollout: u8, // 0-100
-    pub sha256: String,
-    /// Hex Ed25519 signature over [`release_signing_message`]. Empty means
-    /// unsigned and NEVER verifies.
+    /// Hex signature over the release message. Empty never verifies.
     #[serde(default)]
     pub signature: String,
+    /// Per-platform artifacts, keyed by Rust target triple
+    /// (`x86_64-pc-windows-msvc`, …). One manifest serves every OS because
+    /// native binaries are not portable; the client selects its own triple
+    /// and refuses when absent (fail-closed, never a foreign binary).
+    #[serde(default)]
+    pub targets: HashMap<String, TargetArtifact>,
+    /// Severity marker, unsigned and cosmetic-only: `"security"` escalates
+    /// the restart reminder, anything else is routine. It can never widen
+    /// trust (signatures and hashes decide that), only reminder cadence.
+    #[serde(default)]
+    pub severity: String,
+}
+
+/// One platform's download: full artifact plus its optional delta patch.
+/// Patch binaries are platform-specific (bsdiff over native executables),
+/// so the patch rides with its target, never top-level.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetArtifact {
     pub url: String,
+    pub sha256: String,
+    #[serde(default)]
     pub patch_url: Option<String>,
+}
+
+impl TargetArtifact {
+    pub fn is_complete(&self) -> bool {
+        !self.url.is_empty() && !self.sha256.is_empty()
+    }
+}
+
+impl ChannelRelease {
+    /// Release triple of the running binary, if it is a shipped target.
+    /// Unknown platforms yield `None` so every consumer fails closed instead
+    /// of downloading a foreign binary.
+    pub fn artifact_for_this_platform(&self) -> Option<&TargetArtifact> {
+        let triple = current_target_triple()?;
+        self.targets.get(triple).filter(|a| a.is_complete())
+    }
+}
+
+/// Rust target triple of the running binary for the shipped matrix, if any.
+pub fn current_target_triple() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        _ => None,
+    }
+}
+
+impl ChannelRelease {
+    /// Whether this release is marked a security update.
+    pub fn is_security(&self) -> bool {
+        self.severity.eq_ignore_ascii_case("security")
+    }
+}
+
+impl Manifest {
+    /// Channel release for `channel`. The manifest carries all three,
+    /// callers select, never guess.
+    pub fn release(&self, channel: &Channel) -> &ChannelRelease {
+        match channel {
+            Channel::Stable => &self.stable,
+            Channel::Beta => &self.beta,
+            Channel::Dev => &self.dev,
+        }
+    }
+}
+
+fn empty_channel() -> ChannelRelease {
+    ChannelRelease {
+        version: "0.0.0".into(),
+        rollout: 100,
+        signature: "".into(),
+        targets: HashMap::new(),
+        severity: String::new(),
+    }
 }
 
 impl Default for Manifest {
     fn default() -> Self {
         Self {
-            stable: ChannelRelease {
-                version: "0.0.0".into(),
-                rollout: 100,
-                sha256: "".into(),
-                signature: "".into(),
-                url: "".into(),
-                patch_url: None,
-            },
-            beta: ChannelRelease {
-                version: "0.0.0".into(),
-                rollout: 100,
-                sha256: "".into(),
-                signature: "".into(),
-                url: "".into(),
-                patch_url: None,
-            },
-            dev: ChannelRelease {
-                version: "0.0.0".into(),
-                rollout: 100,
-                sha256: "".into(),
-                signature: "".into(),
-                url: "".into(),
-                patch_url: None,
-            },
+            stable: empty_channel(),
+            beta: empty_channel(),
+            dev: empty_channel(),
+            downgrade: None,
         }
     }
 }
 
-/// Canonical signed payload for a release. Domain-separated; channel-bound
-/// so a beta signature cannot be replayed as stable.
+/// Canonical signed payload for a release. Domain-separated, channel-bound,
+/// so a beta signature cannot be replayed as stable. The per-target table is
+/// covered entry by entry (sorted by triple): swapping a platform's URL or
+/// hash invalidates the signature exactly like tampering with the version.
+/// Mirrored byte-for-byte by the release workflow's signing script; change
+/// both together (the `signing_message_vector` test pins the bytes).
 pub fn release_signing_message(channel: &Channel, rel: &ChannelRelease) -> String {
-    format!(
-        "ferrite-release-v1\n{}\n{}\n{}\n{}\n{}",
+    let mut msg = format!(
+        "ferrite-release-v1\n{}\n{}\n{}",
         channel.as_str(),
         rel.version,
         rel.rollout,
-        rel.sha256,
-        rel.url
-    )
+    );
+    let mut triples: Vec<&String> = rel.targets.keys().collect();
+    triples.sort();
+    // Every field terminated by `\n`, entries concatenated: the byte layout
+    // is fully determined by the sorted table, with no edge special-casing.
+    for triple in triples {
+        if let Some(a) = rel.targets.get(triple) {
+            msg.push_str(&format!(
+                "\n{}\n{}\n{}\n{}\n",
+                triple,
+                a.sha256,
+                a.url,
+                a.patch_url.as_deref().unwrap_or("")
+            ));
+        }
+    }
+    msg
 }
 
-/// Verify `rel`'s Ed25519 signature against 32-byte `root_pubkey`.
-/// Empty/malformed signature or key always fails.
+/// Verify the Ed25519 signature of `rel` against 32-byte `root_pubkey`.
+/// Empty/malformed signature or key always fails, as does a release with no
+/// complete targets entry (nothing to trust means nothing verifies).
 pub fn verify_release_signature(
     channel: &Channel,
     rel: &ChannelRelease,
     root_pubkey: &[u8],
 ) -> bool {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-    if rel.signature.is_empty() || rel.sha256.is_empty() || rel.url.is_empty() {
+    if rel.signature.is_empty() || !rel.targets.values().any(|a| a.is_complete()) {
         return false;
     }
     let Ok(key_bytes): Result<[u8; 32], _> = root_pubkey.try_into() else {
@@ -143,7 +216,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
 static RELEASE_ROOT: OnceLock<String> = OnceLock::new();
 
 /// Provision the release-root public key (64 lowercase hex chars).
-/// Called once at startup from trusted configuration; test code should use
+/// Called once at startup from trusted configuration. Test code uses
 /// [`verify_release_signature`] with ephemeral keys instead.
 pub fn provision_release_root(pubkey_hex: &str) -> Result<(), String> {
     if pubkey_hex.len() != 64 || !pubkey_hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -227,6 +300,220 @@ pub fn should_update(manifest: &Manifest, channel: &Channel, current: &str) -> b
         return bucket < rel.rollout;
     }
     false
+}
+
+/// Emergency rollback directive from a signed manifest, if any. Returns
+/// the downgrade release when the running version is newer than it, with
+/// a valid channel-bound signature. Downgrades skip rollout buckets.
+pub fn should_downgrade(
+    manifest: &Manifest,
+    channel: &Channel,
+    current: &str,
+) -> Option<ChannelRelease> {
+    let rel = manifest.downgrade.as_ref()?;
+    let Some(root_hex) = RELEASE_ROOT.get() else {
+        tracing::warn!("downgrade check without provisioned release root - refusing");
+        return None;
+    };
+    let Ok(root) = hex_decode(root_hex) else {
+        return None;
+    };
+    downgrade_for(channel, rel, current, &root)
+}
+
+/// Pure downgrade core (lock-free for tests). [`should_downgrade`] only
+/// adds the provisioned-root gate.
+fn downgrade_for(
+    channel: &Channel,
+    rel: &ChannelRelease,
+    current: &str,
+    root: &[u8],
+) -> Option<ChannelRelease> {
+    if !verify_release_signature(channel, rel, root) {
+        tracing::warn!("downgrade signature invalid - refusing");
+        return None;
+    }
+    if version_greater(current, &rel.version) {
+        Some(rel.clone())
+    } else {
+        None
+    }
+}
+
+/// Maximum full-artifact download trusted per run (browser binary ceiling).
+/// Anything claiming bigger is refused before a byte lands on disk.
+pub const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+/// Maximum delta-patch download (oversize patches fall back to full).
+pub const MAX_PATCH_BYTES: u64 = 64 * 1024 * 1024;
+/// Progress callback granularity: at most one call per 256KiB plus start
+/// and finish (a per-read callback would spam the UI thread).
+pub const PROGRESS_GRANULARITY: u64 = 256 * 1024;
+
+/// Background-download progress events (byte counts for the About page.
+/// The shell maps them to Started, Progress, and Finished UI).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateProgress {
+    Started { total: Option<u64> },
+    Progress { downloaded: u64, total: Option<u64> },
+    Finished { bytes: u64 },
+}
+
+/// Byte-counting reader wrapper. Progress-callback granularity lives here
+/// (not inline in the download loop), so it is unit-testable without a network.
+pub struct ProgressReader<R, F: FnMut(u64, Option<u64>)> {
+    inner: R,
+    downloaded: u64,
+    total: Option<u64>,
+    last_emit: u64,
+    on_progress: F,
+}
+
+impl<R, F: FnMut(u64, Option<u64>)> ProgressReader<R, F> {
+    /// `total` is the advertised length when known.
+    pub fn new(inner: R, total: Option<u64>, on_progress: F) -> Self {
+        Self {
+            inner,
+            downloaded: 0,
+            total,
+            last_emit: 0,
+            on_progress,
+        }
+    }
+}
+
+impl<R: std::io::Read, F: FnMut(u64, Option<u64>)> std::io::Read for ProgressReader<R, F> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.downloaded += n as u64;
+            if self.downloaded - self.last_emit >= PROGRESS_GRANULARITY {
+                self.last_emit = self.downloaded;
+                (self.on_progress)(self.downloaded, self.total);
+            }
+        }
+        Ok(n)
+    }
+}
+
+/// Download `url` to `dest` with byte caps, timeouts, and progress
+/// events. Partial files are removed on any failure. The destination is
+/// only complete on `Ok`. Returns the byte count.
+pub fn download_release(
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+    on_progress: impl FnMut(UpdateProgress),
+) -> Result<u64, String> {
+    use std::io::Write;
+    use std::time::Duration;
+
+    let mut on_progress = on_progress;
+    let config = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .timeout_recv_response(Some(Duration::from_secs(10)))
+        .timeout_recv_body(Some(Duration::from_secs(120)))
+        .build();
+    let agent = ureq::Agent::new_with_config(config);
+    let resp = agent.get(url).call().map_err(|e| e.to_string())?;
+    if resp.status() != ureq::http::StatusCode::OK {
+        return Err(format!("download status {}", resp.status()));
+    }
+    let total: Option<u64> = resp
+        .headers()
+        .get(ureq::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
+    if total.is_some_and(|t| t > max_bytes) {
+        return Err("download exceeds size cap".to_owned());
+    }
+    on_progress(UpdateProgress::Started { total });
+    let reader = resp.into_body().into_reader();
+    let mut counted = ProgressReader::new(reader, total, |downloaded, total| {
+        on_progress(UpdateProgress::Progress { downloaded, total });
+    });
+    let mut file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
+    let mut downloaded: u64 = 0;
+    let mut chunk = [0u8; 32 * 1024];
+    loop {
+        use std::io::Read;
+        let n = counted.read(&mut chunk).map_err(|e| {
+            let _ = std::fs::remove_file(dest);
+            e.to_string()
+        })?;
+        if n == 0 {
+            break;
+        }
+        downloaded += n as u64;
+        if downloaded > max_bytes {
+            let _ = std::fs::remove_file(dest);
+            return Err("download exceeds size cap".to_owned());
+        }
+        file.write_all(&chunk[..n]).map_err(|e| {
+            let _ = std::fs::remove_file(dest);
+            e.to_string()
+        })?;
+    }
+    file.sync_all().map_err(|e| e.to_string())?;
+    drop(file);
+    on_progress(UpdateProgress::Finished { bytes: downloaded });
+    Ok(downloaded)
+}
+
+/// Resolve a release to a verified local artifact: try the signed delta
+/// patch first, fall back to the full artifact on any patch failure.
+/// Refuse anything whose sha256 does not verify. Refuse releases with no
+/// artifact for this platform (fail-closed, never a foreign binary).
+/// Returns the path.
+pub fn fetch_and_verify(
+    rel: &ChannelRelease,
+    current_exe: &Path,
+    workdir: &Path,
+    on_progress: impl FnMut(UpdateProgress),
+) -> Result<PathBuf, String> {
+    let mut on_progress = on_progress;
+    let artifact = rel.artifact_for_this_platform().ok_or_else(|| {
+        "no artifact for this platform in release manifest - refusing update".to_owned()
+    })?;
+    let (url, sha256, patch_url) = (
+        artifact.url.clone(),
+        artifact.sha256.clone(),
+        artifact.patch_url.clone().unwrap_or_default(),
+    );
+    std::fs::create_dir_all(workdir).map_err(|e| e.to_string())?;
+    // Delta first: patch detached from the RUNNING binary (never from a
+    // half-written candidate), then hash-gated before acceptance.
+    if !patch_url.is_empty() {
+        let patch_path = workdir.join("ferrite-update.patch");
+        let candidate = workdir.join("ferrite-update-patched");
+        let patched = download_release(&patch_url, &patch_path, MAX_PATCH_BYTES, |p| {
+            on_progress(p);
+        })
+        .and_then(|_| apply_patch(current_exe, &patch_path, &candidate))
+        .and_then(|()| {
+            if verify_sha256(&candidate, &sha256) {
+                Ok(())
+            } else {
+                Err("patched artifact hash mismatch".to_owned())
+            }
+        });
+        let _ = std::fs::remove_file(&patch_path);
+        match patched {
+            Ok(()) => return Ok(candidate),
+            Err(e) => {
+                tracing::warn!(error = %e, "delta path failed, falling back to full download");
+                let _ = std::fs::remove_file(&candidate);
+            }
+        }
+    }
+    let full_path = workdir.join("ferrite-update-full");
+    download_release(&url, &full_path, MAX_DOWNLOAD_BYTES, |p| {
+        on_progress(p);
+    })?;
+    if !verify_sha256(&full_path, &sha256) {
+        let _ = std::fs::remove_file(&full_path);
+        return Err("full artifact hash mismatch".to_owned());
+    }
+    Ok(full_path)
 }
 
 fn parse_semver(s: &str) -> (Vec<u64>, Option<Vec<SemVerIdent>>) {
@@ -422,32 +709,11 @@ pub fn rollback_if_failed(current: &Path, expected_version: &str) -> bool {
     false
 }
 
-pub fn check_for_update(
-    manifest_url: &str,
-    channel: &Channel,
-) -> Result<Option<ChannelRelease>, String> {
-    // Fetch latest.json from CDN edge, not GitHub API directly (5.5 blind)
+/// Fetch and parse the release manifest (CDN edge, not GitHub API).
+/// Signature checks happen per-release in the callers, never here.
+pub fn fetch_manifest(manifest_url: &str) -> Result<Manifest, String> {
     let resp = ureq::get(manifest_url).call().map_err(|e| e.to_string())?;
-    let manifest: Manifest =
-        serde_json::from_reader(resp.into_body().into_reader()).map_err(|e| e.to_string())?;
-    let rel = match channel {
-        Channel::Stable => manifest.stable.clone(),
-        Channel::Beta => manifest.beta.clone(),
-        Channel::Dev => manifest.dev.clone(),
-    };
-    let Some(root_hex) = RELEASE_ROOT.get() else {
-        return Err("no release root provisioned - refusing update".into());
-    };
-    let root = hex_decode(root_hex).map_err(|_| "release root corrupt".to_string())?;
-    if !verify_release_signature(channel, &rel, &root) {
-        return Err("manifest signature invalid - refusing update".into());
-    }
-    let bucket = rollout_bucket();
-    if bucket < rel.rollout {
-        Ok(Some(rel))
-    } else {
-        Ok(None)
-    }
+    serde_json::from_reader(resp.into_body().into_reader()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -495,10 +761,16 @@ mod tests {
         let mut rel = ChannelRelease {
             version: "1.2.3".into(),
             rollout: 100,
-            sha256: "a".repeat(64),
             signature: String::new(),
-            url: "https://cdn.example/ferrite-1.2.3".into(),
-            patch_url: None,
+            targets: HashMap::from([(
+                "x86_64-unknown-linux-gnu".to_owned(),
+                TargetArtifact {
+                    sha256: "a".repeat(64),
+                    url: "https://cdn.example/ferrite-1.2.3".into(),
+                    patch_url: None,
+                },
+            )]),
+            severity: String::new(),
         };
         assert!(!verify_release_signature(&Channel::Stable, &rel, &root));
         sign_release_for_test(&Channel::Stable, &mut rel, &seed);
@@ -511,6 +783,13 @@ mod tests {
             &tampered,
             &root
         ));
+        // Tampered per-target URL invalidates the signature (targets ride
+        // inside the signed bytes, never beside them).
+        let mut swapped = rel.clone();
+        if let Some(a) = swapped.targets.get_mut("x86_64-unknown-linux-gnu") {
+            a.url = "https://cdn.example/evil".into();
+        }
+        assert!(!verify_release_signature(&Channel::Stable, &swapped, &root));
         // Cross-channel replay invalidates the signature.
         assert!(!verify_release_signature(&Channel::Beta, &rel, &root));
         // Wrong root invalidates.
@@ -533,33 +812,33 @@ mod tests {
         assert_eq!(a, b);
         assert!(a < 100);
     }
+
+    #[test]
+    fn rollout_bucket_file_holds_no_identifier() {
+        // The bucket persists a bare number for staged-rollout sampling.
+        // It must never grow into an installation identifier: numeric,
+        // in range, nothing else on disk.
+        let _ = rollout_bucket();
+        let content = std::fs::read_to_string(rollout_path()).unwrap();
+        let n: u8 = content.trim().parse().expect("bare number only");
+        assert!(n < 100);
+    }
     #[test]
     fn staged_rollout_bucket() {
+        fn unsigned(version: &str, rollout: u8) -> ChannelRelease {
+            ChannelRelease {
+                version: version.into(),
+                rollout,
+                signature: "".into(),
+                targets: HashMap::new(),
+                severity: String::new(),
+            }
+        }
         let manifest = Manifest {
-            stable: ChannelRelease {
-                version: "1.0.1".into(),
-                rollout: 10,
-                sha256: "".into(),
-                signature: "".into(),
-                url: "".into(),
-                patch_url: None,
-            },
-            beta: ChannelRelease {
-                version: "1.0.0".into(),
-                rollout: 100,
-                sha256: "".into(),
-                signature: "".into(),
-                url: "".into(),
-                patch_url: None,
-            },
-            dev: ChannelRelease {
-                version: "0.0.0".into(),
-                rollout: 100,
-                sha256: "".into(),
-                signature: "".into(),
-                url: "".into(),
-                patch_url: None,
-            },
+            stable: unsigned("1.0.1", 10),
+            beta: unsigned("1.0.0", 100),
+            dev: unsigned("0.0.0", 100),
+            downgrade: None,
         };
         // Bucket <10 => should update, >=10 => not
         let should = should_update(&manifest, &Channel::Stable, "1.0.0");
@@ -602,5 +881,189 @@ mod tests {
         assert!(rollback_if_failed(&cur, "9.9.9-nope"));
         assert_eq!(std::fs::read(&cur).unwrap(), b"v1");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn signed_release(version: &str, seed: &[u8; 32]) -> (ChannelRelease, Vec<u8>) {
+        use ed25519_dalek::SigningKey;
+        let sk = SigningKey::from_bytes(seed);
+        let root = sk.verifying_key().as_bytes().to_vec();
+        let mut rel = ChannelRelease {
+            version: version.into(),
+            rollout: 100,
+            signature: String::new(),
+            targets: HashMap::from([(
+                "x86_64-unknown-linux-gnu".to_owned(),
+                TargetArtifact {
+                    sha256: "b".repeat(64),
+                    url: "https://cdn.example/ferrite".into(),
+                    patch_url: None,
+                },
+            )]),
+            severity: String::new(),
+        };
+        sign_release_for_test(&Channel::Stable, &mut rel, seed);
+        (rel, root)
+    }
+
+    #[test]
+    fn downgrade_applies_only_when_running_newer_with_valid_sig() {
+        let seed = [7u8; 32];
+        let (rel, root) = signed_release("1.2.0", &seed);
+        // Running ahead of the directive: roll back.
+        assert!(downgrade_for(&Channel::Stable, &rel, "1.3.0", &root).is_some());
+        // Same or older running version: nothing to roll back to.
+        assert!(downgrade_for(&Channel::Stable, &rel, "1.2.0", &root).is_none());
+        assert!(downgrade_for(&Channel::Stable, &rel, "1.1.0", &root).is_none());
+        // Cross-channel replay refuses.
+        assert!(downgrade_for(&Channel::Beta, &rel, "1.3.0", &root).is_none());
+        // Tampered directive refuses.
+        let mut tampered = rel.clone();
+        tampered.version = "0.1.0".into();
+        assert!(downgrade_for(&Channel::Stable, &tampered, "1.3.0", &root).is_none());
+        // Unsigned directive refuses.
+        let mut unsigned = rel.clone();
+        unsigned.signature.clear();
+        assert!(downgrade_for(&Channel::Stable, &unsigned, "1.3.0", &root).is_none());
+    }
+
+    #[test]
+    fn severity_flags_security_only() {
+        let seed = [9u8; 32];
+        let (mut rel, _) = signed_release("1.2.0", &seed);
+        assert!(!rel.is_security());
+        rel.severity = "security".into();
+        assert!(rel.is_security());
+        rel.severity = "Security".into();
+        assert!(rel.is_security(), "case-insensitive");
+        // Severity rides outside the signature: changing it afterwards
+        // must not break verification (cosmetic-only by construction).
+        let (rel2, root) = signed_release("1.2.0", &seed);
+        assert!(verify_release_signature(&Channel::Stable, &rel2, &root));
+    }
+
+    #[test]
+    fn progress_reader_emits_at_granularity() {
+        use std::io::Read;
+        let data = vec![0u8; (PROGRESS_GRANULARITY * 3 + 100) as usize];
+        let mut events = Vec::new();
+        let mut r = ProgressReader::new(std::io::Cursor::new(data), Some(999), |d, t| {
+            events.push((d, t));
+        });
+        let mut buf = Vec::new();
+        r.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf.len(), (PROGRESS_GRANULARITY * 3 + 100) as usize);
+        // One callback per 256KiB window, not per read.
+        assert_eq!(events.len(), 3, "granular callbacks, got {events:?}");
+        assert!(events.iter().all(|(_, t)| *t == Some(999)), "total carried");
+        assert!(events.windows(2).all(|w| w[1].0 > w[0].0), "monotonic");
+    }
+
+    #[test]
+    fn progress_reader_handles_unknown_total() {
+        use std::io::Read;
+        let mut events = Vec::new();
+        let mut r = ProgressReader::new(std::io::Cursor::new(vec![1u8; 10]), None, |d, t| {
+            events.push((d, t));
+        });
+        let mut buf = Vec::new();
+        r.read_to_end(&mut buf).unwrap();
+        assert!(events.is_empty(), "tiny reads stay silent");
+    }
+
+    fn two_target_release() -> ChannelRelease {
+        ChannelRelease {
+            version: "2.0.0".into(),
+            rollout: 25,
+            signature: String::new(),
+            targets: HashMap::from([
+                (
+                    "x86_64-pc-windows-msvc".to_owned(),
+                    TargetArtifact {
+                        sha256: "c".repeat(64),
+                        url: "https://cdn.example/ferrite-win".into(),
+                        patch_url: Some("https://cdn.example/ferrite-win.patch".into()),
+                    },
+                ),
+                (
+                    "aarch64-apple-darwin".to_owned(),
+                    TargetArtifact {
+                        sha256: "d".repeat(64),
+                        url: "https://cdn.example/ferrite-mac".into(),
+                        patch_url: None,
+                    },
+                ),
+            ]),
+            severity: String::new(),
+        }
+    }
+
+    #[test]
+    fn signing_message_vector() {
+        // Byte-exact contract shared with the release workflow's signing
+        // script: entries sorted by triple, patch slot empty-never-absent.
+        let rel = two_target_release();
+        let cccc = "c".repeat(64);
+        let dddd = "d".repeat(64);
+        let expect = format!(
+            "ferrite-release-v1\nstable\n2.0.0\n25\naarch64-apple-darwin\n{dddd}\nhttps://cdn.example/ferrite-mac\n\n\nx86_64-pc-windows-msvc\n{cccc}\nhttps://cdn.example/ferrite-win\nhttps://cdn.example/ferrite-win.patch\n"
+        );
+        assert_eq!(release_signing_message(&Channel::Stable, &rel), expect);
+    }
+
+    #[test]
+    fn platform_artifact_selection_is_exact() {
+        let rel = two_target_release();
+        // Resolution follows the running platform, never a guess: on this
+        // machine the answer is whichever entry matches, or nothing.
+        let got = rel.artifact_for_this_platform();
+        match current_target_triple() {
+            Some("x86_64-pc-windows-msvc") => {
+                assert_eq!(
+                    got.map(|a| a.url.as_str()),
+                    Some("https://cdn.example/ferrite-win")
+                );
+            }
+            Some("aarch64-apple-darwin") => {
+                assert_eq!(
+                    got.map(|a| a.url.as_str()),
+                    Some("https://cdn.example/ferrite-mac")
+                );
+            }
+            _ => assert!(got.is_none(), "foreign platform must resolve to nothing"),
+        }
+        // Incomplete entries (empty hash) never count as artifacts.
+        let mut thin = two_target_release();
+        for a in thin.targets.values_mut() {
+            a.sha256.clear();
+        }
+        assert!(thin.artifact_for_this_platform().is_none());
+        let seed = [3u8; 32];
+        let mut thin_signed = thin;
+        sign_release_for_test(&Channel::Stable, &mut thin_signed, &seed);
+        use ed25519_dalek::SigningKey;
+        let root = SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .as_bytes()
+            .to_vec();
+        assert!(
+            !verify_release_signature(&Channel::Stable, &thin_signed, &root),
+            "no complete entry means nothing verifies"
+        );
+    }
+
+    #[test]
+    fn fetch_refuses_without_platform_artifact() {
+        // No network involved: resolution fails before any I/O.
+        let rel = ChannelRelease {
+            version: "9.9.9".into(),
+            rollout: 100,
+            signature: "00".repeat(64),
+            targets: HashMap::new(),
+            severity: String::new(),
+        };
+        let dir = std::env::temp_dir();
+        let exe = dir.join("ferrite-noplat-test.exe");
+        let err = fetch_and_verify(&rel, &exe, &dir, |_| {}).unwrap_err();
+        assert!(err.contains("no artifact for this platform"), "{err}");
     }
 }

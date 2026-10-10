@@ -1,4 +1,4 @@
-//! Part 10 Sovereign Sync: discovery & cryptography - _ferrite._tcp, Ed25519 mTLS, QR pairing, mesh trust propagation.
+//! Device sync: discovery, crypto, CRDT merge, and release updates.
 
 pub mod backup;
 pub mod crdt;
@@ -10,7 +10,9 @@ pub mod mtls;
 pub mod multiplex;
 pub mod pairing;
 pub mod relay_auth;
+pub mod relay_client;
 pub mod selective;
+pub mod session;
 pub mod sync_actions;
 pub mod transport;
 pub mod trusted;
@@ -30,21 +32,14 @@ pub use mtls::{MtlsConfig, MtlsTransport};
 pub use multiplex::{Decoded, MessageType, decode, encode_crdt};
 pub use pairing::{PairingPayload, PairingRateLimiter, PairingService};
 pub use relay_auth::{MAX_AUTH_SKEW_SECS, RelayAuthPayload, build_auth, verify_auth};
+pub use relay_client::{
+    RELAY_BACKOFF, RELAY_CONNECT_TIMEOUT, RELAY_IO_TIMEOUT, RELAY_MAX_MESSAGE_BYTES,
+    RELAY_PING_INTERVAL, RelayConnection, RelayError, RelayLink, RelaySignal, RelayStatus,
+    ServeOutcome, crdt_payload, parse_crdt_payload,
+};
 pub use selective::SyncSettings;
+pub use session::{RoundReport, SyncSession};
 pub use sync_actions::{CrdtMessage, LiveTabAction, SyncAction, SyncCategory};
 pub use transport::{P2pConfig, P2pTransport};
 pub use trusted::{TrustedDevice, TrustedStore};
 pub use vector_clock::VectorClock;
-
-use thiserror::Error;
-
-#[derive(Debug, Error)]
-pub enum SyncError {
-    #[error("transport: {0}")]
-    Transport(String),
-    #[error("crdt: {0}")]
-    Crdt(String),
-    #[error("vault: {0}")]
-    Vault(String),
-}
-pub type SyncResult<T> = Result<T, SyncError>;

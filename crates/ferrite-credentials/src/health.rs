@@ -1,4 +1,4 @@
-//! Password health dashboard - via vault and breached hyper checks.
+//! Password health: weak, reused, and old credential detection.
 
 use crate::credentials::CredentialRecord;
 
@@ -22,7 +22,6 @@ pub fn find_reused(creds: &[CredentialRecord], key: &[u8]) -> Vec<String> {
     use zeroize::Zeroize;
     let mut map: HashMap<Vec<u8>, Vec<String>> = HashMap::new();
     for c in creds {
-        // Skip undecryptable rows: never bucket garbage together as "reused".
         if let Some(pwd) = c.decrypt_password(key) {
             map.entry(pwd.into_bytes()).or_default().push(c.id.clone());
         }

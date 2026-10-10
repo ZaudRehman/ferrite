@@ -2,144 +2,455 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Ferrite - Sovereign Browser</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#020203">
-<meta name="description" content="Ferrite - Usability by Default, Privacy by Choice. Sovereign Archive, local-first sync, E2EE backup. Reproducible, signed, no tracking.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
+<title>Ferrite: the privacy-first desktop browser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f2eee5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e0c09" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="Ferrite: the privacy-first desktop browser">
+<meta property="og:description" content="History, passwords, and tabs stay on your devices. No accounts, no cloud, no telemetry.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="favicon.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Ferrite: the privacy-first desktop browser">
+<meta name="twitter:description" content="History, passwords, and tabs stay on your devices. No accounts, no cloud, no telemetry.">
+<meta name="description" content="Ferrite is a privacy-first desktop browser. History, passwords, and tabs stay on your devices. No accounts, no cloud, no telemetry.">
+<script>try{var _t=localStorage.getItem("ferrite-theme");if(_t==="light"||_t==="dark"){document.documentElement.dataset.theme=_t;document.documentElement.style.colorScheme=_t}}catch(e){}</script>
+<link rel="icon" type="image/png" href="favicon.png">
 <style>
-:root{
-  --substrate:#020203; --surface-1:#131313; --surface-2:#1C1B1B; --surface-3:#2A2A2A;
-  --foreground:#E5E2E1; --muted:#9CA3AF; --accent:#4F46E5; --accent-hover:#6366F1;
-  --danger:#FF003F; --archive:#F0C75E; --focus:0 0 0 2px #020203, 0 0 0 4px var(--accent);
-  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-6:24px; --space-8:32px; --space-12:48px; --space-16:64px; --space-24:96px;
-  --radius-sharp:0px; --radius-pill:999px; --hairline:0.5px;
-  --text-xs:11px; --text-sm:13px; --text-base:15px; --text-lg:18px; --text-xl:30px; --text-2xl:52px;
-}
-@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+/* Fonts subset to page glyphs; regen: pyftsubset <name>.ttf --unicodes="U+0020-007E,U+00A0-00FF,U+25A0,U+2588,U+2591-U+2593" --layout-features="*" --flavor=woff2 (Geist source lacks block glyphs) */
+@font-face{font-family:"Geist Pixel Square";src:url("fonts/GeistPixel-Square.woff2") format("woff2"),url("fonts/GeistPixel-Square.ttf") format("truetype");font-display:swap}
+@font-face{font-family:"JetBrains Mono";src:url("fonts/JetBrainsMono-Regular.woff2") format("woff2"),url("fonts/JetBrainsMono-Regular.ttf") format("truetype");font-display:swap}
+:root{--bg:#f2eee5;--s:#fbf9f4;--s2:#e7e1d3;--ink:#15120e;--i2:#4a443b;--i3:#6f685b;--ln:#d8d0bf;--ac:#ff4a12;--at:#c2300a;--pn:#17130f;--pf:#efe9dc;--p3:#948a78;--pl:#2a241c;--fjm:#1A1610;
+--px:"Geist Pixel Square","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--mo:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sa:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--se:ui-serif,"New York",Georgia,"Times New Roman",serif;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e0c09;--s:#16130f;--s2:#1e1a14;--ink:#f4efe4;--i2:#bdb4a3;--i3:#8c8372;--ln:#2a251d;--ac:#ff5a24;--at:#ff7a4d;--pn:#1a1611;--pl:#2e2820;--fjm:#ECE3D3}}
+:root[data-theme="dark"]{--bg:#0e0c09;--s:#16130f;--s2:#1e1a14;--ink:#f4efe4;--i2:#bdb4a3;--i3:#8c8372;--ln:#2a251d;--ac:#ff5a24;--at:#ff7a4d;--pn:#1a1611;--pl:#2e2820;--fjm:#ECE3D3}
 *{box-sizing:border-box}
-html,body{margin:0;background:var(--substrate);color:var(--foreground);font-family:Inter, ui-sans-serif, system-ui; -webkit-font-smoothing:antialiased}
-a{color:var(--accent)}a:hover{color:var(--accent-hover)}
-a:focus-visible,button:focus-visible{outline:none;box-shadow:var(--focus)}
-.skip{position:absolute;left:-999px;top:auto;width:1px;height:1px;overflow:hidden}
-.skip:focus{left:var(--space-4);top:var(--space-4);width:auto;height:auto;padding:var(--space-2) var(--space-4);background:var(--surface-2);border:var(--hairline) solid var(--surface-3);z-index:10}
-/* Bento Grid Editorial */
-.hero{max-width:1200px;margin:0 auto;padding:var(--space-16) var(--space-6) var(--space-12);display:grid;grid-template-columns:1.2fr 0.8fr;gap:var(--space-8);align-items:center}
-@media(max-width:900px){.hero{grid-template-columns:1fr;padding:var(--space-12) var(--space-6)}}
-.hero h1{font-size:var(--text-2xl);line-height:1.05;letter-spacing:-0.03em;margin:0 0 var(--space-4);font-weight:800}
-.hero h1 span{color:var(--accent)}
-.lead{max-width:560px;color:var(--muted);font-size:var(--text-base);line-height:1.6;margin:0 0 var(--space-6)}
-.cta-row{display:flex;flex-wrap:wrap;gap:var(--space-3)}
-.cta{appearance:none;display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 var(--space-6);border-radius:var(--radius-pill);background:var(--accent);color:white;text-decoration:none;font-weight:600;font-size:var(--text-sm);border:var(--hairline) solid transparent;transition:transform 150ms, background 100ms}
-.cta:hover{background:var(--accent-hover);transform:translateY(-1px)}
-.cta.secondary{background:var(--surface-1);color:var(--foreground);border-color:var(--surface-3)}
-.cta.secondary:hover{border-color:var(--foreground);background:var(--surface-2)}
-.hero-visual{position:relative;background:var(--surface-1);border:var(--hairline) solid var(--surface-2);border-radius:var(--radius-sharp);padding:var(--space-6);overflow:hidden}
-.hero-visual::before{content:"";position:absolute;inset:0;background:radial-gradient(600px 300px at 20% 0%, rgba(99,102,241,0.12), transparent 60%), linear-gradient(to bottom, transparent, rgba(0,0,0,0.2));pointer-events:none}
-.browser-mock{position:relative;background:var(--substrate);border:var(--hairline) solid var(--surface-3);border-radius:var(--radius-sharp);overflow:hidden}
-.browser-bar{height:32px;background:var(--surface-1);border-bottom:var(--hairline) solid var(--surface-2);display:flex;align-items:center;gap:var(--space-2);padding:0 var(--space-3)}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--surface-3)}
-.dot.active{background:var(--accent)}
-.browser-body{height:160px;background:linear-gradient(to bottom, var(--surface-1), var(--substrate));display:flex;align-items:center;justify-content:center;color:var(--muted);font-family:"JetBrains Mono", monospace;font-size:var(--text-xs)}
-.bento{max-width:1200px;margin:0 auto;padding:0 var(--space-6) var(--space-12);display:grid;grid-template-columns:repeat(12,1fr);grid-auto-rows:minmax(160px,auto);gap:var(--space-4)}
-@media(max-width:900px){.bento{grid-template-columns:1fr}}
-.card{background:var(--surface-1);border:var(--hairline) solid var(--surface-2);border-radius:var(--radius-sharp);padding:var(--space-6);position:relative;overflow:hidden;transition:border-color 100ms}
-.card:hover{border-color:var(--surface-3)}
-.card.large{grid-column:span 8}
-.card.tall{grid-row:span 2}
-.card.small{grid-column:span 4}
-@media(max-width:900px){.card.large,.card.small{grid-column:span 12}.card.tall{grid-row:span 1}}
-.eyebrow{font-family:"Geist Pixel Square", monospace;font-size:var(--text-xs);letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:var(--space-3);display:flex;align-items:center;gap:var(--space-2)}
-.eyebrow::before{content:"";width:12px;height:1px;background:var(--accent);display:inline-block}
-.card h3{margin:0 0 var(--space-3);font-size:var(--text-lg);line-height:1.2}
-.card p{margin:0;color:var(--muted);line-height:1.6;font-size:var(--text-sm)}
-.card code{font-family:"JetBrains Mono", monospace;font-size:var(--text-sm);background:var(--surface-2);border:var(--hairline) solid var(--surface-2);padding:2px 6px;border-radius:var(--radius-sharp)}
-.install{max-width:1200px;margin:0 auto;padding:0 var(--space-6) var(--space-12)}
-.install pre{margin:0;background:var(--surface-1);border:var(--hairline) solid var(--surface-2);border-radius:var(--radius-sharp);padding:var(--space-6);overflow:auto;font-family:"JetBrains Mono", monospace;font-size:var(--text-sm);line-height:1.6}
-footer{max-width:1200px;margin:0 auto;padding:var(--space-8) var(--space-6);color:var(--muted);font-size:var(--text-sm);line-height:1.6;border-top:var(--hairline) solid var(--surface-2);display:flex;flex-wrap:wrap;gap:var(--space-4);justify-content:space-between}
+html{scroll-behavior:smooth;scroll-padding-top:calc(env(safe-area-inset-top,0px) + 72px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 var(--sa);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+::selection{background:var(--ac);color:#15120e}
+:focus-visible{outline:3px solid var(--ac);outline-offset:3px}
+.skip{position:absolute;left:-999px}.skip:focus{left:12px;top:12px;z-index:99;background:var(--ac);color:#15120e;padding:10px 14px}
+.w{max-width:1160px;margin:0 auto;padding:0 24px}
+.px{font-family:var(--px);font-weight:400}
+code{font-family:var(--mo);font-size:.92em}
+header{position:sticky;top:env(safe-area-inset-top,0px);z-index:30;background:color-mix(in srgb,var(--bg) 82%,transparent);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border-bottom:1px solid var(--ln)}
+nav{max-width:1160px;margin:0 auto;padding:0 24px;height:60px;display:flex;align-items:center;gap:28px}
+.br{font:400 17px var(--px);display:flex;align-items:center;gap:10px}
+.br .mk{height:24px;width:auto;display:block}
+.nl{display:none;gap:26px;font-size:14px;color:var(--i2)}
+.nl a{position:relative}
+.nl a.on{color:var(--ink)}
+.nl a.on::after{content:"";position:absolute;left:0;right:0;bottom:-8px;height:2px;background:var(--ac)}.nl a:hover,.nr a:hover{color:var(--ink)}
+.nr{margin-left:auto;display:flex;align-items:center;gap:18px;font-size:14px;color:var(--i2)}
+.b{display:inline-flex;align-items:center;justify-content:center;min-height:52px;padding:0 28px;background:var(--ac);color:#15120e!important;font:400 14px var(--px);border:2px solid var(--ink);box-shadow:5px 5px 0 var(--ink);transition:transform .1s steps(2),box-shadow .1s steps(2)}
+.b:hover{transform:translate(calc(3px + var(--mx,0px)),calc(3px + var(--my,0px)));box-shadow:2px 2px 0 var(--ink)}
+.b.g{background:var(--s);color:var(--ink)!important}
+.b.s{min-height:38px;padding:0 16px;font-size:12px;box-shadow:3px 3px 0 var(--ink)}
+.th{display:none;align-items:center;justify-content:center;width:38px;height:38px;background:var(--s);border:1px solid var(--ln);color:var(--i2);cursor:pointer;padding:0}
+.js .th{display:inline-flex}
+.th:hover{color:var(--ink);border-color:var(--ink)}
+.th svg{width:14px;height:14px;display:block}
+.th .moon{display:none}
+:root[data-theme="dark"] .th .sun{display:none}
+:root[data-theme="dark"] .th .moon{display:block}
+@media(prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .th .sun{display:none}
+  :root:not([data-theme="light"]) .th .moon{display:block}
+}
+.hero{position:relative;isolation:isolate;text-align:center;padding:88px 24px 0}
+.hero::before{content:"";position:absolute;inset:0 0 auto;height:760px;z-index:-1;background:radial-gradient(60% 55% at var(--gx,50%) var(--gy,0%),color-mix(in srgb,var(--ac) 24%,transparent),transparent 70%),radial-gradient(var(--ln) 1.2px,transparent 1.4px) 0 0/18px 18px;-webkit-mask:linear-gradient(#000 35%,transparent);mask:linear-gradient(#000 35%,transparent)}
+.pill{display:inline-flex;gap:10px;align-items:center;padding:7px 14px;border:1px solid var(--ln);background:var(--s);font:12px var(--mo);color:var(--i2)}
+.pill b{width:8px;height:8px;background:var(--ac);animation:bk 1.2s steps(2) infinite}
+@keyframes bk{50%{opacity:.2}}
+h1{font:700 clamp(44px,9vw,116px)/.94 var(--sa);letter-spacing:-.05em;margin:26px auto 0;max-width:12ch}
+h1 em,h2 em{font-family:var(--se);font-style:italic;font-weight:400;letter-spacing:-.03em;color:var(--at)}
+.lead{font-size:clamp(17px,2.2vw,21px);color:var(--i2);max-width:34em;margin:26px auto 36px}
+.cta{display:flex;gap:20px;justify-content:center;flex-wrap:wrap}
+.alt{font:12.5px/2 var(--mo);color:var(--i3);margin:28px 0 0}.alt a{display:inline-block;padding:12px 6px;margin:0 6px;text-decoration:underline;text-underline-offset:4px;text-decoration-color:var(--ln)}.alt a:hover{color:var(--ink)}
+.win{margin:64px auto 0;max-width:980px;text-align:left;background:var(--pn);color:var(--pf);border:2px solid var(--ink);box-shadow:10px 10px 0 var(--ac)}
+.tb{display:flex;align-items:center;gap:16px;padding:10px 14px;border-bottom:2px solid var(--pl);font:12px var(--mo);color:var(--p3)}
+.dots{display:flex;gap:6px}.dots i{width:10px;height:10px;background:var(--pl)}
+.tabs{display:flex;gap:4px;flex:1;overflow:hidden}.tabs span{padding:6px 14px;white-space:nowrap}.tabs .on{background:var(--pl);color:var(--pf)}
+.url{display:flex;justify-content:space-between;padding:10px 16px;border-bottom:2px solid var(--pl);font:12.5px var(--mo)}.url span{color:var(--ac)}.url em{font-style:normal;color:var(--p3)}
+.lg{list-style:none;margin:0;padding:16px 18px;min-height:236px;font:12.5px/2 var(--mo)}
+.lg li{display:flex;justify-content:space-between;gap:12px;color:var(--p3)}.lg .no span:last-child{color:var(--ac)}
+.bar{height:6px;background:var(--pl)}.bar i{display:block;height:100%;width:0;background:var(--ac);transition:width .4s steps(8)}
+.st{display:grid;grid-template-columns:repeat(3,1fr);border-top:2px solid var(--pl)}
+.st div{padding:16px 18px;border-right:2px solid var(--pl)}.st div:last-child{border:0}
+.st b{display:block;font:400 clamp(26px,5vw,44px)/1.1 var(--px)}.st .k b{color:var(--ac)}
+.st span{font:11.5px var(--mo);color:var(--p3)}
+.sim{font:12px var(--mo);color:var(--i3);margin:24px 0 0}
+.mq{margin-top:80px;border-block:1px solid var(--ln);overflow:hidden;background:var(--s)}
+.mq div{display:flex;width:max-content}.js .mq div{animation:mq 40s linear infinite}
+.mq span{padding:16px 28px;font:12.5px var(--mo);color:var(--i2);white-space:nowrap}.mq span::before{content:"\25A0";color:var(--ac);margin-right:12px}
+@keyframes mq{to{transform:translateX(-50%)}}
+.sec{padding:112px 0 0}
+.sh{max-width:720px;margin-bottom:48px}.sh p{margin:0;color:var(--i2);font-size:18px}
+.kk{font:12px var(--px);color:var(--at);text-transform:uppercase;margin:0 0 14px}
+h2{font:700 clamp(32px,5.4vw,60px)/1 var(--sa);letter-spacing:-.045em;margin:0 0 18px}h2.s{font-size:clamp(28px,4vw,40px)}h1,h2,h3,.fk{text-wrap:balance}main p,footer p{text-wrap:pretty}
+.pr{display:grid;border:1px solid var(--ln);background:var(--s);margin-top:96px}
+.pr div{padding:36px 32px;border-top:1px solid var(--ln)}.pr div:first-child{border:0}
+.pr h3{font:700 clamp(26px,3.4vw,38px)/1.05 var(--sa);letter-spacing:-.04em;margin:10px 0 12px}.pr p{margin:0;color:var(--i2);max-width:24em}
+.pr .px{font-size:12px;color:var(--at)}
+.gr{display:grid;gap:16px}
+.c{background:var(--s);border:1px solid var(--ln);padding:28px;transition:border-color .15s,transform .15s steps(3)}.c:hover{border-color:var(--ink);transform:translateY(-3px)}
+.c h3{font:700 22px/1.15 var(--sa);letter-spacing:-.03em;margin:0 0 10px}.c p{margin:0;color:var(--i2)}
+.tg{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0 0}.tg span{font:12px var(--mo);padding:5px 10px;border:1px solid var(--ln);background:var(--bg);color:var(--i2)}
+.nd{display:flex;align-items:center;margin:26px 0 0;font:12px var(--mo)}.nd span{padding:8px 14px;border:1px solid var(--ink);background:var(--bg)}.nd i{flex:1;min-width:16px;border-top:2px dashed var(--ac)}
+.bl{list-style:none;margin:22px 0 0;padding:14px 16px;background:var(--bg);font:12.5px/2 var(--mo);color:var(--i2)}.bl li{display:flex;justify-content:space-between}.bl li span:last-child{color:var(--at)}
+.ins{display:grid;gap:40px;align-items:start}.ins>p{margin:0;color:var(--i2);font-size:17px}
+.cm{background:var(--pn);color:var(--pf);border:2px solid var(--ink);box-shadow:8px 8px 0 var(--ac)}
+.cm div{display:flex;align-items:center;gap:14px;padding:14px 18px;border-top:2px solid var(--pl);font:13px var(--mo)}.cm div:first-child{border:0}
+.cm small{width:76px;flex:none;color:var(--p3);font:11.5px var(--mo)}.cm code{flex:1;overflow-x:auto;white-space:nowrap}
+.cm button{font:12px var(--px);background:0;color:var(--pf);border:1px solid var(--p3);padding:6px 12px;min-height:36px;cursor:pointer}.cm button:hover{background:var(--ac);color:#15120e;border-color:var(--ac)}
+.uh{display:grid;gap:1px;background:var(--ln);border:1px solid var(--ln)}
+.uh div{background:var(--s);padding:22px 24px;font:12.5px/1.8 var(--mo);color:var(--i2)}.uh h3{font:400 12px var(--px);color:var(--at);margin:0 0 8px;text-transform:uppercase}
+.two{display:grid;gap:56px}.two p{margin:0;color:var(--i2)}
+pre{margin:20px 0;overflow:auto;background:var(--pn);color:var(--pf);padding:20px;font:12.5px/1.8 var(--mo);border:2px solid var(--ink)}
+details{border-top:1px solid var(--ln)}details:last-of-type{border-bottom:1px solid var(--ln)}
+summary{cursor:pointer;list-style:none;min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px;font:600 19px var(--sa);letter-spacing:-.02em}
+summary::-webkit-details-marker{display:none}summary::after{content:"+";font:400 22px var(--px);color:var(--at)}details[open] summary::after{content:"\2212"}
+details p{margin:0 0 24px;color:var(--i2);max-width:40em}
+.fin{position:relative;overflow:hidden;margin-top:112px;padding:96px 24px;text-align:center;background:var(--ac);color:#15120e}
+.fin::before{content:"";position:absolute;inset:0;background:repeating-conic-gradient(rgba(0,0,0,.1) 0 25%,transparent 0 50%) 0 0/10px 10px;-webkit-mask:linear-gradient(#000,transparent 70%);mask:linear-gradient(#000,transparent 70%)}
+.fin>*{position:relative}.fin h2{max-width:11ch;margin:0 auto 32px;font-size:clamp(40px,8vw,96px)}.fin h2 em{color:#15120e}
+.fin .b{background:#15120e;color:#f4efe4!important;border-color:#15120e;box-shadow:5px 5px 0 #f4efe4}.fin p{margin:26px 0 0;font:12.5px var(--mo)}
+footer{padding-top:48px;overflow:hidden}
+.fg{display:grid;gap:40px;padding-bottom:56px}
+.fk{font:400 clamp(26px,4vw,40px)/1.1 var(--px);margin:0 0 16px}
+.nt{font-size:14px;color:var(--i2);max-width:34em;margin:0}
+.fx{list-style:none;margin:0;padding:0;border-top:2px solid var(--ink)}
+.fx a{display:flex;justify-content:space-between;align-items:baseline;gap:16px;padding:20px 0;border-bottom:1px solid var(--ln);transition:padding .15s steps(3)}
+.fx b{font:700 20px var(--sa);letter-spacing:-.03em}.fx span{font:12.5px var(--mo);color:var(--i3);text-align:right}
+.fx a:hover{padding-left:14px}.fx a:hover b{color:var(--at)}
+.fz{display:flex;justify-content:space-between;gap:8px 24px;flex-wrap:wrap;font:12px var(--mo);color:var(--i3)}
+.fz a{color:var(--ink);padding:8px 0;text-decoration:underline;text-underline-offset:4px;text-decoration-color:var(--ln)}.fz a::before{content:"\25A0";color:var(--ac);margin-right:8px}
+@media(min-width:960px){.fg{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:72px;align-items:start}}
+.js .r{opacity:0;transform:translateY(16px);transition:opacity .6s,transform .6s;transition-delay:var(--d,0s)}.js .r.v{opacity:1;transform:none}
+@supports (animation-timeline:scroll()){
+.hero::before{animation:herodrift linear;animation-timeline:scroll(root block);animation-range:0 760px}
+@keyframes herodrift{to{transform:translateY(120px)}}
+}
+#cc{position:fixed;left:0;top:0;z-index:200;pointer-events:none;opacity:0;will-change:transform;color:var(--ac);filter:drop-shadow(2px 2px 0 var(--ink))}
+#cc svg{display:block;overflow:visible;transition:transform .12s}
+#cc .a{width:20px;height:20px}
+#cc .t{display:none;width:10px;height:24px;margin-top:4px}
+#cc.link .a{transform:scale(1.25)}
+#cc.text .a{display:none}
+#cc.text .t{display:block}
+#cc.down .a{transform:scale(.85)}
+#cc.link.down .a{transform:scale(1.1)}
+.jscc #cc{opacity:1}
+@media(hover:hover) and (pointer:fine){.jscc,.jscc *{cursor:none!important}}
+@media(prefers-reduced-motion:reduce){#cc svg{transition:none}}
+.ct{display:grid;gap:56px;align-items:start}.ct .sh{margin-bottom:32px}
+.ex{list-style:none;margin:0;padding:0;max-width:30em}
+.ex li{display:flex;gap:16px;padding:16px 0;border-top:1px solid var(--ln);color:var(--i2);font-size:15px}.ex li:last-child{border-bottom:1px solid var(--ln)}
+.ex b{font:12px var(--px);color:var(--at);padding-top:3px}
+.cf{min-width:0;background:var(--pn);color:var(--pf);border:2px solid var(--ink);box-shadow:10px 10px 0 var(--ac)}
+.rw{display:flex;align-items:center;gap:16px;padding:0 18px;border-bottom:2px solid var(--pl);transition:box-shadow .1s steps(2),background .1s}
+.rw>span,.tp>span{flex:none;width:72px;font:11.5px var(--mo);color:var(--p3);text-transform:uppercase}
+.rw input,.rw textarea{flex:1;min-width:0;padding:16px 0;background:none;border:0;border-radius:0;outline:0;color:var(--pf);caret-color:var(--ac);font:15px/1.6 var(--sa)}
+.rw input::placeholder,.rw textarea::placeholder{color:var(--p3);opacity:.75}
+.rw input:-webkit-autofill{-webkit-text-fill-color:var(--pf);-webkit-box-shadow:0 0 0 100px var(--pn) inset}
+.rw:focus-within{box-shadow:inset 4px 0 0 var(--ac);background:color-mix(in srgb,var(--ac) 7%,transparent)}.rw:focus-within>span{color:var(--ac)}
+.rw:has(:user-invalid){background:color-mix(in srgb,var(--ac) 12%,transparent)}.rw:has(:user-invalid)>span{color:var(--ac)}
+.rw.ta{align-items:flex-start}.ta>span{padding-top:20px}.ta textarea{min-height:168px;max-height:420px;resize:vertical;field-sizing:content}
+.tp{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:14px 18px;border-bottom:2px solid var(--pl)}.tp>span{margin-right:8px}
+.tp label{position:relative}.tp input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.tp label span{display:block;padding:7px 14px;border:2px solid var(--pl);font:12px var(--mo);transition:background .1s steps(2)}
+.tp label:hover span{border-color:var(--p3)}.tp input:checked+span{background:var(--ac);border-color:var(--ac);color:#15120e}.tp input:focus-visible+span{outline:3px solid var(--ac);outline-offset:3px}
+.fa{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:18px}
+.fa p,.pv{margin:0;font:12px var(--mo);color:var(--p3)}.pv{padding:0 18px 18px}
+#cm{min-height:1.6em;color:var(--pf)}#cm.err{color:var(--ac)}
+.kb{display:inline-block;padding:0 6px;border:1px solid var(--p3);font:11px var(--mo);color:var(--pf)}
+.cf .b{appearance:none;cursor:pointer;border-color:var(--pf);box-shadow:4px 4px 0 var(--pf)}.cf .b:hover{box-shadow:1px 1px 0 var(--pf)}.cf .b:disabled{opacity:.7;cursor:wait}
+.cf .b.g{background:var(--pn);color:var(--pf)!important}
+.sd{display:inline-flex;gap:3px;margin-left:10px}.sd u{width:5px;height:5px;background:currentColor;text-decoration:none;animation:bk .9s steps(2) infinite}.sd u:nth-child(2){animation-delay:.15s}.sd u:nth-child(3){animation-delay:.3s}
+.dn{display:none;place-items:center;align-content:center;gap:10px;min-height:440px;padding:56px 24px;text-align:center}.cf.ok .fb{display:none}.cf.ok .dn{display:grid}
+.dn h3{font:400 clamp(32px,5vw,48px)/1.1 var(--px);margin:18px 0 0}.dn p{margin:0 0 18px;color:var(--p3)}
+.ckw{width:48px;height:30px}.ck{display:block;animation:pop .5s steps(5) both}
+@keyframes pop{from{opacity:0;transform:translateY(8px)}}
+.cf .hp{position:absolute;left:-999px}
+@media(min-width:960px){.ct{grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:72px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}.js .r{opacity:1;transform:none}}
+@media(min-width:720px){.nl{display:flex}.pr{grid-template-columns:repeat(3,1fr)}.pr div{border-top:0;border-left:1px solid var(--ln)}.pr div:first-child{border-left:0}.gr,.uh{grid-template-columns:repeat(2,1fr)}.w2,.uh div:last-child{grid-column:1/-1}.ins{grid-template-columns:1.25fr 1fr}.two{grid-template-columns:1fr 1fr}}
+@media(min-width:960px){.gr{grid-template-columns:repeat(4,1fr)}.w2{grid-column:span 2}.uh{grid-template-columns:repeat(3,1fr)}.uh div:last-child{grid-column:span 2}}
 </style>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Ferrite","applicationCategory":"BrowserApplication","operatingSystem":["Windows 10 1809+","macOS 13+","Linux"],"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://www.apache.org/licenses/LICENSE-2.0"}</script>
 </head>
 <body>
-<a href="#main" class="skip">Skip to content</a>
+<a class="skip" href="#main">Skip to content</a><div id="cc" aria-hidden="true"><svg class="a" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M1 1v14l4-3.5L7.5 17l2.5-1-2.5-5.5L12.5 10.5z"/></svg><svg class="t" viewBox="0 0 5 12" fill="currentColor" aria-hidden="true"><rect x="0" y="0" width="5" height="1"/><rect x="2" y="0" width="1" height="12"/><rect x="0" y="11" width="5" height="1"/></svg></div>
+<header><nav><a class="br" href="#main"><svg class="mk" viewBox="0 0 413 678" aria-hidden="true"><path d="M0 78.59C0 35.186 35.1861 0 78.5904 0C121.995 0 157.181 35.186 157.181 78.59C157.181 121.995 121.995 157.181 78.5904 157.181C35.1861 157.181 0 121.995 0 78.59Z" fill="#D9601F"/><path d="M290.792 177.256C319.895 164.02 354.38 161.082 380.315 142.387C400.112 128.117 413 104.859 413 78.5904C413 35.1862 377.814 0 334.41 0C308.722 0 285.912 12.3248 271.571 31.3837C251.816 57.6387 248.553 93.2068 234.514 122.914C211.396 171.832 171.587 210.9 122.244 233.097L111.686 237.847C85.366 249.687 54.815 253.828 31.76 271.189C12.715 285.53 0.401031 308.332 0.401031 334.009C0.401031 377.413 35.587 412.6 78.991 412.6C105.328 412.6 128.64 399.644 142.9 379.758C161.139 354.324 164.381 320.258 177.221 291.716C199.892 241.318 240.488 200.134 290.792 177.256Z" style="fill:var(--fjm)"/><path d="M290.391 442.256C319.493 429.02 353.979 426.082 379.914 407.387C399.711 393.117 412.599 369.859 412.599 343.59C412.599 300.186 377.413 265 334.009 265C308.321 265 285.511 277.325 271.17 296.384C251.415 322.639 248.152 358.207 234.113 387.914C210.995 436.832 171.186 475.9 121.843 498.097L111.285 502.847C84.9649 514.687 54.4139 518.828 31.3589 536.189C12.3139 550.53 0 573.332 0 599.009C0 642.413 35.1859 677.6 78.5899 677.6C104.927 677.6 128.239 664.644 142.499 644.758C160.738 619.324 163.98 585.258 176.82 556.716C199.491 506.318 240.087 465.134 290.391 442.256Z" style="fill:var(--fjm)"/></svg>Ferrite</a><div class="nl"><a href="#features">Features</a><a href="#install">Install</a><a href="#hood">Under the hood</a><a href="#faq">FAQ</a></div><div class="nr"><a href="https://github.com/ZaudRehman/ferrite">GitHub</a><button class="th" id="th" aria-label="Switch theme"><svg class="sun" viewBox="0 0 7 7" fill="currentColor" aria-hidden="true"><rect x="3" y="0" width="1" height="7"/><rect x="0" y="3" width="7" height="1"/><rect x="2" y="2" width="3" height="3"/></svg><svg class="moon" viewBox="0 0 7 7" fill="currentColor" aria-hidden="true"><rect x="3" y="0" width="2" height="1"/><rect x="2" y="1" width="2" height="1"/><rect x="1" y="2" width="2" height="1"/><rect x="1" y="3" width="3" height="1"/><rect x="1" y="4" width="3" height="1"/><rect x="2" y="5" width="2" height="1"/><rect x="3" y="6" width="2" height="1"/></svg></button><a class="b s" href="https://github.com/ZaudRehman/ferrite/releases/latest">Download</a></div></nav></header>
+<main id="main">
 <section class="hero" aria-label="Hero">
-<div>
-<h1>Ferrite <span>Sovereign</span> Browser</h1>
-<p class="lead">Usability by Default, Privacy by Choice. Local-first mesh via <code>mDNS + QUIC/mTLS</code>, Sovereign Archive, E2EE backup. Reproducible, signed, no third-party trackers, ever.</p>
-<div class="cta-row" role="group" aria-label="Downloads">
-<a class="cta" href="https://github.com/anomalyco/opencode/releases/latest" id="dl-linux" aria-label="Download for Linux deb">Download Linux (.deb)</a>
-<a class="cta secondary" href="https://github.com/anomalyco/opencode/releases/latest" id="dl-win" aria-label="Download for Windows msi">Windows (.msi)</a>
-<a class="cta secondary" href="https://github.com/anomalyco/opencode/releases/latest" id="dl-mac" aria-label="Download for macOS dmg">macOS (.dmg)</a>
+<span class="pill r"><b></b>Free, open source, no accounts</span>
+<h1 class="r" style="--d:.08s">Your browser should <em>answer to you.</em></h1>
+<p class="lead r" style="--d:.16s">Ferrite keeps your history, passwords, and tabs on your own devices. No accounts, no cloud, nothing to opt out of.</p>
+<div class="cta r" style="--d:.24s"><a class="b dl" href="https://github.com/ZaudRehman/ferrite/releases/latest">Download Ferrite</a><a class="b g" href="https://github.com/ZaudRehman/ferrite">View source</a></div>
+<p class="alt r" style="--d:.3s"><a href="https://github.com/ZaudRehman/ferrite/releases/latest">Linux (.deb)</a><a href="https://github.com/ZaudRehman/ferrite/releases/latest">Windows (.msi)</a><a href="https://github.com/ZaudRehman/ferrite/releases/latest">macOS (.dmg, beta)</a><br><span id="ver"></span>Signed, reproducible, Apache-2.0. <a href="/latest.json">latest.json</a></p>
+<div class="win r" style="--d:.4s" role="img" aria-label="Simulated request ledger: trackers are blocked, and zero requests are sent to Ferrite.">
+<div class="tb" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span class="tabs"><span class="on">Shield</span><span>notes.local</span><span>news.example</span></span></div>
+<div class="url" aria-hidden="true"><span>ferrite://shield</span><em>this session</em></div>
+<ol class="lg" id="lg" aria-hidden="true"></ol>
+<div class="bar" aria-hidden="true"><i id="fl"></i></div>
+<div class="st" aria-hidden="true"><div><b id="c1">0</b><span>requests seen</span></div><div class="k"><b id="c2">0</b><span>blocked</span></div><div><b>0</b><span>sent to Ferrite</span></div></div>
 </div>
-<p class="lead" style="font-size:var(--text-sm);margin-top:var(--space-3)">Flatpak, Homebrew, winget, AUR · <a href="/latest.json">latest.json</a> · <a href="https://github.com/anomalyco/opencode">GitHub</a></p>
+<p class="sim">Simulated traffic. Real blocking runs in a local proxy on your machine.</p>
+</section>
+<div class="mq" aria-hidden="true"><div><span>ed25519 identity</span><span>crdt, lww sync</span><span>sqlcipher storage</span><span>loopback proxy</span><span>argon2id vault</span><span>zero telemetry</span><span>reproducible builds</span><span>apache-2.0</span></div></div>
+<section class="w" aria-label="Principles"><div class="pr r">
+<div><span class="px">01</span><h3>Zero telemetry</h3><p>No analytics, no phone-home, on this page or in the browser.</p></div>
+<div><span class="px">02</span><h3>Reproducible</h3><p>Build it yourself and verify it matches what we ship.</p></div>
+<div><span class="px">03</span><h3>Local-first</h3><p>History, sync, and backups stay on hardware you own.</p></div>
+</div></section>
+<section class="w sec" id="features" aria-labelledby="fh">
+<div class="sh r"><p class="kk">Features</p><h2 id="fh">Everything you'd expect. <em>Nothing you wouldn't.</em></h2><p>The full browser experience, with the data collection stripped out of the middle of it.</p></div>
+<div class="gr">
+<article class="c w2 r"><h3>Mesh, not cloud</h3><p>Your devices talk directly to each other over your own network. No accounts, no cloud, nothing to sign up for.</p><div class="nd" aria-hidden="true"><span>phone</span><i></i><span>laptop</span><i></i><span>desktop</span></div></article>
+<article class="c r"><h3>Your history, your disk</h3><p>History lives on your drive and searches in milliseconds. Nothing is ever uploaded.</p><div class="tg"><span>FTS5</span><span>zstd</span></div></article>
+<article class="c r"><h3>Zero-knowledge backups</h3><p>Encrypted backups only your devices can read. Lose a laptop, keep everything.</p><div class="tg"><span>ciphertext only</span></div></article>
+<article class="c w2 r"><h3>Blocking, built in</h3><p>Ads, trackers, and fingerprinting are blocked before they load. Sites that honor the do-not-sell signal get told.</p><ul class="bl" aria-hidden="true"><li><span>doubleclick.net</span><span>blocked</span></li><li><span>tracker.min.js</span><span>blocked</span></li><li><span>pixel.gif</span><span>blocked</span></li></ul></article>
+<article class="c r"><h3>Native PDF viewer</h3><p>PDFs open in a sandboxed viewer with search and form fill. Password prompts are never saved.</p></article>
+<article class="c r"><h3>Locked vault</h3><p>Passwords and autofill are encrypted on your disk and stay there. One recovery phrase if you forget.</p><div class="tg"><span>AES-256</span><span>Argon2id</span></div></article>
 </div>
-<div class="hero-visual" aria-hidden="true">
-<div class="browser-mock">
-<div class="browser-bar"><span class="dot active"></span><span class="dot"></span><span class="dot"></span><span style="margin-left:auto;font-family:monospace;font-size:10px;color:var(--muted)">ferrite://newtab - 1280x800 - 1.25x</span></div>
-<div class="browser-body">egui + wgpu + wry - Aetherial Mercury - Geist Pixel</div>
+</section>
+<section class="w sec" id="install" aria-labelledby="ih">
+<div class="ins">
+<div class="r"><p class="kk">Install</p><h2 id="ih">One command. <em>Done.</em></h2><p style="margin:0;color:var(--i2);font-size:17px">Signed (Authenticode, Apple notarization) and reproducible: build from source with <code>cargo build --locked</code> and compare. Flatpak, Homebrew, winget, and AUR are all first-class.</p></div>
+<div class="cm r" style="--d:.1s">
+<div><small>Flatpak</small><code>flatpak install flathub com.ferrite.Browser</code><button data-c="flatpak install flathub com.ferrite.Browser">copy</button></div>
+<div><small>Homebrew</small><code>brew install --cask ferrite</code><button data-c="brew install --cask ferrite">copy</button></div>
+<div><small>winget</small><code>winget install Ferrite.Browser</code><button data-c="winget install Ferrite.Browser">copy</button></div>
+<div><small>Arch</small><code>yay -S ferrite-browser</code><button data-c="yay -S ferrite-browser">copy</button></div>
 </div>
 </div>
 </section>
-<main id="main" class="bento" aria-label="Features">
-<article class="card large">
-<p class="eyebrow">Local-First Sync</p>
-<h3>Mesh, not cloud</h3>
-<p>Ed25519 TOFU, <code>_ferrite._tcp</code> mDNS under 3s, X25519 6-digit, LWW CRDT + Raft 150 to 300ms. Blind relay never sees plaintext. Revocation propagates mesh-wide.</p>
-</article>
-<article class="card small">
-<p class="eyebrow">Sovereign Archive</p>
-<h3>Your history, your disk</h3>
-<p>zstd 10, FTS5, 2GB LRU, Time Machine 50, pinned eager. On-demand fetch, not silent inheritance.</p>
-</article>
-<article class="card small">
-<p class="eyebrow">E2EE Backup</p>
-<h3>Zero-knowledge</h3>
-<p>Argon2id + AES-GCM, versioned 5, WebDAV/Drive file scope. OAuth tokens field-encrypted.</p>
-</article>
-<article class="card large tall">
-<p class="eyebrow">Privacy Choke</p>
-<h3>Adblock + Threat + GPC</h3>
-<p>adblock 0.13 trie, SHA256 threat WAL hourly, k-anon 300ms via proxy, GPC 1, cookie strip, De-AMP, cosmetic, fingerprint spoof <code>Canvas/WebGL/Audio</code>.</p>
-<p style="margin-top:var(--space-4);color:var(--muted);font-size:var(--text-sm)">Razor 0.5px borders, not shadows. Pill for chips, sharp for panels, bottom-only for inputs.</p>
-</article>
-<article class="card small">
-<p class="eyebrow">Native PDF</p>
-<h3>Isolated renderer</h3>
-<p>pdfium + shm, password prompt never persisted, form fill native, print raster 3x, search + highlight.</p>
-</article>
-<article class="card small">
-<p class="eyebrow">Vault</p>
-<h3>SQLCipher + Batch</h3>
-<p>AES-256, WAL, 50/1s batch, dashmap 5000, BIP39 Argon2id recovery, sessions 10s.</p>
-</article>
+<section class="w sec" id="hood" aria-labelledby="uh">
+<div class="sh r"><p class="kk">Under the hood</p><h2 id="uh">Boring crypto. <em>On purpose.</em></h2></div>
+<div class="uh r">
+<div><h3>Sync</h3>Ed25519 TOFU, <code>_ferrite._tcp</code> mDNS under 3s, X25519 6-digit pairing, LWW CRDT, blind relay never sees plaintext.</div>
+<div><h3>Archive</h3>zstd, FTS5 full-text search, 2GB LRU, pinned items kept eager.</div>
+<div><h3>Privacy</h3>adblock trie, hourly threat-list updates, k-anonymous lookups over the local proxy, GPC, cookie stripping, De-AMP, canvas/WebGL/audio fingerprint spoofing.</div>
+<div><h3>Vault</h3>AES-256 (SQLCipher), Argon2id key + BIP39 recovery phrase.</div>
+<div><h3>Builds</h3>signed (Windows Authenticode, Apple notarization) and reproducible.</div>
+</div>
+</section>
+<section class="w sec" aria-label="Requirements and source"><div class="two">
+<div id="requirements" class="r"><h2 class="s">System requirements.</h2><p>Windows 10 1809 and newer (WebView2 Evergreen runtime; the installer link appears on first run if it is absent), macOS 13 and newer, or Linux with X11. Wayland and macOS paths run but are largely unverified.</p></div>
+<div id="source" class="r" style="--d:.1s"><h2 class="s">Build it yourself.</h2><p>Requires Rust 1.96, plus Perl and a C toolchain for encrypted storage. Clone and build locked:</p><pre><code>git clone https://github.com/ZaudRehman/ferrite
+cd ferrite
+cargo build --locked --release --features ferrite-vault/sqlcipher,ferrite-archive/sqlcipher</code></pre><p>Release builds refuse plaintext storage without the sqlcipher features. Debug builds run unencrypted SQLite for development.</p></div>
+</div></section>
+<section class="w sec" id="faq" aria-labelledby="qh">
+<div class="sh r"><p class="kk">FAQ</p><h2 id="qh">Plain answers.</h2></div>
+<div class="r">
+<details><summary>Can I tear tabs into new windows?</summary><p>No. Ferrite is single-window; named profiles run as separate processes instead.</p></details>
+<details><summary>How does sync work without accounts?</summary><p>Devices pair by QR code on your network, or anywhere through a relay you host. There is no Ferrite-operated relay.</p></details>
+<details><summary>Are there extensions?</summary><p>No third-party extensions: there is no extension API, so there is nothing for one to abuse. Blocking is built in.</p></details>
+<details><summary>What data leaves my device?</summary><p>Very little: breach checks you run, diagnostics you paste, suggestions you opt into, plus the blocker's upkeep (hourly threat-list refreshes) and per-site signals like GPC that only go out because you loaded the page.</p></details>
+</div>
+</section>
+<section class="w sec" id="contact" aria-labelledby="ch">
+<div class="ct">
+<div class="r">
+<div class="sh"><p class="kk">Contact</p><h2 id="ch">Talk to a <em>human.</em></h2><p>Questions, broken builds, angry rants. Answered by the person who wrote the browser.</p></div>
+<ul class="ex"><li><b>01</b>Replies come by email, written by the author.</li><li><b>02</b>Reporting a bug? Mention your OS and Ferrite version.</li><li><b>03</b>No newsletter, no list.</li></ul>
+</div>
+<form class="cf r" id="cf" style="--d:.1s" action="https://api.web3forms.com/submit" method="POST">
+<div class="tb" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span>ferrite://contact</span></div>
+<div class="fb">
+<!-- web3forms access key (public client-side key) -->
+<input type="hidden" name="access_key" value="c4481740-59c2-45eb-8ef3-d910b5c0d501">
+<input type="hidden" name="subject" value="Ferrite landing page message">
+<input type="checkbox" name="botcheck" class="hp" tabindex="-1" autocomplete="off">
+<label class="rw"><span>From</span><input name="name" placeholder="Your name" required maxlength="80" autocomplete="name"></label>
+<label class="rw"><span>Reply to</span><input type="email" name="email" placeholder="you@example.com" required maxlength="120" autocomplete="email"></label>
+<div class="tp" role="radiogroup" aria-label="Topic"><span>Topic</span><label><input type="radio" name="topic" value="Question" checked><span>Question</span></label><label><input type="radio" name="topic" value="Bug"><span>Bug</span></label><label><input type="radio" name="topic" value="Feedback"><span>Feedback</span></label><label><input type="radio" name="topic" value="Rant"><span>Rant</span></label></div>
+<label class="rw ta"><span>Message</span><textarea name="message" rows="6" placeholder="What's on your mind?" required maxlength="4000"></textarea></label>
+<div class="fa"><div><p id="cm" role="status"></p><p><span id="cn">0</span>/4000 &middot; <kbd class="kb">Ctrl</kbd> <kbd class="kb">Enter</kbd> to send</p></div><button class="b" type="submit" id="cs">Send message</button></div>
+<p class="pv">Sent via Web3Forms only when you hit send.</p>
+</div>
+<div class="dn" aria-live="polite"><div class="ckw"><svg class="ck" width="48" height="30" viewBox="0 0 28 20" aria-hidden="true"><path d="M0 8H4V10H6V12H8V14H10V12H12V10H14V8H16V6H18V4H20V2H24V0H28V4H26V6H24V8H22V10H20V12H18V14H16V16H14V18H12V20H8V18H6V16H4V14H2V12H0V8Z" style="fill:var(--ac)"/></svg></div><h3>Sent.</h3><p>Expect a human reply.</p><button class="b g" type="button" id="ca">Send another</button></div>
+</form>
+</div>
+</section>
+<section class="fin" aria-label="Download">
+<h2>Take your browser <em>back.</em></h2>
+<a class="b dl" href="https://github.com/ZaudRehman/ferrite/releases/latest">Download Ferrite</a>
+<p>No accounts, no cloud, no catch.</p>
+</section>
 </main>
-<section class="install" aria-labelledby="install">
-<h2 id="install" style="font-size:var(--text-xl);margin:0 0 var(--space-2)">Install</h2>
-<p class="lead" style="font-size:var(--text-sm)">Signed (Windows Authenticode, Apple notarization) and reproducible — <code>cargo build --locked</code> <code>SOURCE_DATE_EPOCH</code> <code>--remap-path-prefix</code>. No tracking on this page.</p>
-<pre><code># Flatpak (Flathub)
-flatpak install flathub com.ferrite.Browser
-# Homebrew
-brew install --cask ferrite
-# winget
-winget install Ferrite.Browser
-# Arch
-yay -S ferrite-browser</code></pre>
-</section>
-<footer role="contentinfo">
-<span>No third-party analytics, ads, or tracking. Update manifest at <code>/latest.json</code> is stateless CDN edge, purged 24 to 48h.</span>
-<span><a href="https://github.com/anomalyco/opencode">GitHub</a> - Apache-2.0 - 2026 Zaud Rehman</span>
-</footer>
+<footer><div class="w">
+<div class="fg">
+<div><p class="fk">Ferrite collects nothing.</p><p class="nt">No analytics, no ads, no tracking, on this page (except messages you choose to send) or in the browser. Update manifest at <code>/latest.json</code> is a stateless CDN edge, purged 24 to 48h.</p></div>
+<ul class="fx"><li><a href="https://github.com/ZaudRehman/ferrite"><b>Source</b><span>github.com/ZaudRehman/ferrite</span></a></li><li><a href="/latest.json"><b>Update manifest</b><span id="fv">latest.json</span></a></li><li><a href="#contact"><b>Contact</b><span>Talk to a human</span></a></li></ul>
+</div>
+<div class="fz"><span>&copy; 2026 Zaud Rehman, Apache-2.0.</span><a href="#main">Back to top</a></div>
+</div></footer>
+<!-- Lenis 1.3.26 vendored (jsdelivr, pinned); no runtime CDN, page loads with zero third-party requests -->
+<script src="vendor/lenis.min.js" defer></script>
 <script>
-fetch('/latest.json').then(r=>r.json()).then(m=>{
-  const base="https://github.com/anomalyco/opencode/releases/download/v";
-  if(m.stable && m.stable.version){
-    const v=m.stable.version;
-    const url=m.stable.url;
-    document.getElementById('dl-linux').href= url || base+v+"/ferrite-"+v+".deb";
-    document.getElementById('dl-win').href= url || base+v+"/ferrite-"+v+".msi";
-    document.getElementById('dl-mac').href= url || base+v+"/ferrite-"+v+".dmg";
+(function(){var d=document,$=function(i){return d.getElementById(i)};d.documentElement.className='js';
+var p='';try{p=(navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||''}catch(e){}
+p=String(p).toLowerCase();var l=/win/.test(p)?'Windows (.msi)':/mac/.test(p)?'macOS (.dmg, beta)':/linux/.test(p)?'Linux (.deb)':'';
+if(l)d.querySelectorAll('.dl').forEach(function(a){a.textContent='Download for '+l});
+var mq=d.querySelector('.mq div');mq.innerHTML+=mq.innerHTML;
+var ol=$('lg'),a=$('c1'),b=$('c2'),f=$('fl'),n=0,k=0,r=[],
+H=[['ads.example-network.com',1],['news.example/article',0],['cdn.example/tracker.min.js',1],['beacon.example/pixel.gif',1],['fp.example/canvas.js',1],['news.example/styles.css',0],['metrics.example.net/collect',1],['cookie-sync.example/match',1]];
+function add(){var h=H[Math.floor(Math.random()*H.length)];n++;if(h[1])k++;
+r.push('<li class="'+(h[1]?'no':'ok')+'"><span>'+h[0]+'</span><span>'+(h[1]?'blocked':'allowed')+'</span></li>');
+if(r.length>7)r.shift();ol.innerHTML=r.join('');a.textContent=n;b.textContent=k;f.style.width=Math.round(k/n*100)+'%'}
+for(var i=0;i<7;i++)add();
+var ledgerTimer=null;
+function ledgerStart(){if(ledgerTimer||matchMedia('(prefers-reduced-motion: reduce)').matches)return;ledgerTimer=setInterval(add,900)}
+function ledgerStop(){if(ledgerTimer){clearInterval(ledgerTimer);ledgerTimer=null}}
+if('IntersectionObserver' in window){new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){ledgerStart()}else{ledgerStop()}})},{threshold:0}).observe(ol)}else{ledgerStart()}
+var io='IntersectionObserver' in window?new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('v');io.unobserve(e.target)}})},{threshold:.1}):null;
+d.querySelectorAll('.r').forEach(function(e){io?io.observe(e):e.classList.add('v')});
+d.querySelectorAll('[data-c]').forEach(function(x){x.onclick=function(){try{navigator.clipboard.writeText(x.dataset.c);x.textContent='copied';setTimeout(function(){x.textContent='copy'},1400)}catch(e){}}});
+(function(){
+  var b=document.getElementById('th');if(!b)return;
+  function eff(){var s=null;try{s=localStorage.getItem('ferrite-theme')}catch(e){}
+    if(s==='light'||s==='dark')return s;
+    return matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}
+  function apply(){var t=eff();document.documentElement.dataset.theme=t;
+    document.documentElement.style.colorScheme=t;
+    b.setAttribute('aria-label',t==='dark'?'Switch to light theme':'Switch to dark theme');
+    document.querySelectorAll('meta[name="theme-color"]').forEach(function(m){m.remove()});
+    var m=document.createElement('meta');m.name='theme-color';
+    m.content=t==='dark'?'#0e0c09':'#f2eee5';document.head.appendChild(m);}
+  b.onclick=function(){var t=eff()==='dark'?'light':'dark';
+    try{localStorage.setItem('ferrite-theme',t)}catch(e){}apply();};
+  apply();
+})();
+(function(){
+  if(!matchMedia('(hover: hover) and (pointer: fine)').matches)return;
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  document.querySelectorAll('.b').forEach(function(el){
+    el.addEventListener('mousemove',function(e){
+      var r=el.getBoundingClientRect();
+      var x=(e.clientX-r.left-r.width/2)*0.3,y=(e.clientY-r.top-r.height/2)*0.3;
+      x=Math.max(-10,Math.min(10,x));y=Math.max(-10,Math.min(10,y));
+      el.style.setProperty('--mx',x.toFixed(1)+'px');
+      el.style.setProperty('--my',y.toFixed(1)+'px');});
+    el.addEventListener('mouseleave',function(){
+      el.style.setProperty('--mx','0px');el.style.setProperty('--my','0px');});
+  });
+})();
+(function(){
+  if(!matchMedia('(hover: hover) and (pointer: fine)').matches)return;
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  var hero=document.querySelector('.hero'),tick=null;
+  if(!hero)return;
+  hero.addEventListener('mousemove',function(e){
+    if(tick)cancelAnimationFrame(tick);
+    tick=requestAnimationFrame(function(){
+      var r=hero.getBoundingClientRect();
+      var gx=(e.clientX-r.left)/r.width*100;
+      var gy=(e.clientY-r.top)/760*100;
+      gx=Math.max(0,Math.min(100,gx));gy=Math.max(0,Math.min(100,gy));
+      hero.style.setProperty('--gx',gx.toFixed(2)+'%');
+      hero.style.setProperty('--gy',gy.toFixed(2)+'%');});});
+})();
+(function(){
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  var ascii='<>/|[]{}=+*#$%&?!',blocks='\u2588\u2593\u2592\u2591<>/|[]{}=+*#$%&';
+  document.querySelectorAll('.kk,.mq span').forEach(function(el){
+    el.addEventListener('mouseenter',function(){
+      if(el.dataset.busy)return;el.dataset.busy='1';
+      var glyphs=el.classList.contains('kk')?ascii:blocks;
+      var orig=el.textContent,n=0;
+      var timer=setInterval(function(){n++;var out='';
+        for(var i=0;i<orig.length;i++){out+=i<n?orig[i]:glyphs[Math.floor(Math.random()*glyphs.length)];}
+        el.textContent=out;
+        if(n>=orig.length){clearInterval(timer);el.textContent=orig;delete el.dataset.busy;}
+      },40);});
+  });
+})();
+(function(){
+  function boot(){
+    if(!window.Lenis)return;
+    if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+    document.documentElement.style.scrollBehavior='auto';
+    var lenis=new Lenis({duration:1.15,smoothWheel:true});
+    function raf(time){lenis.raf(time);requestAnimationFrame(raf);}
+    requestAnimationFrame(raf);
+    document.querySelectorAll('a[href^="#"]').forEach(function(a){
+      a.addEventListener('click',function(e){
+        var id=a.getAttribute('href');
+        if(!id||id.length<2)return;
+        var el=document.querySelector(id);
+        if(!el)return;
+        e.preventDefault();
+        lenis.scrollTo(el,{offset:-72});
+      });
+    });
   }
-}).catch(()=>{});
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',boot);}
+  else{boot();}
+})();
+(function(){
+  var links={};
+  document.querySelectorAll('.nl a[href^="#"]').forEach(function(a){
+    links[a.getAttribute('href').slice(1)]=a;});
+  var secs=Object.keys(links).map(function(id){return document.getElementById(id)})
+    .filter(function(s){return !!s});
+  if(!secs.length||!('IntersectionObserver' in window))return;
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if(!e.isIntersecting)return;
+      Object.values(links).forEach(function(a){a.classList.remove('on');a.removeAttribute('aria-current')});
+      var a=links[e.target.id];
+      if(a){a.classList.add('on');a.setAttribute('aria-current','true');}
+    });
+  },{rootMargin:'-40% 0px -55% 0px'});
+  secs.forEach(function(s){io.observe(s)});
+})();
+(function(){
+  if(!matchMedia('(hover: hover) and (pointer: fine)').matches)return;
+  var cc=document.getElementById('cc');if(!cc)return;
+  var root=document.documentElement;
+  document.addEventListener('mousemove',function(e){
+    cc.style.transform='translate3d('+e.clientX+'px,'+e.clientY+'px,0)';
+    if(!root.classList.contains('jscc'))root.classList.add('jscc');});
+  document.addEventListener('mouseover',function(e){
+    var tgt=e.target;
+    var link=tgt.closest?tgt.closest('a,button,summary,.tp label'):null;
+    var text=tgt.closest?tgt.closest('p,pre,code,h1,h2,h3,li,.rw input,.rw textarea'):null;
+    cc.classList.toggle('link',!!link);
+    cc.classList.toggle('text',!link&&!!text);});
+  document.addEventListener('mouseout',function(e){
+    if(!e.relatedTarget)root.classList.remove('jscc');});
+  document.addEventListener('mousedown',function(){cc.classList.add('down');});
+  document.addEventListener('mouseup',function(){cc.classList.remove('down');});
+})();
+(function(){
+var f=document.getElementById('cf');if(!f)return;
+var s=document.getElementById('cs'),m=document.getElementById('cm'),c=document.getElementById('cn'),t=f.elements.message,L='Send message';
+function cnt(){c.textContent=t.value.length}
+t.addEventListener('input',cnt);cnt();
+if(/Mac|iPhone|iPad/.test(navigator.platform||''))f.querySelector('.kb').textContent='Cmd';
+t.addEventListener('keydown',function(e){if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();f.requestSubmit()}});
+function bad(x){s.disabled=false;s.textContent=L;m.className='err';m.textContent=x}
+f.addEventListener('submit',function(e){
+if(!f.checkValidity())return;
+e.preventDefault();m.className='';m.textContent='';
+if(f.access_key&&f.access_key.value.indexOf('YOUR-')===0){m.className='err';m.textContent='Contact form is not wired yet (missing key).';return}
+s.disabled=true;s.innerHTML='Sending<i class="sd"><u></u><u></u><u></u></i>';
+var d={};new FormData(f).forEach(function(v,k){d[k]=v});
+fetch('https://api.web3forms.com/submit',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify(d)})
+.then(function(r){return r.json()}).then(function(j){
+if(j.success){f.reset();cnt();s.disabled=false;s.textContent=L;f.classList.add('ok');document.getElementById('ca').focus()}
+else bad('Send failed: '+(j.message||'try again later.'))})
+.catch(function(){bad('Network error. Try again later.')})});
+document.getElementById('ca').onclick=function(){f.classList.remove('ok');f.elements.name.focus()};
+})();
+fetch('/latest.json').then(function(r){return r.json()}).then(function(m){var fv=$('fv');if(fv&&m.stable&&m.stable.version)fv.textContent='stable v'+m.stable.version;if(m.stable&&m.stable.version)$('ver').textContent='v'+m.stable.version+' \u00b7 '}).catch(function(){});
+})();
 </script>
 </body>
 </html>

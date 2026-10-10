@@ -1,10 +1,5 @@
-//! Delta-state CRDT engine with selective sync + lazy archive (3.3-3.5).
-//!
-//! Scaling notes: delta generation filters in SQL (`WHERE hlc > ? ...
-//! LIMIT`) instead of full-table scans, application runs in a single
-//! transaction with O(1)-by-PK LWW guards, and live-tab presence is an
-//! ephemeral TTL inbox (no consensus — presence needs delivery + expiry,
-//! not Raft).
+//! Delta state CRDT engine. Deltas filter in SQL, apply in one transaction
+//! with LWW guards. Live tabs are a TTL inbox, not consensus.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -15,14 +10,17 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::sync_actions::{CrdtMessage, LiveTabAction, SyncAction, SyncCategory};
 use crate::vector_clock::VectorClock;
 
-/// Per-category delta cap: bounds one sync round instead of cloning whole
-/// tables into RAM.
+/// Per category delta cap. Bounds one sync round.
 pub const DELTA_LIMIT_PER_CATEGORY: usize = 500;
-/// Total cap across categories per `deltas_for_peer` call.
+/// Total cap per `deltas_for_peer` call.
 pub const DELTA_TOTAL_CAP: usize = 3000;
-/// Live-tab presence TTL + cap.
+/// Live tab presence TTL and cap.
 pub const LIVE_TAB_TTL: Duration = Duration::from_secs(5 * 60);
 pub const LIVE_TAB_CAP: usize = 100;
+/// Wire-timestamp skew bound for live-tab pushes. The wire `timestamp`
+/// is accepted only when within +/- this of local receipt time;
+/// otherwise receipt time is stamped (clamps replay/future ghosts).
+pub const LIVE_TAB_SKEW_MS: i64 = 10 * 60 * 1000;
 
 pub struct CrdtEngine {
     vault: Arc<Mutex<Connection>>,
@@ -44,9 +42,7 @@ impl CrdtEngine {
         engine
     }
 
-    /// Idempotent performance migrations owned by the sync layer:
-    /// HLC range indexes for delta scans + tombstone column for autofill.
-    /// Failures are best-effort (older vaults still sync, just slower).
+    /// Sync owned indexes. Best effort, older vaults still sync, just slower.
     fn ensure_sync_indexes(&self) {
         if let Ok(conn) = self.vault.lock() {
             let _ = conn.execute_batch(
@@ -60,6 +56,13 @@ impl CrdtEngine {
                 "ALTER TABLE autofill_records ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;",
             );
         }
+    }
+
+    /// Copy of our vector clock for SyncRequest watermarks. Peers compute
+    /// their deltas against it (high-water approximation, see
+    /// `peer_watermark`).
+    pub fn clock_snapshot(&self) -> HashMap<String, u64> {
+        self.clock.0.clone()
     }
 
     pub fn persist_clock(&self) {
@@ -86,17 +89,16 @@ impl CrdtEngine {
         }
     }
 
-    /// High-water mark from the peer's clock. Rows store HLC timestamps, not
-    /// per-device counters, so per-device causality is approximated by the
-    /// maximum: rows newer than everything the peer has seen. True
-    /// per-device causality needs origin-device columns (deferred).
+    /// High-water mark from the peer clock. Rows store HLC timestamps, so
+    /// per-device causality is approximated by the maximum. True per-device
+    /// causality needs origin-device columns (deferred).
     fn peer_watermark(peer_clock: &HashMap<String, u64>) -> i64 {
         peer_clock.values().copied().max().unwrap_or(0) as i64
     }
 
-    /// Generate deltas since the peer's high-water mark, filtered by
-    /// enabled_categories (3.4). TrustedDevices always included even if
-    /// disabled (mandatory). SQL-filtered + bounded: no full-table clones.
+    /// Generate deltas since the peer high-water mark, filtered by
+    /// enabled categories. TrustedDevices always included even if
+    /// disabled (mandatory). SQL-filtered and bounded, no full-table clones.
     pub fn deltas_for_peer(
         &self,
         peer_clock: &HashMap<String, u64>,
@@ -119,7 +121,7 @@ impl CrdtEngine {
 
         if should_send(SyncCategory::Bookmarks)
             && let Ok(mut stmt) = conn.prepare(
-                "SELECT id, url, title, parent_folder_id, hlc_timestamp, is_deleted FROM bookmarks WHERE hlc_timestamp > ?1 ORDER BY hlc_timestamp ASC LIMIT ?2",
+                "SELECT id, url, title, parent_folder_id, sort_order, hlc_timestamp, is_deleted FROM bookmarks WHERE hlc_timestamp > ?1 ORDER BY hlc_timestamp ASC LIMIT ?2",
             )
             && let Ok(rows) = stmt.query_map(rusqlite::params![watermark, limit], |r| {
                 Ok((
@@ -127,13 +129,14 @@ impl CrdtEngine {
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, Option<String>>(3)?,
-                    r.get::<_, i64>(4)?,
+                    r.get::<_, f64>(4)?,
                     r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
                 ))
             })
         {
             for row in rows.flatten() {
-                let (id, url, title, parent, hlc, deleted) = row;
+                let (id, url, title, parent, sort_order, hlc, deleted) = row;
                 let hlc_u = hlc as u64;
                 if deleted != 0 {
                     push(
@@ -151,6 +154,7 @@ impl CrdtEngine {
                             url,
                             title,
                             parent_folder_id: parent,
+                            sort_order,
                             hlc_timestamp: hlc_u,
                         },
                     );
@@ -450,6 +454,7 @@ impl CrdtEngine {
                     url,
                     title,
                     parent_folder_id,
+                    sort_order,
                     hlc_timestamp,
                 } => {
                     if let Some(s) = CrdtEngine::stored_hlc(conn, "bookmarks", "id", id)?
@@ -458,8 +463,8 @@ impl CrdtEngine {
                         return Ok(());
                     }
                     conn.execute(
-                            "INSERT OR REPLACE INTO bookmarks(id, url, title, parent_folder_id, sort_order, hlc_timestamp, is_deleted) VALUES(?1,?2,?3,?4,0,?5,0)",
-                            rusqlite::params![id, url, title, parent_folder_id, *hlc_timestamp as i64],
+                            "INSERT OR REPLACE INTO bookmarks(id, url, title, parent_folder_id, sort_order, hlc_timestamp, is_deleted) VALUES(?1,?2,?3,?4,?5,?6,0)",
+                            rusqlite::params![id, url, title, parent_folder_id, sort_order, *hlc_timestamp as i64],
                         )
                         .map_err(|e| format!("bookmark: {e}"))?;
                 }
@@ -695,24 +700,46 @@ impl CrdtEngine {
     }
 
     /// Ephemeral live-tab presence push (no consensus, no persistence).
-    /// Only actions addressed to this device are stored; entries expire
-    /// after [`LIVE_TAB_TTL`] and the inbox is capped at [`LIVE_TAB_CAP`].
+    /// Only actions addressed to this device are stored. The wire
+    /// timestamp is accepted only within +/- [`LIVE_TAB_SKEW_MS`] of
+    /// local receipt time, else receipt time is stamped (clamps
+    /// replay/future ghosts). Entries expire [`LIVE_TAB_TTL`] after the
+    /// effective stamp and the inbox is capped at [`LIVE_TAB_CAP`].
     pub fn push_live_tab(&mut self, action: LiveTabAction) -> bool {
-        let (url, source, target) = match &action {
+        let (url, source, target, wire_ts) = match &action {
             LiveTabAction::PushTab {
                 url,
                 source_device,
                 target_device,
-                ..
-            } => (url.clone(), source_device.clone(), target_device.clone()),
+                timestamp,
+            } => (
+                url.clone(),
+                source_device.clone(),
+                target_device.clone(),
+                *timestamp,
+            ),
         };
         if target != self.device_id || url.len() > 2048 {
             return false;
         }
+        let receipt_ms = now_millis();
+        let effective = if (wire_ts - receipt_ms).abs() <= LIVE_TAB_SKEW_MS {
+            wire_ts
+        } else {
+            receipt_ms
+        };
+        let clamped = LiveTabAction::PushTab {
+            url: url.clone(),
+            source_device: source.clone(),
+            target_device: target.clone(),
+            timestamp: effective,
+        };
         let now = Instant::now();
-        // Expire + enforce cap.
-        self.live_tabs
-            .retain(|_, (_, at)| now.duration_since(*at) < LIVE_TAB_TTL);
+        // Expire by effective stamp (wall clock) and receipt instant;
+        // either bound evicts. Wall-clock expiry kills replays whose
+        // wire time is old-but-within-skew; instant expiry bounds
+        // future-dated (within-skew) entries to 5min from receipt.
+        self.prune_live_tabs(receipt_ms, now);
         if self.live_tabs.len() >= LIVE_TAB_CAP
             && let Some(oldest) = self
                 .live_tabs
@@ -722,15 +749,27 @@ impl CrdtEngine {
         {
             self.live_tabs.remove(&oldest);
         }
-        self.live_tabs.insert((source, url), (action, now));
+        self.live_tabs.insert((source, url), (clamped, now));
         true
+    }
+
+    fn prune_live_tabs(&mut self, now_ms: i64, now: Instant) {
+        let ttl_ms = LIVE_TAB_TTL.as_millis() as i64;
+        self.live_tabs.retain(|_, (a, at)| {
+            if now.duration_since(*at) >= LIVE_TAB_TTL {
+                return false;
+            }
+            let ts = match a {
+                LiveTabAction::PushTab { timestamp, .. } => *timestamp,
+            };
+            now_ms - ts < ttl_ms
+        });
     }
 
     /// Snapshot of unexpired live-tab pushes.
     pub fn live_tabs(&mut self) -> Vec<LiveTabAction> {
         let now = Instant::now();
-        self.live_tabs
-            .retain(|_, (_, at)| now.duration_since(*at) < LIVE_TAB_TTL);
+        self.prune_live_tabs(now_millis(), now);
         self.live_tabs.values().map(|(a, _)| a.clone()).collect()
     }
 
@@ -756,28 +795,64 @@ impl CrdtEngine {
             CrdtMessage::FetchArchiveBody { snapshot_id } => {
                 let conn = self.vault.lock().ok()?;
                 let mut stmt = conn
-                    .prepare("SELECT compressed_html FROM web_snapshots WHERE id=?1")
+                    .prepare("SELECT compressed_html, hlc_timestamp FROM web_snapshots WHERE id=?1")
                     .ok()?;
-                let blob: Vec<u8> = stmt.query_row([snapshot_id.clone()], |r| r.get(0)).ok()?;
+                let (blob, hlc): (Vec<u8>, i64) = stmt
+                    .query_row([snapshot_id.clone()], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .ok()?;
                 Some(CrdtMessage::FetchArchiveBodyResponse {
                     snapshot_id,
                     compressed_html: blob,
+                    hlc_timestamp: hlc as u64,
                 })
             }
             CrdtMessage::FetchArchiveBodyResponse {
                 snapshot_id,
                 compressed_html,
+                hlc_timestamp,
             } => {
+                // LWW guard mirroring the metadata arm: drop when incoming
+                // hlc <= stored. Empty stored bodies still fill (lazy
+                // metadata-only rows carry the same HLC as the body, and
+                // old peers send hlc 0): any bytes beat empty, but a
+                // filled body never regresses to stale bytes.
                 if let Ok(conn) = self.vault.lock() {
-                    let _ = conn.execute(
-                        "UPDATE web_snapshots SET compressed_html=?1 WHERE id=?2",
-                        rusqlite::params![compressed_html, snapshot_id],
-                    );
+                    let stored: Option<(i64, Vec<u8>)> = conn
+                        .query_row(
+                            "SELECT hlc_timestamp, compressed_html FROM web_snapshots WHERE id=?1",
+                            [&snapshot_id],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .optional()
+                        .unwrap_or(None);
+                    let (stored_hlc, stored_body) = stored?;
+                    let incoming = hlc_timestamp as i64;
+                    if stored_body.is_empty() {
+                        let _ = conn.execute(
+                            "UPDATE web_snapshots SET compressed_html=?1 WHERE id=?2 AND hlc_timestamp <= ?3",
+                            rusqlite::params![compressed_html, snapshot_id, incoming],
+                        );
+                    } else {
+                        if incoming <= stored_hlc {
+                            return None;
+                        }
+                        let _ = conn.execute(
+                            "UPDATE web_snapshots SET compressed_html=?1 WHERE id=?2 AND hlc_timestamp < ?3",
+                            rusqlite::params![compressed_html, snapshot_id, incoming],
+                        );
+                    }
                 }
                 None
             }
         }
     }
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -789,7 +864,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE bookmarks(id TEXT PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL,
-              parent_folder_id TEXT, sort_order INTEGER DEFAULT 0, hlc_timestamp INTEGER NOT NULL, is_deleted INTEGER DEFAULT 0);
+              parent_folder_id TEXT, sort_order REAL DEFAULT 0, hlc_timestamp INTEGER NOT NULL, is_deleted INTEGER DEFAULT 0);
              CREATE TABLE history(id TEXT PRIMARY KEY, url TEXT NOT NULL, title TEXT,
               visit_count INTEGER DEFAULT 1, last_visit_timestamp INTEGER NOT NULL, hlc_timestamp INTEGER NOT NULL);
              CREATE TABLE web_snapshots(id TEXT PRIMARY KEY, url TEXT NOT NULL, capture_timestamp INTEGER NOT NULL,
@@ -831,6 +906,7 @@ mod tests {
             url: "https://example.com".into(),
             title: "A-title".into(),
             parent_folder_id: None,
+            sort_order: 1024.0,
             hlc_timestamp: 100,
         }])
         .unwrap();
@@ -842,6 +918,16 @@ mod tests {
         );
         b.apply_deltas(d).unwrap();
         assert_eq!(bookmark_title(&b.vault.lock().unwrap(), "b1").0, "A-title");
+        // Fractional order survives the round trip (not reset to 0).
+        let order: f64 = b
+            .vault
+            .lock()
+            .unwrap()
+            .query_row("SELECT sort_order FROM bookmarks WHERE id='b1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(order, 1024.0);
         // B -> A carries nothing new (converged).
         let back = b.deltas_for_peer(&a.clock.0, &all_enabled());
         assert!(
@@ -856,6 +942,7 @@ mod tests {
             url: "https://example.com".into(),
             title: "B-title".into(),
             parent_folder_id: None,
+            sort_order: 1024.0,
             hlc_timestamp: 200,
         }])
         .unwrap();
@@ -872,6 +959,7 @@ mod tests {
             url: "https://example.com".into(),
             title: "new".into(),
             parent_folder_id: None,
+            sort_order: 1024.0,
             hlc_timestamp: 200,
         }])
         .unwrap();
@@ -880,6 +968,7 @@ mod tests {
             url: "https://example.com".into(),
             title: "stale".into(),
             parent_folder_id: None,
+            sort_order: 1024.0,
             hlc_timestamp: 100,
         }])
         .unwrap();
@@ -894,6 +983,7 @@ mod tests {
             url: "https://example.com".into(),
             title: "t".into(),
             parent_folder_id: None,
+            sort_order: 1024.0,
             hlc_timestamp: 100,
         }])
         .unwrap();
@@ -909,6 +999,7 @@ mod tests {
             url: "https://example.com".into(),
             title: "resurrected".into(),
             parent_folder_id: None,
+            sort_order: 1024.0,
             hlc_timestamp: 200,
         }])
         .unwrap();
@@ -921,6 +1012,7 @@ mod tests {
             url: "https://example.com".into(),
             title: "revived".into(),
             parent_folder_id: None,
+            sort_order: 1024.0,
             hlc_timestamp: 400,
         }])
         .unwrap();
@@ -974,6 +1066,7 @@ mod tests {
                 url: "https://example.com".into(),
                 title: "t".into(),
                 parent_folder_id: None,
+                sort_order: 1024.0,
                 hlc_timestamp: 100,
             }])
             .unwrap();
@@ -999,5 +1092,113 @@ mod tests {
         assert!(a.live_tabs().is_empty());
         assert!(a.push_live_tab(mk("dev-a")));
         assert_eq!(a.live_tabs().len(), 1);
+    }
+
+    #[test]
+    fn live_tab_ancient_clamps_to_receipt_fresh_kept() {
+        let mut a = CrdtEngine::new(test_db(), "dev-a".to_owned());
+        let receipt = now_millis();
+        // Ancient (1h old, beyond 10min skew) clamps to receipt.
+        let ancient = receipt - 3_600_000;
+        assert!(a.push_live_tab(LiveTabAction::PushTab {
+            url: "https://example.com/old".into(),
+            source_device: "dev-b".into(),
+            target_device: "dev-a".into(),
+            timestamp: ancient,
+        }));
+        let tabs = a.live_tabs();
+        let ts_old = match tabs
+            .iter()
+            .find(|t| matches!(t, LiveTabAction::PushTab { url, .. } if url == "https://example.com/old"))
+            .expect("old tab stored")
+        {
+            LiveTabAction::PushTab { timestamp, .. } => *timestamp,
+        };
+        assert!(
+            (ts_old - receipt).abs() < 5_000,
+            "ancient must clamp to receipt, got {ts_old} vs {receipt}"
+        );
+        // Fresh (receipt) is kept verbatim.
+        assert!(a.push_live_tab(LiveTabAction::PushTab {
+            url: "https://example.com/fresh".into(),
+            source_device: "dev-b".into(),
+            target_device: "dev-a".into(),
+            timestamp: receipt,
+        }));
+        let tabs = a.live_tabs();
+        let ts_fresh = match tabs
+            .iter()
+            .find(|t| matches!(t, LiveTabAction::PushTab { url, .. } if url == "https://example.com/fresh"))
+            .expect("fresh tab stored")
+        {
+            LiveTabAction::PushTab { timestamp, .. } => *timestamp,
+        };
+        assert_eq!(ts_fresh, receipt, "fresh timestamp must be kept");
+        // Far-future (1h ahead) also clamps.
+        assert!(a.push_live_tab(LiveTabAction::PushTab {
+            url: "https://example.com/future".into(),
+            source_device: "dev-b".into(),
+            target_device: "dev-a".into(),
+            timestamp: receipt + 3_600_000,
+        }));
+        let tabs = a.live_tabs();
+        let ts_future = match tabs
+            .iter()
+            .find(|t| matches!(t, LiveTabAction::PushTab { url, .. } if url == "https://example.com/future"))
+            .expect("future tab stored")
+        {
+            LiveTabAction::PushTab { timestamp, .. } => *timestamp,
+        };
+        assert!(
+            (ts_future - now_millis()).abs() < 5_000,
+            "future must clamp to receipt, got {ts_future}"
+        );
+    }
+
+    #[test]
+    fn stale_archive_body_does_not_overwrite_newer() {
+        let mut a = CrdtEngine::new(test_db(), "dev-a".to_owned());
+        {
+            let conn = a.vault.lock().unwrap();
+            conn.execute(
+                "INSERT INTO web_snapshots(id, url, capture_timestamp, compressed_html, is_pinned, hlc_timestamp) VALUES('s1','https://example.com',1,?1,0,200)",
+                rusqlite::params![b"new-body".to_vec()],
+            )
+            .unwrap();
+        }
+        // Stale (hlc 100 < stored 200) must not overwrite.
+        a.handle_crdt_message(CrdtMessage::FetchArchiveBodyResponse {
+            snapshot_id: "s1".into(),
+            compressed_html: b"stale-body".to_vec(),
+            hlc_timestamp: 100,
+        });
+        let body: Vec<u8> = a
+            .vault
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT compressed_html FROM web_snapshots WHERE id='s1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(body, b"new-body", "stale body must not overwrite newer");
+        // Newer (hlc 300 > stored 200) overwrites.
+        a.handle_crdt_message(CrdtMessage::FetchArchiveBodyResponse {
+            snapshot_id: "s1".into(),
+            compressed_html: b"newer-body".to_vec(),
+            hlc_timestamp: 300,
+        });
+        let body: Vec<u8> = a
+            .vault
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT compressed_html FROM web_snapshots WHERE id='s1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(body, b"newer-body", "newer body must win");
     }
 }

@@ -8,6 +8,12 @@ on:
 
 jobs:
   build:
+    # Signing inputs hoisted to env: the `secrets` context is not
+    # available in step `if` conditions, but `env` is, and env values
+    # stay masked in logs exactly like secrets.
+    env:
+      WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
     strategy:
       matrix:
         include:
@@ -41,11 +47,18 @@ jobs:
       - name: Linux deps
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev perl
+      - name: Windows perl (SQLCipher native build)
+        if: matrix.os == 'windows-latest'
+        run: choco install strawberryperl -y --no-progress
       - name: Set SOURCE_DATE_EPOCH
         shell: bash
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> $GITHUB_ENV
+      # SQLCipher features are mandatory in release: the per-crate build.rs
+      # gates fail the build without them (docs/STORAGE_CONTRACT.md).
+      # Packaging steps below rebuild via cargo: if a packager does not
+      # forward these features, the gate fails closed with instructions.
       - name: Build Rust --locked reproducible
-        run: cargo build --locked --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }} --features ferrite-vault/sqlcipher,ferrite-archive/sqlcipher
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUSTFLAGS: "--remap-path-prefix $GITHUB_WORKSPACE=/ferrite --remap-path-prefix $HOME/.cargo=/cargo"
@@ -62,7 +75,7 @@ jobs:
         if: matrix.pkg == 'dmg'
         run: cargo install cargo-bundle && cargo bundle --release --target ${{ matrix.target }} --format dmg
       - name: Sign Windows Authenticode
-        if: matrix.os == 'windows-latest' && envs.WINDOWS_CERT != ''
+        if: matrix.os == 'windows-latest' && env.WINDOWS_SIGNING_CERT != ''
         env:
           WINDOWS_CERT: ${{ secrets.WINDOWS_SIGNING_CERT }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
@@ -72,8 +85,12 @@ jobs:
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT))
           & signtool sign /fd SHA256 /a /f $pfx /p $env:WINDOWS_CERT_PASSWORD (Get-ChildItem target/${{ matrix.target }}/release/*.msi).FullName
           & signtool sign /fd SHA256 /a /f $pfx /p $env:WINDOWS_CERT_PASSWORD (Get-ChildItem target/${{ matrix.target }}/release/ferrite*.exe).FullName
+          Remove-Item $pfx -Force
+      - name: Warn when Windows signing skipped
+        if: matrix.os == 'windows-latest' && env.WINDOWS_SIGNING_CERT == ''
+        run: 'echo "::warning::No Windows signing cert configured: MSI ships unsigned (SmartScreen will flag it)"'
       - name: Sign & Notarize macOS
-        if: matrix.os == 'macos-latest'
+        if: matrix.os == 'macos-latest' && env.APPLE_ID != ''
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
@@ -83,31 +100,38 @@ jobs:
           ditto -c -k --keepParent target/${{ matrix.target }}/release/bundle/macos/Ferrite.app Ferrite-${{ matrix.target }}.dmg
           xcrun notarytool submit Ferrite-${{ matrix.target }}.dmg --apple-id $APPLE_ID --password $APPLE_PASSWORD --team-id $APPLE_TEAM_ID --wait
           xcrun stapler staple Ferrite-${{ matrix.target }}.dmg
+      - name: Warn when macOS signing skipped
+        if: matrix.os == 'macos-latest' && env.APPLE_ID == ''
+        run: 'echo "::warning::No Apple credentials configured: DMG ships unsigned and unnotarized (Gatekeeper will block it)"'
       - name: SHA256 checksums
         shell: bash
         run: |
+          set -euo pipefail
           sha256sum target/${{ matrix.target }}/release/ferrite* target/${{ matrix.target }}/release/bundle/**/* 2>/dev/null | tee SHA256SUMS-${{ matrix.target }}.txt
           cat SHA256SUMS-${{ matrix.target }}.txt
-      - name: SBOM cyclonedx
-        run: cargo install cargo-cyclonedx && cargo cyclonedx --format json --target ${{ matrix.target }} -o sbom-${{ matrix.target }}.json
-      - name: Differential patch
+      - name: Channel tarball (per-target update artifact)
         shell: bash
         run: |
-          # Generate bsdiff patch against previous tag if exists
-          prev=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$prev" ]; then
-            echo "Generating patch from $prev"
-            # Use bsdiff if available, else fallback to full
-            if command -v bsdiff >/dev/null; then
-              bsdiff ferrite-prev.bin ferrite-new.bin ferrite.patch || true
-            fi
-          fi
+          set -euo pipefail
+          # The updater resolves one artifact per Rust target triple from the
+          # manifest's `targets` map and refuses when its triple is absent
+          # (fail-closed, never a foreign binary). Tarballs carry the native
+          # binary only; installers (msi/deb/dmg) ship alongside for stores.
+          bin="target/${{ matrix.target }}/release/ferrite"
+          if [ -f "$bin.exe" ]; then bin="$bin.exe"; fi
+          test -f "$bin" || { echo "missing binary: $bin"; exit 1; }
+          tar czf "ferrite-${{ matrix.target }}.tar.gz" -C "$(dirname "$bin")" "$(basename "$bin")"
+          sha256sum "ferrite-${{ matrix.target }}.tar.gz" | tee "SHA256-tarball-${{ matrix.target }}.txt"
+      - name: SBOM cyclonedx
+        run: cargo install cargo-cyclonedx && cargo cyclonedx --format json --target ${{ matrix.target }} -o sbom-${{ matrix.target }}.json
       - uses: actions/upload-artifact@v4
         with:
           name: ferrite-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/ferrite*
+            ferrite-${{ matrix.target }}.tar.gz
             SHA256SUMS-${{ matrix.target }}.txt
+            SHA256-tarball-${{ matrix.target }}.txt
             sbom-${{ matrix.target }}.json
             *.dmg
             *.msi
@@ -116,9 +140,9 @@ jobs:
         shell: bash
         run: |
           echo "Reproducible: rebuilding with --locked and diffing"
-          cargo build --locked --release --target ${{ matrix.target }} --offline
+          cargo build --locked --release --target ${{ matrix.target }} --offline --features ferrite-vault/sqlcipher,ferrite-archive/sqlcipher
           sha256sum target/${{ matrix.target }}/release/ferrite* | tee verify.txt
-          diff SHA256SUMS-${{ matrix.target }}.txt verify.txt || echo "Reproducible diff logged"
+          diff SHA256SUMS-${{ matrix.target }}.txt verify.txt || { echo "::error::Reproducibility check failed: rebuild differs from release build"; exit 1; }
 
   publish:
     needs: build
@@ -134,27 +158,63 @@ jobs:
             **/*.msi
             **/*.deb
             **/SHA256SUMS-*.txt
+            **/SHA256-tarball-*.txt
             **/sbom-*.json
           generate_release_notes: true
       - name: Update latest.json manifest
         run: |
+          set -euo pipefail
           version=${GITHUB_REF#refs/tags/v}
           channel="stable"
           if [[ "$version" == *"-beta"* ]]; then channel="beta"; fi
           # Fetch existing manifest or create
-          curl -sL https://ferrite.browser/latest.json -o latest.json || echo '{"stable":{"version":"0.0.0","rollout":100},"beta":{"version":"0.0.0","rollout":100}}' > latest.json
-          jq --arg v "$version" --arg ch "$channel" '.[$ch].version = $v | .[$ch].rollout = 1' latest.json > latest.json.tmp && mv latest.json.tmp latest.json
+          curl -sL https://ferrite.browser/latest.json -o latest.json || echo '{"stable":{"version":"0.0.0","rollout":100,"signature":"","targets":{},"severity":""},"beta":{"version":"0.0.0","rollout":100,"signature":"","targets":{},"severity":""}}' > latest.json
+          # Fill this channel's per-target table from the built tarballs.
+          # Every shipped triple must resolve or the manifest is incomplete
+          # and the job fails here (never a partial table clients half-trust).
+          python3 - "$version" "$channel" <<'EOF'
+          import glob, hashlib, json, sys
+          version, channel = sys.argv[1], sys.argv[2]
+          with open("latest.json") as f:
+              manifest = json.load(f)
+          targets = {}
+          for triple in ("x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu",
+                         "x86_64-apple-darwin", "aarch64-apple-darwin"):
+              hits = glob.glob(f"**/ferrite-{triple}.tar.gz", recursive=True)
+              assert len(hits) == 1, f"expected one tarball for {triple}, got {hits}"
+              with open(hits[0], "rb") as f:
+                  sha = hashlib.sha256(f.read()).hexdigest()
+              targets[triple] = {
+                  "url": f"https://github.com/ZaudRehman/ferrite/releases/download/v{version}/ferrite-{triple}.tar.gz",
+                  "sha256": sha,
+                  "patch_url": None,
+              }
+          # Rollout stays at 1 (percent) on every release by deliberate
+          # policy: new builds reach 1% of clients first, and a human
+          # raises it in later manifest updates after crash-free hours.
+          # Never raise this silently as part of a release.
+          rel = manifest.get(channel, {})
+          rel.update({"version": version, "rollout": 1, "targets": targets})
+          rel.pop("signature", None)
+          manifest[channel] = rel
+          with open("latest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+          print(json.dumps(manifest[channel], indent=2))
+          EOF
           cat latest.json
           # Commit to gh-pages via release workflow artifact
       - name: Sign latest.json manifest
         env:
           FERRITE_RELEASE_SIGNING_SEED: ${{ secrets.FERRITE_RELEASE_SIGNING_SEED }}
         run: |
-          # Clients verify `signature` over
-          # "ferrite-release-v1\n<channel>\n<version>\n<rollout>\n<sha256>\n<url>"
-          # and refuse unsigned manifests. Without the seed secret this step
-          # leaves the manifest unsigned (clients fail closed) — provision
-          # FERRITE_RELEASE_SIGNING_SEED (64 hex chars) to ship updates.
+          # Clients verify `signature` over the canonical message
+          #   ferrite-release-v1\n<channel>\n<version>\n<rollout>(\n<triple>\n<sha256>\n<url>\n<patch_url>\n)*
+          # with targets sorted by triple (see `release_signing_message` in
+          # crates/ferrite-sync/src/updater.rs and its `signing_message_vector`
+          # test; change both together). Clients refuse unsigned manifests.
+          # Without the seed secret this step leaves the manifest unsigned
+          # (clients fail closed). Provision FERRITE_RELEASE_SIGNING_SEED
+          # (64 hex chars) to ship updates.
           if [ -z "$FERRITE_RELEASE_SIGNING_SEED" ]; then
             echo "No signing seed: manifest stays unsigned, clients will refuse it"
             exit 0
@@ -170,20 +230,91 @@ jobs:
               manifest = json.load(f)
           for channel in ("stable", "beta", "dev"):
               rel = manifest.get(channel)
-              if not rel or not rel.get("sha256") or not rel.get("url"):
+              if not rel:
                   continue
-              msg = "ferrite-release-v1\n%s\n%s\n%s\n%s\n%s" % (
-                  channel, rel.get("version", ""), rel.get("rollout", 0),
-                  rel.get("sha256", ""), rel.get("url", ""))
+              targets = {t: a for t, a in (rel.get("targets") or {}).items()
+                         if a.get("url") and a.get("sha256")}
+              if not targets:
+                  continue
+              parts = ["ferrite-release-v1", channel, rel.get("version", ""),
+                       str(rel.get("rollout", 0))]
+              for triple in sorted(targets):
+                  a = targets[triple]
+                  parts += [triple, a["sha256"], a["url"], a.get("patch_url") or ""]
+              msg = "\n".join(parts) + "\n"
               rel["signature"] = sk.sign(msg.encode()).signature.hex()
           with open("latest.json", "w") as f:
               json.dump(manifest, f, indent=2)
           print("manifest signed")
           EOF
           cat latest.json
-      - name: Flathub submit
-        run: echo "Flatpak manifest generated at flatpak/com.ferrite.Browser.json"
-      - name: Homebrew cask PR
-        run: echo "Homebrew cask PR opened via peter-evans/create-pull-request"
-      - name: Winget PR
-        run: echo "Winget manifest PR opened"
+      - name: Publish latest.json to site
+        # Only the manifest goes to the site (clients fetch it by URL).
+        # Release binaries stay on GitHub Releases; publishing the whole
+        # working directory would push every artifact onto gh-pages.
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          cp latest.json site/latest.json
+      - name: Deploy manifest to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          keep_files: true
+          commit_message: "chore(release): publish latest.json"
+      - name: Update in-repo store manifests
+        # Homebrew cask + Winget manifest track release artifacts. SHAs and
+        # the MSI ProductCode cannot exist before the build, so this step
+        # rewrites them from the just-built outputs and opens a PR. A missing
+        # artifact fails the job loudly: never a silent placeholder.
+        run: |
+          set -euo pipefail
+          version=${GITHUB_REF#refs/tags/v}
+          arm_dmg=$(ls Ferrite-*-aarch64-apple-darwin.dmg 2>/dev/null || ls **/Ferrite-*-aarch64-apple-darwin.dmg 2>/dev/null | head -1)
+          intel_dmg=$(ls Ferrite-*-x86_64-apple-darwin.dmg 2>/dev/null || ls **/Ferrite-*-x86_64-apple-darwin.dmg 2>/dev/null | head -1)
+          msi=$(ls **/*.msi 2>/dev/null | head -1)
+          test -n "$arm_dmg" || { echo "missing arm64 dmg"; exit 1; }
+          test -n "$intel_dmg" || { echo "missing x64 dmg"; exit 1; }
+          test -n "$msi" || { echo "missing msi"; exit 1; }
+          arm_sha=$(sha256sum "$arm_dmg" | cut -d' ' -f1)
+          intel_sha=$(sha256sum "$intel_dmg" | cut -d' ' -f1)
+          msi_sha=$(sha256sum "$msi" | cut -d' ' -f1)
+          msi_url="https://github.com/ZaudRehman/ferrite/releases/download/v$version/$(basename "$msi")"
+          product_code="{FERRITE-BROWSER-0-1-0}"
+          # The MSI ProductCode cannot exist before the build, so read it
+          # from the just-built installer. msitools is mandatory here, not
+          # best-effort: falling back to the placeholder GUID would ship a
+          # Winget manifest that can never match an installed product.
+          sudo apt-get install -y msitools
+          product_code=$(msiinfo export "$msi" Property | grep -i "^ProductCode" | cut -f2 | tr -d '\r')
+          test -n "$product_code" || { echo "could not read MSI ProductCode"; exit 1; }
+          python3 - "$version" "$arm_sha" "$intel_sha" "$msi_sha" "$msi_url" "$product_code" <<'EOF'
+          import re, sys
+          version, arm_sha, intel_sha, msi_sha, msi_url, product_code = sys.argv[1:7]
+          rb = "homebrew/Ferrite.rb"
+          s = open(rb).read()
+          s = re.sub(r'version "[^"]+"', f'version "{version}"', s, count=1)
+          s = re.sub(r'sha256 arm:\s*"[^"]+"', f'sha256 arm:   "{arm_sha}"', s, count=1)
+          s = re.sub(r'intel:\s*"[^"]+"', f'intel: "{intel_sha}"', s, count=1)
+          open(rb, "w").write(s)
+          y = "winget/Ferrite.Browser.yaml"
+          s = open(y).read()
+          s = re.sub(r"PackageVersion: .*", f"PackageVersion: {version}", s, count=1)
+          s = re.sub(r"InstallerUrl: .*", f"InstallerUrl: {msi_url}", s, count=1)
+          s = re.sub(r"InstallerSha256: .*", f"InstallerSha256: {msi_sha}", s, count=1)
+          s = re.sub(r"ProductCode: .*", f"ProductCode: \"{product_code}\"", s, count=1)
+          open(y, "w").write(s)
+          print("store manifests rewritten")
+          EOF
+      - name: Store manifests PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(release): update store manifests"
+          title: "chore(release): update store manifests"
+          body: "Automated manifest refresh for this tag (Homebrew cask, Winget). SHAs computed from release artifacts."
+          branch: "chore/release-manifests"
+          add-paths: |
+            homebrew/Ferrite.rb
+            winget/Ferrite.Browser.yaml

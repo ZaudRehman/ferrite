@@ -12,19 +12,21 @@ members = [
     "crates/ferrite-vault",
     "crates/ferrite-credentials",
     "crates/ferrite-sync",
+    "crates/ferrite-chrome",
 ]
 
 [workspace.package]
 version = "0.1.0"
+# Project license (mirrored on the About page; change this one line if the
+# project relicenses; members inherit it).
+license = "MIT OR Apache-2.0"
 edition = "2024"
 rust-version = "1.96"
 
 [workspace.dependencies]
-# Windowing & GUI stack (version matrix aligned with egui-wgpu 0.36 requirements)
-egui = "0.36"
-egui-winit = "0.36"
-egui-wgpu = { version = "0.36", features = ["winit"] }
-wgpu = "30"
+# Windowing & GUI stack: winit window plus wry webviews. Chrome is a
+# bundled ferrite://chrome webview (see crates/ferrite-chrome); there is no
+# retained-mode toolkit in the tree.
 winit = "0.30"
 
 # Error handling: typed errors in libraries, anyhow aggregation in the binary
@@ -35,11 +37,11 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Async bridge for synchronous GPU init (Painter::new / set_window are async)
-pollster = "0.4"
-
-# Content layer (Part 2)
-wry = "0.56"
+# Content layer
+# wry `devtools`: the launch layer opens the engine's own inspector
+# (WebView2 DevTools / WebKit inspector): no CDP endpoint of our own,
+# nothing listening on any port. Required in release too, not just debug.
+wry = { version = "0.56", features = ["devtools"] }
 uuid = { version = "1.7", features = ["v4", "serde"] }
 tokio = { version = "1.36", features = ["full"] }
 url = "2.5"
@@ -55,8 +57,9 @@ ferrite-archive = { path = "crates/ferrite-archive" }
 ferrite-vault = { path = "crates/ferrite-vault" }
 ferrite-credentials = { path = "crates/ferrite-credentials" }
 ferrite-sync = { path = "crates/ferrite-sync" }
+ferrite-chrome = { path = "crates/ferrite-chrome" }
 
-# Network interception engine (Part 4) — raw tokio + httparse (see CHECKSUM/PART4)
+# Network interception engine: raw tokio + httparse, no framework proxy.
 httparse = "1.8"
 crossbeam-channel = "0.5"
 adblock = { version = "0.13", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
@@ -78,6 +81,5 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-# NOTE: `panic = "abort"` is deliberately NOT enabled. The shell installs a
-# frame-level panic boundary (see ferrite_shell::shell) per ARCHITECTURE.md
-# section 5.2, which requires unwinding to function.
+# `panic = "abort"` stays off: the binary's panic hook (crash log) runs
+# during unwinding, so abort would silently lose crash reports.

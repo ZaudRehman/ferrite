@@ -6,7 +6,6 @@ pub struct NavigationHistory {
 }
 
 impl NavigationHistory {
-    /// Create an empty history.
     pub fn new() -> Self {
         Self::default()
     }
@@ -18,14 +17,32 @@ impl NavigationHistory {
         self.forward_stack.clear();
     }
 
-    /// Whether a back navigation is possible.
     pub fn can_go_back(&self) -> bool {
         !self.back_stack.is_empty()
     }
 
-    /// Whether a forward navigation is possible.
     pub fn can_go_forward(&self) -> bool {
         !self.forward_stack.is_empty()
+    }
+
+    /// Most recent first, capped at 20.
+    pub fn back_list(&self, limit: usize) -> Vec<String> {
+        self.back_stack
+            .iter()
+            .rev()
+            .take(limit.min(20))
+            .cloned()
+            .collect()
+    }
+
+    /// Most recent first, capped at 20.
+    pub fn forward_list(&self, limit: usize) -> Vec<String> {
+        self.forward_stack
+            .iter()
+            .rev()
+            .take(limit.min(20))
+            .cloned()
+            .collect()
     }
 
     /// Navigate back, returning the URL to load, or `None` if impossible.
@@ -48,7 +65,7 @@ impl NavigationHistory {
         Some(next)
     }
 
-    /// Length of the back stack (for diagnostics / tests).
+    /// Length of the back stack (for diagnostics and tests).
     pub fn back_len(&self) -> usize {
         self.back_stack.len()
     }
@@ -72,6 +89,38 @@ impl NavigationHistory {
     pub fn clear(&mut self) {
         self.back_stack.clear();
         self.forward_stack.clear();
+    }
+
+    /// Session-load form: drops empty/overlong entries (a hostile file
+    /// must not smuggle megabytes of URLs into live tabs) and keeps the
+    /// newest `limit` per stack. Order preserved (oldest-first).
+    pub fn cleaned(&self, limit: usize) -> Self {
+        fn clean(v: &[String], limit: usize) -> Vec<String> {
+            let kept: Vec<String> = v
+                .iter()
+                .filter(|u| !u.is_empty() && u.len() <= 2048)
+                .cloned()
+                .collect();
+            let skip = kept.len().saturating_sub(limit);
+            kept[skip..].to_vec()
+        }
+        Self {
+            back_stack: clean(&self.back_stack, limit),
+            forward_stack: clean(&self.forward_stack, limit),
+        }
+    }
+    /// Copy keeping only the newest `limit` entries per stack. Session
+    /// persistence uses this (50): stacks grow unbounded in memory, but
+    /// the file must not.
+    pub fn truncated(&self, limit: usize) -> Self {
+        let take = |v: &[String]| {
+            let skip = v.len().saturating_sub(limit);
+            v[skip..].to_vec()
+        };
+        Self {
+            back_stack: take(&self.back_stack),
+            forward_stack: take(&self.forward_stack),
+        }
     }
 }
 
@@ -117,6 +166,35 @@ mod tests {
         let mut h = NavigationHistory::new();
         assert!(h.go_back("https://a.com").is_none());
         assert!(h.go_forward("https://a.com").is_none());
+    }
+
+    #[test]
+    fn truncated_and_cleaned_keep_newest_valid() {
+        let mut h = NavigationHistory::new();
+        for i in 0..10 {
+            h.push(&format!("https://x.test/{i}"), "https://y.test");
+        }
+        // truncated keeps the newest 3, oldest-first order intact.
+        let t = h.truncated(3);
+        assert_eq!(t.back_len(), 3);
+        assert_eq!(t.peek_back(), Some("https://x.test/9"));
+        assert_eq!(
+            t.back_list(3),
+            vec!["https://x.test/9", "https://x.test/8", "https://x.test/7"]
+        );
+        // cleaned drops empties/overlong, keeps order.
+        h.back_stack.push(String::new());
+        h.back_stack.push("z".repeat(3000));
+        let c = h.cleaned(100);
+        assert_eq!(c.back_len(), 10);
+        assert!(
+            !c.back_list(100)
+                .iter()
+                .any(|u| u.is_empty() || u.len() > 2048)
+        );
+        let c2 = h.cleaned(4);
+        assert_eq!(c2.back_len(), 4);
+        assert_eq!(c2.peek_back(), Some("https://x.test/9"));
     }
 
     #[test]

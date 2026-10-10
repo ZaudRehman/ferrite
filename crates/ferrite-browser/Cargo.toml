@@ -2,6 +2,7 @@
 name = "ferrite-browser"
 description = "The Ferrite sovereign browser binary."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 

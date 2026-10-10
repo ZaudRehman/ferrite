@@ -12,7 +12,9 @@ use tokio::sync::watch;
 use tokio_rustls::TlsConnector;
 
 use crate::error::{ProxyError, ProxyResult};
-use crate::event::{Classification, FORK_CAP, ForkTx, ForkedPayload, NetworkEvent, TelemetryTx};
+use crate::event::{
+    Classification, FORK_CAP, FailureKind, ForkTx, ForkedPayload, NetworkEvent, TelemetryTx,
+};
 use crate::verdict::{DecisionHook, RequestMeta, ResourceType, Verdict, resource_type_for_request};
 
 pub const MAX_HEAD_BYTES: usize = 16 * 1024;
@@ -29,6 +31,8 @@ pub const POOLED_IDLE_TTL: Duration = Duration::from_secs(30);
 pub struct ProxyConfig {
     pub fixed_port: Option<u16>,
     pub archive: Option<std::sync::Arc<ArchiveProvider>>,
+    /// Upstream DNS. Fixed at spawn, needs a restart to change.
+    pub dns: crate::dns::DnsConfig,
 }
 
 impl std::fmt::Debug for ProxyConfig {
@@ -36,6 +40,7 @@ impl std::fmt::Debug for ProxyConfig {
         f.debug_struct("ProxyConfig")
             .field("fixed_port", &self.fixed_port)
             .field("archive", &self.archive.is_some())
+            .field("dns", &self.dns)
             .finish()
     }
 }
@@ -55,6 +60,9 @@ pub struct ProxyHandle {
     pub forks: crossbeam_channel::Receiver<ForkedPayload>,
     pub telemetry_dropped: Arc<AtomicU64>,
     pub fork_dropped: Arc<AtomicU64>,
+    /// Plaintext fallbacks after `should_upgrade` was true (probe-fail and
+    /// probe-ok-dial-fail). Diagnostics only; fallback behavior unchanged.
+    pub downgraded: Arc<AtomicU64>,
     stop_tx: watch::Sender<bool>,
     join: Option<std::thread::JoinHandle<()>>,
 }
@@ -70,9 +78,6 @@ impl ProxyHandle {
 
 impl Drop for ProxyHandle {
     fn drop(&mut self) {
-        // Best-effort shutdown signal if `stop()` was not called.
-        // Join is skipped here (may block); the proxy thread observes
-        // the watch channel and exits on its own.
         let _ = self.stop_tx.send(true);
     }
 }
@@ -98,6 +103,8 @@ pub fn spawn(config: ProxyConfig, hook: Arc<dyn DecisionHook>) -> ProxyResult<Pr
 
     let telemetry_dropped = Arc::clone(&telemetry_tx.dropped);
     let fork_dropped = Arc::clone(&fork_tx.dropped);
+    let downgraded = Arc::new(AtomicU64::new(0));
+    let downgraded_thread = Arc::clone(&downgraded);
 
     let join = std::thread::Builder::new()
         .name("ferrite-proxy".to_owned())
@@ -110,7 +117,15 @@ pub fn spawn(config: ProxyConfig, hook: Arc<dyn DecisionHook>) -> ProxyResult<Pr
                 .enable_all()
                 .build()
                 .expect("proxy runtime build");
-            rt.block_on(run(listener, config, hook, telemetry_tx, fork_tx, stop_rx));
+            rt.block_on(run(
+                listener,
+                config,
+                hook,
+                telemetry_tx,
+                fork_tx,
+                stop_rx,
+                downgraded_thread,
+            ));
             rt.shutdown_timeout(Duration::from_secs(2));
         })
         .map_err(|source| ProxyError::Runtime(std::io::Error::other(source)))?;
@@ -121,6 +136,7 @@ pub fn spawn(config: ProxyConfig, hook: Arc<dyn DecisionHook>) -> ProxyResult<Pr
         forks: fork_rx,
         telemetry_dropped,
         fork_dropped,
+        downgraded,
         stop_tx,
         join: Some(join),
     })
@@ -133,6 +149,7 @@ async fn run(
     telemetry: TelemetryTx,
     fork: ForkTx,
     mut stop_rx: watch::Receiver<bool>,
+    downgraded: Arc<AtomicU64>,
 ) {
     let listener = match TcpListener::from_std(std_listener) {
         Ok(l) => l,
@@ -142,7 +159,7 @@ async fn run(
         }
     };
 
-    let pool: Arc<ConnPool> = Arc::new(ConnPool::new());
+    let pool: Arc<ConnPool> = Arc::new(ConnPool::new().with_dns(config.dns.clone()));
     let archive = config.archive.clone();
 
     tracing::info!(
@@ -171,8 +188,9 @@ async fn run(
                 let fork = fork.clone();
                 let pool = Arc::clone(&pool);
                 let archive = archive.clone();
+                let downgraded = Arc::clone(&downgraded);
                 tokio::spawn(async move {
-                    handle_client(stream, hook, telemetry, fork, pool, config.fixed_port, archive).await;
+                    handle_client(stream, hook, telemetry, fork, pool, archive, downgraded).await;
                 });
             }
         }
@@ -189,8 +207,8 @@ async fn handle_client(
     telemetry: TelemetryTx,
     fork: ForkTx,
     pool: Arc<ConnPool>,
-    _fixed_port: Option<u16>,
     archive: Option<std::sync::Arc<ArchiveProvider>>,
+    downgraded: Arc<AtomicU64>,
 ) {
     let _ = client.set_nodelay(true);
     // Keep-alive loop: serve successive requests on one client connection.
@@ -227,6 +245,7 @@ async fn handle_client(
             &fork,
             &pool,
             archive.clone(),
+            &downgraded,
         )
         .await;
         pending = rest;
@@ -311,7 +330,12 @@ fn is_upgradable_host(host: &str) -> bool {
     {
         return false;
     }
-    if h.starts_with("fc") || h.starts_with("fd") || h.starts_with("fe80:") {
+    // ULA (fc00::/7) / link-local (fe80::/10) are never upgraded.
+    // Gate the fc/fd prefix on IP-literal form so DNS names like
+    // fc2.com, fcc.gov, fda.gov, fdroid.org upgrade normally.
+    // ponytail: starts_with on lowercased host; full CIDR parse if v6 scope grows.
+    let is_ip_literal = h.parse::<std::net::IpAddr>().is_ok() || h.contains(':');
+    if is_ip_literal && (h.starts_with("fc") || h.starts_with("fd") || h.starts_with("fe80:")) {
         return false;
     }
     if h.contains(':') {
@@ -320,19 +344,17 @@ fn is_upgradable_host(host: &str) -> bool {
     true
 }
 
-async fn probe_https(host: &str) -> bool {
+async fn probe_https(host: &str, dns: &crate::dns::DnsConfig) -> bool {
     let host_owned = host.to_owned();
-    let tcp = match tokio::time::timeout(
-        PROBE_TCP_TIMEOUT,
-        TcpStream::connect((host_owned.clone(), 443)),
-    )
-    .await
-    {
-        Ok(Ok(s)) => s,
+    let tcp = match dial_dual_stack(&host_owned, 443, PROBE_TCP_TIMEOUT, dns).await {
+        Ok(s) => s,
         _ => return false,
     };
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    // Explicit provider (see direct.rs): auto-detect panics under
+    // feature-unification. Already-set error ignored, first wins.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let config = std::sync::Arc::new(
         rustls::ClientConfig::builder()
             .with_root_certificates(roots)
@@ -368,7 +390,7 @@ async fn try_serve_archive(
         return false;
     };
     let banner = format!(
-        "<div style=\"background:#1C1B1B;color:#E5E2E1;padding:8px;text-align:center;font-family:system-ui\">Connection Error: Displaying local snapshot from {}</div>",
+        "<div style=\"background:#171209;color:#f0e7d5;padding:8px;text-align:center;font-family:system-ui\">Connection Error: Displaying local snapshot from {}</div>",
         snap.timestamp
     );
     let body = format!("{}{}", banner, String::from_utf8_lossy(&snap.html));
@@ -512,24 +534,25 @@ async fn handle_connect(
     let verdict = hook.decide(&meta);
     let classification = classify(verdict);
 
-    let event = |cls| NetworkEvent {
+    let event = |cls, failure| NetworkEvent {
         timestamp: crate::event::now_millis(),
         origin_domain: host.clone(),
         request_domain: host.clone(),
         resource_type: ResourceType::Document,
         bytes_transferred: 0,
         classification: cls,
+        failure,
     };
 
     if verdict != Verdict::Allow {
         tracing::info!(%host, ?verdict, "CONNECT denied");
-        telemetry.emit(event(classification));
+        telemetry.emit(event(classification, None));
         let _ = client
             .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
             .await;
         return;
     }
-    telemetry.emit(event(classification));
+    telemetry.emit(event(classification, None));
 
     // Dial with one retry on transient failure: pooled sockets may have
     // gone stale between validation and use.
@@ -537,6 +560,9 @@ async fn handle_connect(
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(%host, %port, error = %e, "upstream connect failed");
+            // A dead tunnel tells the engine nothing. The shell turns
+            // this into a local error page for first-contact hosts.
+            telemetry.emit(event(Classification::Allowed, Some(failure_kind(&e))));
             let _ = client
                 .write_all(
                     b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -574,6 +600,7 @@ async fn handle_forward(
     fork: &ForkTx,
     pool: &ConnPool,
     archive: Option<std::sync::Arc<ArchiveProvider>>,
+    downgraded: &Arc<AtomicU64>,
 ) -> (bool, Vec<u8>) {
     let (host, port) = head.host_of_absolute();
     // Internal pages: only exact ferrite hosts. Never match external URLs
@@ -581,11 +608,9 @@ async fn handle_forward(
     if is_internal_host(&host) {
         let target_lower = head.target.to_ascii_lowercase();
         let body: Vec<u8> = if target_lower.contains("newtab") {
-            br#"<!DOCTYPE html><!-- ferrite://newtab --><html><head><meta charset="utf-8"><title>New Tab - Ferrite</title><style>html,body{margin:0;height:100%;background:#020203;color:#E5E2E1;font-family:Inter,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;flex-direction:column} .wrap{max-width:640px;margin:0 auto;padding:48px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh} .logo{font-size:28px;font-weight:800;letter-spacing:-0.02em;color:#E5E5E5;margin:0 0 8px} .sub{color:#9CA3AF;font-size:13px;margin:0 0 24px;letter-spacing:0.08em;text-transform:uppercase;font-family:Geist Pixel Square,monospace} .search{width:100%;max-width:560px} .search input{width:100%;padding:16px;font-size:15px;border:0.5px solid #2A2A2A;border-radius:0;background:#131313;color:#E5E2E1;outline:none;font-family:JetBrains Mono,monospace} .hint{margin-top:8px;color:#9CA3AF;font-size:11px;font-family:Geist Pixel Square,monospace} .shortcuts{display:grid;grid-template-columns:repeat(4,80px);gap:16px;margin-top:32px} .tile{width:80px;height:80px;background:#131313;border:0.5px solid #2A2A2A;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;cursor:pointer} .tile:hover{border-color:#4F46E5}</style></head><body><div class="wrap"><p class="logo">Ferrite</p><p class="sub">Sovereign Browser</p><div class="search"><input type="text" id="q" placeholder="Search with DuckDuckGo or enter URL - press Enter" autocomplete="off" spellcheck="false"><p class="hint">Press Enter to search or navigate. Shortcuts below are instant.</p></div><div class="shortcuts"><div class="tile" onclick="go('https://duckduckgo.com')"><strong>DDG</strong><span>DuckDuckGo</span></div><div class="tile" onclick="go('https://google.com')"><strong>G</strong><span>Google</span></div><div class="tile" onclick="go('https://github.com')"><strong>GH</strong><span>GitHub</span></div><div class="tile" onclick="go('https://news.ycombinator.com')"><strong>HN</strong><span>Hacker News</span></div></div></div><script>const el=document.getElementById('q');function go(u){try{window.ipc.postMessage(JSON.stringify({type:'navigate',url:u}))}catch(e){location.href=u}}el.addEventListener('keydown',e=>{if(e.key==='Enter'){const v=e.target.value.trim();if(v){try{window.ipc.postMessage(JSON.stringify({type:'search',query:v}))}catch(e){location.href='https://duckduckgo.com/?q='+encodeURIComponent(v)}}}});document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();el.focus();el.select()}});</script></body></html>"#.to_vec()
+            br#"<!DOCTYPE html><!-- ferrite://newtab --><html><head><meta charset="utf-8"><title>New Tab - Ferrite</title><style>html,body{margin:0;height:100%;background:#0d0a06;color:#f0e7d5;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;flex-direction:column} .wrap{max-width:640px;margin:0 auto;padding:48px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh} .logo{font-size:28px;font-weight:800;letter-spacing:-0.02em;color:#f4b762;margin:0 0 8px}  .search{width:100%;max-width:560px} .search input{width:100%;padding:16px;font-size:15px;border:0.5px solid #201a0f;border-radius:0;background:#120e08;color:#f0e7d5;outline:none;font-family:JetBrains Mono,monospace} .hint{margin-top:8px;color:#8f7c57;font-size:11px;font-family:Geist Pixel Square,monospace} .shortcuts{display:grid;grid-template-columns:repeat(4,80px);gap:16px;margin-top:32px} .tile{width:80px;height:80px;background:#120e08;border:0.5px solid #201a0f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;cursor:pointer} .tile:hover{border-color:#ffc670}</style></head><body><div class="wrap"><p class="logo">Ferrite</p><div class="search"><input type="text" id="q" placeholder="Search with DuckDuckGo or enter URL - press Enter" autocomplete="off" spellcheck="false"><p class="hint">Press Enter to search or navigate. Shortcuts below are instant.</p></div><div class="shortcuts"><div class="tile" onclick="go('https://duckduckgo.com')"><strong>DDG</strong><span>DuckDuckGo</span></div><div class="tile" onclick="go('https://google.com')"><strong>G</strong><span>Google</span></div><div class="tile" onclick="go('https://github.com')"><strong>GH</strong><span>GitHub</span></div><div class="tile" onclick="go('https://news.ycombinator.com')"><strong>HN</strong><span>Hacker News</span></div></div></div><script>const el=document.getElementById('q');function go(u){try{window.ipc.postMessage(JSON.stringify({type:'navigate',url:u}))}catch(e){location.href=u}}el.addEventListener('keydown',e=>{if(e.key==='Enter'){const v=e.target.value.trim();if(v){try{window.ipc.postMessage(JSON.stringify({type:'search',query:v}))}catch(e){location.href='https://duckduckgo.com/?q='+encodeURIComponent(v)}}}});document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();el.focus();el.select()}});</script></body></html>"#.to_vec()
         } else if target_lower.contains("settings") {
             br#"<html><body><h1>Privacy Settings</h1><p>Adblock, GPC, Real-time, HTTPS-upgrade</p></body></html>"#.to_vec()
-        } else if target_lower.contains("search") {
-            b"<html><body>ferrite search handled via egui</body></html>".to_vec()
         } else {
             format!("<h1>404 Ferrite - {}</h1>", host).into_bytes()
         };
@@ -631,10 +656,17 @@ async fn handle_forward(
             resource_type: resource,
             bytes_transferred: 0,
             classification,
+            failure: None,
         });
-        // Malware: 302, others: 204.
-        if verdict == Verdict::BlockMalware {
-            let loc = format!("ferrite://security-warning?host={host}");
+        // Malware always 302s. Top-level ad/tracker documents 302 as well:
+        // a bare 204 would leave a navigation blank with no recourse.
+        // Subresources keep the harmless 204. Same URL shape as malware,
+        // no proceed mechanism anywhere.
+        if verdict == Verdict::BlockMalware
+            || (resource == ResourceType::Document
+                && matches!(verdict, Verdict::BlockAd | Verdict::BlockTracker))
+        {
+            let loc = format!("ferrite://blocked?host={host}");
             let resp = format!(
                 "HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             );
@@ -656,33 +688,48 @@ async fn handle_forward(
     // Try HTTPS upgrade.
     let should_upgrade =
         !is_secure && hook.should_upgrade_https() && port == 80 && is_upgradable_host(&host);
-    let (mut upstream, actual_port) = if should_upgrade && probe_https(&host).await {
+    let (mut upstream, actual_port) = if should_upgrade && probe_https(&host, pool.dns()).await {
         match pool.dial(&host, 443).await {
             Ok(s) => {
                 tracing::debug!(%host, "https-upgrade: TLS probe succeeded, forwarding to 443");
                 (s, 443)
             }
-            Err(_) => match pool.pop_or_dial(&host, port).await {
-                Ok(s) => (s, port),
-                Err(e) => {
-                    tracing::warn!(%host, error = %e, "upstream dial failed (after https-upgrade fallback)");
-                    if try_serve_archive(client, &archive, &head.target).await {
-                        return (false, Vec::new());
+            Err(_) => {
+                // TLS probe passed but 443 dial failed: plaintext fallback.
+                note_https_downgrade(downgraded, true);
+                match pool.pop_or_dial(&host, port).await {
+                    Ok(s) => (s, port),
+                    Err(e) => {
+                        tracing::warn!(%host, error = %e, "upstream dial failed (after https-upgrade fallback)");
+                        emit_forward_failure(telemetry, &host, resource);
+                        if try_serve_archive(client, &archive, &head.target).await {
+                            return (false, Vec::new());
+                        }
+                        if resource == ResourceType::Document {
+                            return redirect_to_error(client, &head.target, failure_kind(&e)).await;
+                        }
+                        let _ = client
+                            .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                            .await;
+                        return (head.keep_alive, Vec::new());
                     }
-                    let _ = client
-                        .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
-                        .await;
-                    return (head.keep_alive, Vec::new());
                 }
-            },
+            }
         }
     } else {
+        // Probe-fail (should_upgrade true) and plain-http (false) share this
+        // branch; only the former counts as a downgrade.
+        note_https_downgrade(downgraded, should_upgrade);
         match pool.pop_or_dial(&host, port).await {
             Ok(s) => (s, port),
             Err(e) => {
                 tracing::warn!(%host, error = %e, "upstream dial failed");
+                emit_forward_failure(telemetry, &host, resource);
                 if try_serve_archive(client, &archive, &head.target).await {
                     return (false, Vec::new());
+                }
+                if resource == ResourceType::Document {
+                    return redirect_to_error(client, &head.target, failure_kind(&e)).await;
                 }
                 let _ = client
                     .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
@@ -696,8 +743,12 @@ async fn handle_forward(
     let req_head = build_origin_form_head(head, path, &host, actual_port, with_gpc);
     if let Err(e) = upstream.write_all(&req_head).await {
         tracing::warn!(%host, error = %e, "upstream write failed");
+        emit_forward_failure(telemetry, &host, resource);
         if try_serve_archive(client, &archive, &head.target).await {
             return (false, Vec::new());
+        }
+        if resource == ResourceType::Document {
+            return redirect_to_error(client, &head.target, failure_kind(&e)).await;
         }
         let _ = client
             .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
@@ -705,6 +756,10 @@ async fn handle_forward(
         return (head.keep_alive, Vec::new());
     }
 
+    // No response head has reached the client yet; any failure below must
+    // produce a status, never a bare close. Once the head is relayed,
+    // `head_sent` flips and mid-body errors keep the current close.
+    let mut head_sent = false;
     // Request body: Content-Length framed or chunked, consuming any bytes
     // already buffered past the head. Remainder (pipelined next request)
     // is returned for the keep-alive loop.
@@ -718,12 +773,34 @@ async fn handle_forward(
     let body_rest = if request_chunked {
         match forward_chunked_request(client, &mut upstream, body_prefix).await {
             Ok(rest) => rest,
-            Err(_) => return (false, Vec::new()),
+            Err(e) => {
+                if !head_sent {
+                    if resource == ResourceType::Document {
+                        return redirect_to_error(client, &head.target, failure_kind(&e)).await;
+                    }
+                    let _ = client
+                        .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                        .await;
+                    return (false, Vec::new());
+                }
+                return (false, Vec::new());
+            }
         }
     } else if let Some(cl) = request_body_len {
         match forward_exact_request(client, &mut upstream, body_prefix, cl).await {
             Ok(rest) => rest,
-            Err(_) => return (false, Vec::new()),
+            Err(e) => {
+                if !head_sent {
+                    if resource == ResourceType::Document {
+                        return redirect_to_error(client, &head.target, failure_kind(&e)).await;
+                    }
+                    let _ = client
+                        .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                        .await;
+                    return (false, Vec::new());
+                }
+                return (false, Vec::new());
+            }
         }
     } else {
         body_prefix
@@ -734,8 +811,12 @@ async fn handle_forward(
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(%host, error = %e, "upstream response failed");
+            emit_forward_failure(telemetry, &host, resource);
             if try_serve_archive(client, &archive, &head.target).await {
                 return (false, Vec::new());
+            }
+            if resource == ResourceType::Document {
+                return redirect_to_error(client, &head.target, failure_kind(&e)).await;
             }
             let _ = client
                 .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
@@ -754,8 +835,16 @@ async fn handle_forward(
             resource_type: resource,
             bytes_transferred: 0,
             classification: Classification::Allowed,
+            failure: None,
         });
         return (false, Vec::new());
+    }
+
+    // Upstream answered 5xx for a document and the archive has no copy:
+    // a local retry page beats the engine's bare 500. (4xx relays
+    // verbatim, substituting those would break the web.)
+    if resource == ResourceType::Document && resp_head.status >= 500 {
+        return redirect_to_error(client, &head.target, FailureKind::ServerError).await;
     }
 
     let content_type = resp_head
@@ -818,8 +907,11 @@ async fn handle_forward(
 
     // Relay head to client verbatim.
     if client.write_all(&head_bytes).await.is_err() {
+        // Head never reached the client and the socket is dead: nothing
+        // safe to send.
         return (false, Vec::new());
     }
+    head_sent = true;
 
     let no_body = resp_head.status == 204
         || resp_head.status == 304
@@ -902,9 +994,21 @@ async fn handle_forward(
         resource_type: resource,
         bytes_transferred: body_bytes,
         classification,
+        failure: None,
     });
 
     if relay_result.is_err() {
+        if !head_sent {
+            // Head never reached the client: don't leave a bare close.
+            if resource == ResourceType::Document {
+                return redirect_to_error(client, &head.target, FailureKind::Unreachable).await;
+            }
+            let _ = client
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            return (false, Vec::new());
+        }
+        // Head already sent: status line is committed, nothing safe to do.
         return (false, Vec::new());
     }
 
@@ -925,6 +1029,82 @@ fn classify(v: Verdict) -> Classification {
         Verdict::BlockMalware => Classification::BlockedMalware,
         Verdict::BlockMixedContent => Classification::BlockedMixedContent,
     }
+}
+
+/// Diagnostics for forward failures (dial, upstream-write, response-head).
+/// Allowed with 0 bytes and `failure: None`: the shell only renders error
+/// pages off `ev.failure`, so this keeps counters honest without wrongly
+/// triggering local error pages.
+fn emit_forward_failure(telemetry: &TelemetryTx, host: &str, resource: ResourceType) {
+    telemetry.emit(NetworkEvent {
+        timestamp: crate::event::now_millis(),
+        origin_domain: host.to_owned(),
+        request_domain: host.to_owned(),
+        resource_type: resource,
+        bytes_transferred: 0,
+        classification: Classification::Allowed,
+        failure: None,
+    });
+}
+
+/// Count a plaintext fallback after `should_upgrade` was true. Call with
+/// `should_upgrade` in the shared dial branch (probe-fail counts, plain
+/// http does not) and with `true` in the probe-ok-dial-fail fallback.
+fn note_https_downgrade(counter: &AtomicU64, should_upgrade: bool) {
+    if should_upgrade {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Map a dial failure to the error-page reason. Kind-only: DNS misses
+/// surface as `Other` with platform-specific messages, so they
+/// (and everything else dial-shaped) read as `Unreachable`. The page
+/// copy covers spelling and offline for that case.
+fn failure_kind(e: &std::io::Error) -> FailureKind {
+    match e.kind() {
+        std::io::ErrorKind::ConnectionRefused => FailureKind::Refused,
+        std::io::ErrorKind::TimedOut => FailureKind::TimedOut,
+        _ => FailureKind::Unreachable,
+    }
+}
+
+/// Form-urlencode one query value. Stdlib-only: no `url` crate in this
+/// crate for a single call site.
+fn encode_query_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{b:02X}"));
+            }
+        }
+    }
+    out
+}
+
+/// Point a failed top-level document at the local error page. Mirrors
+/// the malware 302 shape (same subresource harmlessness: an HTML body
+/// loaded as an image is just a broken image, like the 502 was).
+/// Non-documents keep the empty 502. The engine never renders those.
+async fn redirect_to_error(
+    client: &mut TcpStream,
+    target: &str,
+    reason: FailureKind,
+) -> (bool, Vec<u8>) {
+    let loc = format!(
+        "ferrite://error?url={}&reason={}",
+        encode_query_value(target),
+        reason.as_str()
+    );
+    let resp = format!(
+        "HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    let _ = client.write_all(resp.as_bytes()).await;
+    (false, Vec::new())
 }
 
 /// Rebuild the request head in origin-form for the upstream.
@@ -1509,6 +1689,7 @@ impl Lru {
 #[derive(Default)]
 pub struct ConnPool {
     inner: std::sync::Mutex<Lru>,
+    dns: crate::dns::DnsConfig,
 }
 
 impl std::fmt::Debug for ConnPool {
@@ -1520,6 +1701,16 @@ impl std::fmt::Debug for ConnPool {
 impl ConnPool {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn with_dns(mut self, dns: crate::dns::DnsConfig) -> Self {
+        self.dns = dns;
+        self
+    }
+
+    pub fn dns(&self) -> &crate::dns::DnsConfig {
+        &self.dns
     }
 
     /// Pop a live socket for `host:port` or dial a fresh one (with timeout).
@@ -1568,23 +1759,123 @@ impl ConnPool {
 
     /// Dial upstream.
     pub async fn dial(&self, host: &str, port: u16) -> std::io::Result<TcpStream> {
-        match tokio::time::timeout(DIAL_TIMEOUT, TcpStream::connect((host, port))).await {
-            Ok(Ok(s)) => {
-                let _ = s.set_nodelay(true);
-                Ok(s)
-            }
-            Ok(Err(e)) => Err(e),
-            Err(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("upstream connect timed out: {host}:{port}"),
-            )),
+        dial_dual_stack(host, port, DIAL_TIMEOUT, &self.dns).await
+    }
+}
+
+/// First-attempt head start for Happy-Eyeballs-lite (RFC 8305 spirit).
+const EYEBALL_HEAD_START: Duration = Duration::from_millis(300);
+
+fn dial_timed_out(host: &str, port: u16) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("upstream connect timed out: {host}:{port}"),
+    )
+}
+
+async fn dial_one(addr: std::net::SocketAddr, timeout: Duration) -> std::io::Result<TcpStream> {
+    match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
+        Ok(Ok(s)) => {
+            let _ = s.set_nodelay(true);
+            Ok(s)
+        }
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(dial_timed_out(&addr.ip().to_string(), addr.port())),
+    }
+}
+
+/// Order resolved addresses for dialing: v6 first (resolver intent),
+/// otherwise stable.
+fn order_addrs(mut addrs: Vec<std::net::SocketAddr>) -> Vec<std::net::SocketAddr> {
+    addrs.sort_by_key(|a| !a.is_ipv6());
+    addrs
+}
+
+/// Dual-stack dial with a bounded total budget.
+///
+/// Resolution runs through `DnsConfig` (OS or DoH), never the webview/OS
+/// level, so the encrypted-DNS setting actually governs what this proxy
+/// connects to. Literal IPs skip resolution entirely.
+///
+/// Sequential `TcpStream::connect` stalls the whole budget on a
+/// dead-first-family: IPv6-first DNS with no v6 egress hangs every
+/// Cloudflare-fronted host for the full DIAL_TIMEOUT even though IPv4
+/// answers in milliseconds. The first address gets a short head start;
+/// the rest share the remaining budget, so the fast path stays fast and
+/// the fallback stays bounded.
+async fn dial_dual_stack(
+    host: &str,
+    port: u16,
+    budget: Duration,
+    dns: &crate::dns::DnsConfig,
+) -> std::io::Result<TcpStream> {
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return dial_one(std::net::SocketAddr::new(ip, port), budget).await;
+    }
+    let addrs: Vec<std::net::SocketAddr> =
+        match tokio::time::timeout(budget, dns.resolve(host, port)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => return Err(dial_timed_out(host, port)),
+        };
+    let addrs = order_addrs(addrs);
+    let single = addrs.len() == 1;
+    let start = std::time::Instant::now();
+    let mut last_err = dial_timed_out(host, port);
+    for (i, addr) in addrs.into_iter().enumerate() {
+        let elapsed = start.elapsed();
+        if elapsed >= budget {
+            break;
+        }
+        let remaining = budget - elapsed;
+        // First of several gets a head start; a sole candidate gets it all.
+        let per = if i == 0 && !single {
+            remaining.min(EYEBALL_HEAD_START)
+        } else {
+            remaining
+        };
+        match dial_one(addr, per).await {
+            Ok(s) => return Ok(s),
+            Err(e) => last_err = e,
         }
     }
+    Err(last_err)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_kind_maps_by_kind_only() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            failure_kind(&Error::new(ErrorKind::ConnectionRefused, "x")),
+            FailureKind::Refused
+        );
+        assert_eq!(
+            failure_kind(&Error::new(ErrorKind::TimedOut, "x")),
+            FailureKind::TimedOut
+        );
+        // DNS misses surface as Other with platform messages.
+        assert_eq!(
+            failure_kind(&Error::other("failed to lookup address information")),
+            FailureKind::Unreachable
+        );
+        assert_eq!(
+            failure_kind(&Error::new(ErrorKind::ConnectionReset, "x")),
+            FailureKind::Unreachable
+        );
+    }
+
+    #[test]
+    fn encode_query_value_escapes_reserved() {
+        assert_eq!(
+            encode_query_value("http://a.test/x y?q=1&r=2"),
+            "http%3A%2F%2Fa.test%2Fx%20y%3Fq%3D1%26r%3D2"
+        );
+        assert_eq!(encode_query_value("abc-_.~09AZaz"), "abc-_.~09AZaz");
+    }
 
     #[test]
     fn split_host_port_v4_and_v6() {
@@ -1598,6 +1889,63 @@ mod tests {
         );
         assert_eq!(split_host_port("[::1]:8080", 80), ("::1".to_owned(), 8080));
         assert_eq!(split_host_port("[::1]", 443), ("::1".to_owned(), 443));
+    }
+
+    #[test]
+    fn authority_parsing_survives_byte_soup() {
+        // Deterministic adversarial corpus (no external fuzzer needed for
+        // this surface): split_host_port and pool_key are total functions:
+        // hostile bytes must shape the output, never panic it. Invariants:
+        // identical input maps identically (pool keys stay stable for
+        // connection reuse), and an explicit trailing ":<digits>" selects
+        // that port. Malformed authorities (spaces, stray brackets) simply
+        // flow to a dial failure downstream, never a panic here.
+        let mut state: u64 = 0x9E3779B97F4A7C15;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        const ALPHABET: &[u8] = b":.[]/\\@%20\x7f\x80\xff example.COM:8080";
+        for _ in 0..5000 {
+            let len = (next() % 48) as usize;
+            let input: String = (0..len)
+                .map(|_| ALPHABET[(next() % ALPHABET.len() as u64) as usize] as char)
+                .collect();
+            let (host, port) = split_host_port(&input, 80);
+            assert_eq!(split_host_port(&input, 80), (host.clone(), port));
+            let _ = pool_key(&host, port);
+        }
+        // Explicit ports win, garbage ports fall back to the default.
+        assert_eq!(split_host_port("example.com:443", 80).1, 443);
+        assert_eq!(split_host_port("example.com:99999", 80).1, 80);
+        assert_eq!(split_host_port("example.com:", 80).1, 80);
+    }
+
+    #[test]
+    fn order_addrs_prefers_ipv6_stably() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+        let v4a: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443);
+        let v4b: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 443);
+        let v6: SocketAddr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
+        assert_eq!(order_addrs(vec![v4a, v6, v4b]), vec![v6, v4a, v4b]);
+        assert_eq!(order_addrs(vec![v4a]), vec![v4a]);
+        assert!(order_addrs(vec![]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn dual_stack_dial_reaches_local_listener() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let conn = dial_dual_stack(
+            "127.0.0.1",
+            port,
+            Duration::from_secs(5),
+            &crate::dns::DnsConfig::system(),
+        )
+        .await;
+        assert!(conn.is_ok(), "literal-IP dial must succeed");
     }
 
     #[test]
@@ -1684,5 +2032,43 @@ mod tests {
         assert!(is_upgradable_host("example.com"));
         assert!(!is_upgradable_host("localhost"));
         assert!(!is_upgradable_host("fc00::1"));
+    }
+
+    #[test]
+    fn upgradable_host_allows_fc_fd_dns_names() {
+        // Regression: fc/fd prefix must gate on IP literals only.
+        assert!(is_upgradable_host("fc2.com"));
+        assert!(is_upgradable_host("fcc.gov"));
+        assert!(is_upgradable_host("fda.gov"));
+        assert!(is_upgradable_host("fdroid.org"));
+        assert!(is_upgradable_host("facebook.com"));
+        // Real ULA / link-local / v6 literals stay excluded.
+        assert!(!is_upgradable_host("fc00::1"));
+        assert!(!is_upgradable_host("fd00::1"));
+        assert!(!is_upgradable_host("fe80::1"));
+        assert!(!is_upgradable_host("::1"));
+        assert!(!is_upgradable_host("::ffff:192.0.2.1"));
+    }
+
+    #[test]
+    fn forward_failure_emit_is_allowed_without_failure_kind() {
+        let (tx, rx) = TelemetryTx::new();
+        emit_forward_failure(&tx, "down.example", ResourceType::Document);
+        let ev = rx.try_recv().expect("failure event emitted");
+        assert_eq!(ev.request_domain, "down.example");
+        assert_eq!(ev.classification, Classification::Allowed);
+        assert_eq!(ev.bytes_transferred, 0);
+        assert_eq!(ev.failure, None);
+    }
+
+    #[test]
+    fn https_downgrade_counter_increments_on_fallback_only() {
+        let c = AtomicU64::new(0);
+        note_https_downgrade(&c, false);
+        assert_eq!(c.load(std::sync::atomic::Ordering::Relaxed), 0);
+        note_https_downgrade(&c, true);
+        assert_eq!(c.load(std::sync::atomic::Ordering::Relaxed), 1);
+        note_https_downgrade(&c, true);
+        assert_eq!(c.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 }

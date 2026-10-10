@@ -15,10 +15,6 @@ pub struct AppContext {
     pub tabs: TabManager,
     pub omnibox: OmniboxState,
     pub autocomplete: AutocompleteCache,
-    /// Cached tab-title text widths keyed by (tab id, font size, title).
-    /// Avoids font-shaping every tab every frame; invalidated when the
-    /// title changes and pruned when tabs close.
-    pub tab_text_widths: std::collections::HashMap<(uuid::Uuid, u32, String), f32>,
 }
 
 impl Default for AppContext {
@@ -42,7 +38,6 @@ impl AppContext {
             tabs: TabManager::new(factory),
             omnibox: OmniboxState::default(),
             autocomplete: AutocompleteCache::new(),
-            tab_text_widths: std::collections::HashMap::new(),
         }
     }
 

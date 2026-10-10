@@ -14,3 +14,7 @@ ferrite-session.json
 # Local-only checkouts / archives
 CHECKSUM/
 INTERNAL/
+# Vendored third-party asset dumps are not project knowledge (27k Phosphor
+# PNG/SVG/font files drown the graph; the inlined paths in
+# crates/ferrite-chrome/assets/chrome.html are the real icon source).
+crates/ferrite-shell/assets/phosphor-icons/

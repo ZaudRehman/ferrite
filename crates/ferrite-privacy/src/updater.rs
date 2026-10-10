@@ -1,4 +1,5 @@
-//! Updater that fetches filter lists via the local proxy.
+//! Filter list fetching. Direct origin fetch is primary, proxy path is
+//! legacy. None means retain last known good.
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -8,17 +9,14 @@ const MAX_HEAD_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 1;
 
-/// Normalize filter text to the `load()` integrity contract:
-/// `trim_end + "\n"` per list.
+/// Normalize to the load contract: `trim_end + "\n"`.
 pub fn normalize_filter_text(text: &str) -> String {
     format!("{}\n", text.trim_end_matches(['\n', '\r']))
 }
 
-/// Fetch `url` through the local proxy. Follows one same-origin redirect,
-/// enforces timeouts + size caps, parses status strictly, and verifies an
-/// optional `X-SHA256` transmission checksum over the normalized body.
-/// Authenticity (signature/pin) is a P0-5 concern; this checksum only
-/// detects truncation, it does not authenticate the CDN.
+/// Fetch through the local proxy. Legacy path, tests only. One same host
+/// redirect, caps, strict status, optional `X-SHA256` over the normalized
+/// body. Checksum detects truncation, not authenticity.
 pub async fn fetch_via_proxy(url: &str, port: u16) -> Option<(String, Option<String>)> {
     let mut current = url.to_owned();
     for _ in 0..=MAX_REDIRECTS {
@@ -42,7 +40,6 @@ pub async fn fetch_via_proxy(url: &str, port: u16) -> Option<(String, Option<Str
             }
             301 | 302 | 303 | 307 | 308 => {
                 let loc = resp.location?;
-                // Only follow same-host http(s) redirects (CDN edge).
                 let next = url::Url::parse(&loc)
                     .ok()
                     .and_then(|u| {
@@ -78,6 +75,109 @@ struct ProxyResponse {
     body: String,
     sha256: Option<String>,
     location: Option<String>,
+}
+
+/// Fetch direct from origin. Same contract as the proxy path.
+/// None means retain last known good.
+pub async fn fetch_direct(url: &str) -> Option<(String, Option<String>)> {
+    let mut current = url.to_owned();
+    for _ in 0..=MAX_REDIRECTS {
+        let parsed = url::Url::parse(&current).ok()?;
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return None;
+        }
+        let resp = ferrite_proxy::direct_get(&current, MAX_HEAD_BYTES + MAX_BODY_BYTES).await?;
+        match resp.status {
+            200 => {
+                let body = resp.body_str().into_owned();
+                let sha = resp
+                    .header("x-sha256")
+                    .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit()))
+                    .map(|s| s.to_owned());
+                if let Some(expected) = &sha {
+                    let normalized = normalize_filter_text(&body);
+                    if !verify_normalized(&normalized, expected) {
+                        return None;
+                    }
+                }
+                return Some((body, sha));
+            }
+            301 | 302 | 303 | 307 | 308 => {
+                let loc = resp.header("location")?.to_owned();
+                let next = url::Url::parse(&loc)
+                    .ok()
+                    .and_then(|u| {
+                        if u.host_str() == parsed.host_str() {
+                            Some(u.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| {
+                        if loc.starts_with('/') {
+                            Some(format!(
+                                "{}://{}{}",
+                                parsed.scheme(),
+                                parsed.host_str()?,
+                                loc
+                            ))
+                        } else {
+                            None
+                        }
+                    })?;
+                current = next;
+                continue;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Fetch raw bytes direct from origin (dictionary blobs are binary).
+/// Same discipline as [`fetch_direct`]: scheme gate, one same-host
+/// redirect, strict 200, 8MB cap. None means retain/skip: the caller must
+/// fail soft (spellcheck continues without that dictionary).
+pub async fn fetch_dict_bytes(url: &str) -> Option<Vec<u8>> {
+    let mut current = url.to_owned();
+    for _ in 0..=MAX_REDIRECTS {
+        let parsed = url::Url::parse(&current).ok()?;
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return None;
+        }
+        let resp = ferrite_proxy::direct_get(&current, MAX_HEAD_BYTES + MAX_BODY_BYTES).await?;
+        match resp.status {
+            200 => return Some(resp.body),
+            301 | 302 | 303 | 307 | 308 => {
+                let loc = resp.header("location")?.to_owned();
+                let next = url::Url::parse(&loc)
+                    .ok()
+                    .and_then(|u| {
+                        if u.host_str() == parsed.host_str() {
+                            Some(u.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| {
+                        if loc.starts_with('/') {
+                            Some(format!(
+                                "{}://{}{}",
+                                parsed.scheme(),
+                                parsed.host_str()?,
+                                loc
+                            ))
+                        } else {
+                            None
+                        }
+                    })?;
+                current = next;
+                continue;
+            }
+            _ => return None,
+        }
+    }
+    None
 }
 
 fn verify_normalized(normalized: &str, expected: &str) -> bool {
@@ -128,13 +228,11 @@ async fn get_via_proxy(target: &str, host: &str, port: u16) -> Option<ProxyRespo
     if body.len() > MAX_BODY_BYTES {
         return None;
     }
-    let head_lower = head.to_ascii_lowercase();
     let sha256 = head
         .lines()
         .find(|l| l.to_ascii_lowercase().starts_with("x-sha256:"))
         .and_then(|l| l.split_once(':').map(|(_, v)| v.trim().to_owned()))
         .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit()));
-    let _ = head_lower;
     let location = head
         .lines()
         .find(|l| l.to_ascii_lowercase().starts_with("location:"))

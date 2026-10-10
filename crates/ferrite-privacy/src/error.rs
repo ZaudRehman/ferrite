@@ -1,8 +1,7 @@
-//! Typed errors for the privacy layer.
+//! Typed errors. Integrity failures name the list and both hashes.
 
 use thiserror::Error;
 
-/// All fallible outcomes from the privacy layer.
 pub type PrivacyResult<T> = Result<T, PrivacyError>;
 
 #[derive(Debug, Error)]

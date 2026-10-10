@@ -153,7 +153,7 @@ fn check11_pinned_survives_bulk_close() {
 }
 
 #[test]
-fn check12_search_filters_and_ranks() {
+fn check12_discard_reactivates_via_switch() {
     let mut m = manager();
     let rust_id = m
         .new_tab_mock(Some("https://rust-lang.org".to_owned()))
@@ -169,19 +169,9 @@ fn check12_search_filters_and_ranks() {
         tab.set_title("The Rust Programming Language".to_owned());
     }
 
-    // Title match ranks above URL match; non-matching excluded.
-    let results = m.search("rust");
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0].title, "The Rust Programming Language");
-
-    let url_only = m.search("github.com");
-    assert_eq!(url_only.len(), 1);
-    assert!(url_only[0].url.contains("github.com"));
-
-    // Empty query returns everything (full tab switcher list).
-    assert_eq!(m.search("").len(), 3);
-
     // Selecting a discarded result reactivates via switch (§3.5 + §3.8).
+    // (Filtering now lives client-side in the palette page; the manager
+    // only owns the lifecycle transition below.)
     let github_idx = m
         .iter()
         .position(|t| t.url.contains("github"))
@@ -220,4 +210,53 @@ fn idle_timeout_discards_suspended_tabs() {
         !m.get_tab(b).unwrap().is_discarded(),
         "active never discarded"
     );
+}
+
+#[test]
+fn private_tabs_never_persist_to_session() {
+    let mut m = manager();
+    m.new_tab_mock(Some("https://public.com".to_owned()))
+        .unwrap();
+    let priv_id = m
+        .new_tab_mock(Some("https://secret.example".to_owned()))
+        .unwrap();
+    m.get_tab_mut(priv_id).unwrap().is_private = true;
+    // String API: nothing reaches the filesystem from the manager, so
+    // private exclusion is asserted on the document itself.
+    let data = m.save_json().unwrap();
+    assert!(data.contains("public.com"));
+    assert!(
+        !data.contains("secret.example"),
+        "private tabs must not persist"
+    );
+}
+
+#[test]
+fn new_private_flags_incognito() {
+    use ferrite_tabs::{MockHandle, TabState, WebViewHandle};
+    use std::rc::Rc;
+    let concrete = Rc::new(MockHandle::default());
+    assert!(!concrete.was_cleared());
+    let handle = concrete.clone() as Rc<dyn WebViewHandle>;
+    handle.clear_browsing_data().unwrap();
+    assert!(concrete.was_cleared());
+    let tab = TabState::new_private(uuid::Uuid::new_v4(), "https://x.example".to_owned(), handle);
+    assert!(tab.is_private);
+}
+
+#[test]
+fn clear_browsing_data_reaches_every_live_webview() {
+    let mut m = manager();
+    m.new_tab_mock(Some("https://a.com".to_owned())).unwrap();
+    m.new_tab_mock(Some("https://b.com".to_owned())).unwrap();
+    m.discard_tab(0).unwrap();
+    // Only the live webview can clear; the discarded one has none.
+    let mut cleared = 0;
+    for t in m.iter() {
+        if let Some(h) = t.webview.as_ref() {
+            h.clear_browsing_data().unwrap();
+            cleared += 1;
+        }
+    }
+    assert_eq!(cleared, 1);
 }

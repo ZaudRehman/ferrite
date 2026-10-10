@@ -1,4 +1,4 @@
-//! Part 10 trusted_devices table (4.3 schema) + mesh propagation via CRDT.
+//! Trusted device table plus mesh propagation over CRDT.
 
 use std::sync::{Arc, Mutex};
 
@@ -159,7 +159,7 @@ impl TrustedStore {
             .unwrap_or_default()
     }
 
-    /// Build LWW map for propagation - each device as SyncRecord
+    /// Build LWW map for propagation, each device as one SyncRecord.
     pub fn to_lww(&self) -> LwwMap {
         let mut map = LwwMap::new();
         for dev in self.all() {
@@ -249,6 +249,41 @@ mod tests {
                 .unwrap()
                 .is_revoked
         );
+    }
+
+    /// Lost-device loop closed: revoke cuts trust, and pairing the same
+    /// device again (fresh ceremony, new approval) restores it. Revocation
+    /// is not a tombstone on the identity; it is a state the next
+    /// ceremony overwrites, so "lost phone, new phone, same laptop"
+    /// always has a way back that does not involve the old key.
+    #[test]
+    fn revoke_then_repair_restores_trust() {
+        let s = store();
+        let dev = TrustedDevice {
+            device_id: "dev-phone".to_owned(),
+            device_name: "Phone".to_owned(),
+            public_key: vec![4, 5],
+            paired_via_device_id: None,
+            first_paired_at: 200,
+            last_seen_at: None,
+            last_synced_at: None,
+            hlc_timestamp: 200,
+            is_revoked: false,
+        };
+        s.add_trusted(&dev).unwrap();
+        assert!(s.is_trusted("dev-phone", &[4, 5]));
+        s.revoke("dev-phone", 300).unwrap();
+        assert!(!s.is_trusted("dev-phone", &[4, 5]));
+        // Fresh ceremony for the same device id (new approval, new row):
+        // trust is whole again, old revocation does not haunt the id.
+        let mut repaired = dev.clone();
+        repaired.hlc_timestamp = 400;
+        repaired.is_revoked = false;
+        s.add_trusted(&repaired).unwrap();
+        assert!(s.is_trusted("dev-phone", &[4, 5]));
+        // ...while a different key on the same id still fails: repair is
+        // approval-shaped, never takeover-shaped.
+        assert!(!s.is_trusted("dev-phone", &[9, 9]));
     }
 
     #[test]

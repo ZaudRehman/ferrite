@@ -1,4 +1,4 @@
-//! Part 10 mTLS TCP via rustls + custom ServerCertVerifier pinned to trusted_devices (5.2).
+//! mTLS over TCP. Verifier pinned to the trusted device store.
 
 use std::sync::{Arc, Mutex};
 
@@ -24,9 +24,8 @@ pub struct MtlsTransport {
 }
 
 impl MtlsTransport {
-    /// Build mTLS transport bound to `identity`: the served certificate's
-    /// private key IS the device identity key, so the TLS handshake
-    /// signature provably binds the peer to the pinned Ed25519 key.
+    /// Served cert key is the device identity key, so the handshake binds
+    /// the peer to the pinned Ed25519 key.
     pub fn new(
         config: MtlsConfig,
         trusted: Arc<Mutex<TrustedStore>>,
@@ -54,6 +53,9 @@ impl MtlsTransport {
         let client_verifier = Arc::new(PinnedVerifier {
             trusted: Arc::clone(&trusted),
         });
+        // Explicit provider (see ferrite-shell cert.rs): auto-detect
+        // panics under feature-unification. Already-set ignored.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let client_crypto = rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(client_verifier)
@@ -151,9 +153,8 @@ pub(crate) fn pinned_server_verifier(trusted: Arc<Mutex<TrustedStore>>) -> Arc<P
 
 impl PinnedVerifier {
     /// Fail-closed peer check: extract (pubkey, device_id) from the leaf
-    /// cert, require a matching non-revoked trusted entry, and — when an
-    /// expected name is supplied (client side SNI) — require the cert's
-    /// device identity to equal it. Empty trust stores REJECT.
+    /// cert, require a matching non-revoked trusted entry. Empty trust
+    /// stores reject. Expected SNI name must equal the cert identity.
     fn check_peer(
         &self,
         end: &CertificateDer<'_>,
@@ -196,10 +197,8 @@ impl PinnedVerifier {
 }
 
 /// Verify a TLS handshake signature against the Ed25519 key in `cert`.
-/// rustls passes the fully-constructed verify message as `msg`, so plain
-/// ed25519 verification over `(msg, signature)` with the cert's SPKI key is
-/// complete: presenting a trusted certificate WITHOUT its private key fails.
-/// Only the ED25519 scheme is accepted (our certs are Ed25519-only).
+/// A trusted certificate without its private key fails. Only the
+/// ED25519 scheme is accepted (our certs are Ed25519-only).
 fn verify_handshake_ed25519(
     msg: &[u8],
     cert: &CertificateDer<'_>,

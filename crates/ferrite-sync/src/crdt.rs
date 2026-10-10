@@ -15,8 +15,7 @@ pub struct SyncRecord {
     pub value: serde_json::Value,
     pub hlc: i64,
     pub deleted: bool,
-    /// Origin device id. Decides totally-ordered tie-breaks on equal HLC
-    /// (lexicographic). Defaults empty for records written before P2.
+    /// Origin device. Breaks equal HLC ties (higher wins). Empty for old rows.
     #[serde(default)]
     pub device: String,
 }
@@ -36,9 +35,7 @@ impl LwwMap {
             if rec.hlc < entry.hlc {
                 return;
             }
-            // Equal HLC: higher device id wins (total order, all replicas
-            // agree). The old code compared serialized VALUES, which is
-            // format-dependent and attacker-influenceable.
+            // Equal HLC: higher device id wins, so all replicas agree.
             if rec.hlc == entry.hlc && rec.device <= entry.device {
                 return;
             }

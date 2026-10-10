@@ -1,17 +1,19 @@
 [package]
 name = "ferrite-privacy"
-description = "Ferrite privacy & security choke — adblock, threat intel, param stripping, De-AMP, GPC, HTTPS-upgrade, cosmetic filtering, fingerprint spoof (Part 5)."
+description = "Ferrite privacy & security choke: adblock, threat intel, param stripping, De-AMP, GPC, HTTPS-upgrade, cosmetic filtering, fingerprint spoof (Part 5)."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 adblock.workspace = true
+# Registrable domains (PSL) for lookalike + form-target checks. Already in
+# the lock via adblock, so no new external crate, just a direct edge.
+addr = "0.15"
 rusqlite = { version = "0.40", features = ["bundled"] }
 sha2.workspace = true
 url.workspace = true
-regex = "1.12"
-once_cell = "1.21"
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

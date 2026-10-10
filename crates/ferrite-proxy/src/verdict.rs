@@ -15,10 +15,7 @@ pub struct RequestMeta {
     pub resource: ResourceType,
     pub is_secure: bool,
     pub referrer: Option<String>,
-    /// Full absolute URL (`https://host/path?q`) when known. Empty for
-    /// CONNECT tunnels where only the authority is visible. Adblock path,
-    /// query and `$third-party` matching require this; domain-only synthesis
-    /// silently disables most EasyList rules.
+    /// Full URL when known. Empty for CONNECT tunnels. Path rules need it.
     pub request_url: String,
 }
 
@@ -38,7 +35,6 @@ impl RequestMeta {
         self
     }
 
-    /// Whether this is a mixed-content subresource (HTTP from HTTPS page).
     pub fn is_mixed_content(&self) -> bool {
         !self.is_secure
             && self
@@ -77,6 +73,10 @@ impl DecisionHook for AllowAllHook {
     }
 }
 
+/// Test-only hook: exact + suffix blocklist for proxy integration tests.
+/// Production blocking lives in `ferrite-privacy` (filter trie + threat
+/// suffix walk + heuristics); this exists so proxy tests can exercise
+/// deny paths without booting the full privacy engine.
 #[derive(Debug, Clone)]
 pub struct BlockListHook {
     pub blocked: Vec<String>,
@@ -154,7 +154,6 @@ mod tests {
 
     #[test]
     fn sec_fetch_dest_empty_falls_back_to_path() {
-        // `empty` must NOT force Document (it poisoned the top-level gate).
         assert_eq!(resource_type_from_sec_fetch_dest("empty"), None);
         assert_eq!(
             resource_type_for_request(Some("empty"), "/a.js"),
@@ -189,8 +188,7 @@ pub enum ResourceType {
 
 pub fn resource_type_from_sec_fetch_dest(value: &str) -> Option<ResourceType> {
     match value.trim().to_ascii_lowercase().as_str() {
-        // Top-level navigation only. `empty` is fetch/XHR fallback and must
-        // NOT become Document (it poisoned the top-level realtime gate).
+        // `empty` is fetch fallback, never top level navigation.
         "document" => Some(ResourceType::Document),
         "empty" => None,
         "script" | "audioworklet" | "serviceworker" | "sharedworker" | "worker" => {
@@ -201,8 +199,7 @@ pub fn resource_type_from_sec_fetch_dest(value: &str) -> Option<ResourceType> {
         "xhr" | "fetch" => Some(ResourceType::Xhr),
         "audio" | "video" | "track" => Some(ResourceType::Media),
         "font" => Some(ResourceType::Font),
-        // iframe/frame/object/embed/fencedframe etc. are sub-documents;
-        // map to Document so top-level policy applies, not Other.
+        // Frames are sub documents, so top level policy applies.
         "iframe" | "frame" | "fencedframe" | "object" | "embed" => Some(ResourceType::Document),
         "manifest" | "report" => Some(ResourceType::Other),
         _ => None,

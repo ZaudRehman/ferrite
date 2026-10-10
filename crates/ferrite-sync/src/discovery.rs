@@ -1,5 +1,5 @@
-//! Part 10 discovery: continuous mDNS `_ferrite._tcp.local.` with <3s UI population
-//! and honest failure messaging for client-isolated networks (3.3).
+//! mDNS discovery on `_ferrite._tcp.local.` Client isolated networks
+//! report honest failures instead of silent absence.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -42,7 +42,6 @@ impl DiscoveryService {
         })
     }
 
-    /// Broadcast `_ferrite._tcp.local.` with TXT records per 3.1
     pub fn broadcast(&self) -> Result<ServiceInfo, String> {
         let host = format!("{}.local.", self.config.device_id);
         let props: HashMap<String, String> = HashMap::from([
@@ -68,7 +67,8 @@ impl DiscoveryService {
         Ok(out)
     }
 
-    /// Continuous resolution browsing for `_ferrite._tcp.local.`; pushes to discovered map within <3s (7.1)
+    /// Continuous resolution browsing for `_ferrite._tcp.local`. Pushes to
+    /// the discovered map within 3s.
     pub fn start_browsing(&self) -> Result<(), String> {
         let receiver = self
             .daemon
@@ -143,7 +143,7 @@ impl DiscoveryService {
         let empty = self.discovered.read().map(|m| m.is_empty()).unwrap_or(true);
         if empty && now_millis() - since_ms > 5000 {
             Some(
-                "No devices found — this network may block local discovery (client isolation). Pairing via QR still works if devices are on the same Wi-Fi, otherwise use relay (Part 12)."
+                "No devices found: this network may block local discovery (client isolation). Pairing via QR still works if devices are on the same Wi-Fi, otherwise use relay (Part 12)."
                     .to_owned(),
             )
         } else {

@@ -1,9 +1,4 @@
-//! Shared-memory handle for PDF bitmap transfer.
-//!
-//! NOTE: this is a temp-file rendezvous, not `mmap` (`memmap2` remains for
-//! future use). Security comes from `O_EXCL` creation + owner-only
-//! permissions, not name secrecy: predictable names fail closed instead of
-//! overwriting a squatted path.
+//! Temp file rendezvous for PDF bitmap transfer. Deleted on drop.
 
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -14,8 +9,7 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 
-/// Maximum bitmap size accepted (64MB): bounds `set_len` abuse from a
-/// compromised header.
+/// Max bitmap bytes (64 MB).
 pub const MAX_SHM_BYTES: usize = 64 * 1024 * 1024;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -27,6 +21,7 @@ pub struct ShmHandle {
 }
 
 impl ShmHandle {
+    /// Fails on squatted names instead of truncating. Owner only perms.
     pub fn create(size: usize) -> std::io::Result<Self> {
         if size == 0 || size > MAX_SHM_BYTES {
             return Err(std::io::Error::new(
@@ -47,8 +42,6 @@ impl ShmHandle {
             nonce
         ));
         let mut opts = OpenOptions::new();
-        // create_new = O_EXCL: a squatted symlink/name fails instead of
-        // being truncated and overwritten (TOCTOU fix).
         opts.read(true).write(true).create_new(true);
         #[cfg(unix)]
         {
@@ -56,7 +49,6 @@ impl ShmHandle {
         }
         #[cfg(windows)]
         {
-            // Deny all sharing (was 0x7 = read+write+delete share).
             opts.share_mode(0);
         }
         let file = opts.open(&path)?;
@@ -64,8 +56,7 @@ impl ShmHandle {
         Ok(Self { path, size })
     }
 
-    /// Validate an untrusted shm path from the renderer header: must stay
-    /// inside `temp_dir`, end in `.shm`, and contain no `..`.
+    /// Accept only `.shm` names inside the temp dir.
     pub fn validate_path(raw: &str) -> Option<PathBuf> {
         if raw.is_empty() || raw.len() > 512 || raw.contains("..") {
             return None;

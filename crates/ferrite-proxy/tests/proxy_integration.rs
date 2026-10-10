@@ -479,13 +479,14 @@ fn internal_host_requires_exact_match() {
         "internal served: {internal}"
     );
     // External host merely containing the substring must NOT be hijacked.
-    // `.invalid` never resolves, so the proxy must 502 — never 200 internal.
+    // `.invalid` never resolves, so the proxy must NOT serve internal
+    // content, a document-shaped failure 302s to the error page instead.
     let external = rt.block_on(send_recv(
         handle.port,
         "GET http://myferrite.invalid/ HTTP/1.1\r\nHost: myferrite.invalid\r\nConnection: close\r\n\r\n",
     ));
     assert!(
-        external.starts_with("HTTP/1.1 502"),
+        external.starts_with("HTTP/1.1 302") && external.contains("ferrite://error?"),
         "substring host not hijacked, got: {external}"
     );
     assert!(!external.contains("ferrite://newtab"));
@@ -506,6 +507,7 @@ fn archive_fallback_serves_snapshot_on_dial_failure() {
         ProxyConfig {
             fixed_port: None,
             archive: Some(provider),
+            dns: ferrite_proxy::DnsConfig::system(),
         },
         Arc::new(ferrite_proxy::AllowAllHook),
     )
@@ -530,7 +532,8 @@ fn archive_fallback_serves_snapshot_on_dial_failure() {
 
 #[test]
 fn archive_none_still_502s_on_dial_failure() {
-    // Without a provider the old behavior is unchanged: 502, no snapshot.
+    // Without a provider, non-documents keep the empty 502 (only
+    // document-shaped failures 302 to the error page).
     let handle = spawn_proxy(Arc::new(ferrite_proxy::AllowAllHook));
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -552,6 +555,173 @@ async fn futures_join<T: Send + 'static>(
         out.push(h.await.map_err(|_| ()));
     }
     out
+}
+
+/// Read until EOF (server closes on `Connection: close`). Unlike `send_recv`,
+/// this tolerates bare closes (empty) without hanging, so regression tests
+/// can assert a proper status was sent instead of zero bytes.
+async fn send_recv_eof(port: u16, request: &[u8]) -> Vec<u8> {
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect to proxy");
+    sock.write_all(request).await.unwrap();
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), sock.read(&mut buf)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => out.extend_from_slice(&buf[..n]),
+            // RST / reset after a status still counts: return what we have.
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+    out
+}
+
+#[test]
+fn blocked_document_redirects_to_blocked_page() {
+    let handle = spawn_proxy(Arc::new(BlockListHook::new(&["ads.example"])));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    // Top-level document navigation must 302 to ferrite://blocked (same shape
+    // as malware, no proceed mechanism), never a bare 204.
+    let doc = rt.block_on(send_recv_eof(
+        handle.port,
+        b"GET http://ads.example/ HTTP/1.1\r\nHost: ads.example\r\nSec-Fetch-Dest: document\r\nConnection: close\r\n\r\n",
+    ));
+    let doc_s = String::from_utf8_lossy(&doc).into_owned();
+    assert!(
+        doc_s.starts_with("HTTP/1.1 302"),
+        "blocked doc must 302, got: {doc_s}"
+    );
+    assert!(
+        doc_s.contains("ferrite://blocked?host=ads.example"),
+        "blocked loc shape, got: {doc_s}"
+    );
+    assert!(!doc_s.contains("proceed"), "no proceed mechanism: {doc_s}");
+    // Subresource stays a harmless 204.
+    let sub = rt.block_on(send_recv_eof(
+        handle.port,
+        b"GET http://ads.example/pixel.gif HTTP/1.1\r\nHost: ads.example\r\nSec-Fetch-Dest: image\r\nConnection: close\r\n\r\n",
+    ));
+    let sub_s = String::from_utf8_lossy(&sub).into_owned();
+    assert!(
+        sub_s.starts_with("HTTP/1.1 204"),
+        "blocked subresource stays 204, got: {sub_s}"
+    );
+    handle.stop();
+}
+
+#[test]
+fn document_mid_body_failure_yields_error_status() {
+    // Upstream reads the head then drops without a response. The client
+    // sends the head first, waits for the RST to land, then sends a small
+    // body the proxy fully consumes before its upstream write fails. The
+    // proxy must send a status (Document -> 302 to the error page), never a
+    // bare close.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let up_port = listener.local_addr().unwrap().port();
+    let join = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut acc = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                acc.extend_from_slice(&buf[..n]);
+                if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            // Drop without responding: the proxy's body write must fail.
+        });
+    });
+    let handle = spawn_proxy(Arc::new(ferrite_proxy::AllowAllHook));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let resp = rt.block_on(async {
+        let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", handle.port))
+            .await
+            .unwrap();
+        let body_len = 4096;
+        let head = format!(
+            "POST http://127.0.0.1:{up_port}/ HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Dest: document\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n"
+        );
+        sock.write_all(head.as_bytes()).await.unwrap();
+        // Let the upstream RST land before the body is forwarded.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sock.write_all(&vec![b'x'; body_len]).await.unwrap();
+        let mut out = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), sock.read(&mut buf)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => out.extend_from_slice(&buf[..n]),
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+        out
+    });
+    let resp_s = String::from_utf8_lossy(&resp).into_owned();
+    assert!(
+        !resp_s.is_empty() && resp_s.starts_with("HTTP/1.1 "),
+        "mid-body failure must send a status, not bare close, got {} bytes",
+        resp_s.len()
+    );
+    assert!(
+        resp_s.starts_with("HTTP/1.1 302") && resp_s.contains("ferrite://error?"),
+        "document mid-body failure 302s to error page, got: {}",
+        &resp_s[..resp_s.len().min(300)]
+    );
+    let _ = join.join();
+    handle.stop();
+}
+
+#[test]
+fn downgrade_counter_and_failure_telemetry() {
+    // Unresolvable but upgradable host: probe fails -> plaintext fallback
+    // (downgrade counts) -> dial fails -> Allowed telemetry with no failure
+    // kind plus a document 302 to the error page.
+    let handle = spawn_proxy(Arc::new(ferrite_proxy::AllowAllHook));
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let resp = rt.block_on(send_recv_eof(
+        handle.port,
+        b"GET http://downgrade-probe.test/ HTTP/1.1\r\nHost: downgrade-probe.test\r\nSec-Fetch-Dest: document\r\nConnection: close\r\n\r\n",
+    ));
+    let resp_s = String::from_utf8_lossy(&resp).into_owned();
+    assert!(
+        resp_s.starts_with("HTTP/1.1 302") && resp_s.contains("ferrite://error?"),
+        "dial failure doc 302s, got: {resp_s}"
+    );
+    assert_eq!(
+        handle.downgraded.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "one plaintext fallback after should_upgrade"
+    );
+    let ev = handle
+        .telemetry
+        .recv_timeout(Duration::from_secs(5))
+        .expect("failure telemetry emitted");
+    assert_eq!(ev.request_domain, "downgrade-probe.test");
+    assert_eq!(ev.classification, ferrite_proxy::Classification::Allowed);
+    assert_eq!(ev.bytes_transferred, 0);
+    assert_eq!(ev.failure, None);
+    handle.stop();
 }
 
 // Silence unused import if TelemetryTx only used in type position above.

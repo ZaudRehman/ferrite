@@ -1,67 +1,59 @@
-# cargo-deny configuration for Ferrite.
-# Gates: no copyleft-incompatible licenses in the binary, no known
-# advisories, no duplicate versions beyond patch.
-
-[graph]
-targets = [
-    { triple = "x86_64-pc-windows-msvc" },
-    { triple = "x86_64-unknown-linux-gnu" },
-    { triple = "x86_64-apple-darwin" },
-    { triple = "aarch64-apple-darwin" },
+# Telemetry absence, enforced (see docs/TELEMETRY.md): the product ships
+# no usage collection, so analytics/crash-reporting SDKs are denied at any
+# depth. Adding one is a red build until a human justifies it in review
+# against the opt-in + aggregate-only + DP-noise bar in that document.
+[bans]
+deny = [
+    { name = "sentry" },
+    { name = "analytics" },
+    { name = "segment" },
+    { name = "mixpanel" },
+    { name = "posthog" },
+    { name = "amplitude" },
+    { name = "appinsights" },
+    { name = "matomo" },
+    { name = "telemetry" },
+    { name = "openpanel" },
 ]
-
+# Advisory/yank checking (runs inside the cargo-deny CI step; replaces
+# the deprecated cargo-audit). Yanked crates fail the build outright.
 [advisories]
-db-path = "~/.cargo/advisory-dbs"
-db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = []
+# Reviewed 2026-10-04, re-review on every wry/gtk bump (see
+# CHECKSUM/ENGINE_BUMP_CHECKLIST.md). Both are transitive-only, neither is
+# called by Ferrite code, and neither has an upgrade path today:
+# - RUSTSEC-2024-0429 (glib VariantStrIter unsoundness): reachable only
+#   by calling the buggy iterator; Ferrite never touches GVariant
+#   iteration (gtk-rs windowing glue does). Linux-only surface.
+# - RUSTSEC-2024-0370 (proc-macro-error unmaintained): build-time macro
+#   helper, never shipped in any binary. Dies with the syn-1.x upgrade.
+# - RUSTSEC-2025-0141 (bincode unmaintained, whole project including the
+#   2.x line we migrated to): frozen, not broken — pure safe Rust, no
+#   known soundness issues. Inputs arrive only from paired, key-verified
+#   peers, frames are length-capped (8 MiB, rejected without alloc), and
+#   decode failures return None (never unwrap, never allocate-then-parse
+#   beyond the cap). Revisit only if a soundness advisory lands or a
+#   maintained wire-compatible alternative appears; post-1.0 any move
+#   needs a versioned frame.
+# - RUSTSEC-2026-0192 (ttf-parser unmaintained): font rasterization
+#   inside ab_glyph for window decorations (Linux-only); inputs are OS
+#   fonts via fontconfig, never network bytes. Dies with the winit/gtk
+#   stack upgrade.
+ignore = ["RUSTSEC-2024-0429", "RUSTSEC-2024-0370", "RUSTSEC-2026-0192", "RUSTSEC-2025-0141"]
 
 [licenses]
-unlicensed = "deny"
 allow = [
-    "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "ISC",
-    "Unicode-DFS-2016",
-    "Unicode-3.0",
-    "MPL-2.0",
+    "BSL-1.0",
     "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
     "Unlicense",
     "Zlib",
-    "BSL-1.0",
-    "CDLA-Permissive-2.0",
-    "OpenSSL",
 ]
-# GPL/LGPL/AGPL copyleft is reviewed case-by-case, never silent.
-deny = [
-    "GPL-2.0",
-    "GPL-2.0-only",
-    "GPL-2.0-or-later",
-    "GPL-3.0",
-    "GPL-3.0-only",
-    "GPL-3.0-or-later",
-    "AGPL-1.0",
-    "AGPL-3.0",
-    "AGPL-3.0-only",
-    "AGPL-3.0-or-later",
-]
-copyleft = "warn"
-default = "deny"
-confidence-threshold = 0.8
-exceptions = []
-
-[bans]
-multiple-versions = "warn"
-wildcards = "deny"
-highlight = "all"
-workspace-dependencies = true
-external-default-features = "allow"
-build = true
-
-[sources]
-unknown-registry = "deny"
-unknown-git = "deny"
-allow-registry = ["https://github.com/rust-lang/crates.io-index"]

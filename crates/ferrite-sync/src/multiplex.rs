@@ -1,10 +1,15 @@
-//! Binary multiplex per 5.1: [1B Type][4B Len][N Bincode Payload] over single rustls stream.
+//! Framed multiplex: 1B type, 4B length, bincode payload.
+//!
+//! Wire note: bincode 2 (varint) encoding, NOT compatible with the
+//! pre-1.0 bincode 1.x framing. The break was taken deliberately before
+//! any release shipped a peer: bincode 1.x is unmaintained
+//! (RUSTSEC-2025-0141) and this crate is the only user in the tree, so
+//! the migration window was now or never. Post-1.0, wire changes need a
+//! versioned frame (see `MessageType`; that byte exists for this).
 
 use crate::sync_actions::CrdtMessage;
 
-/// Maximum framed payload accepted (8MB). Larger lengths are rejected
-/// without allocating: the old code trusted the u32 length up to 4GB, so a
-/// single malicious header stalled replication or OOM'd the peer.
+/// Max framed payload (8 MB). Larger lengths are rejected without alloc.
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
@@ -22,10 +27,8 @@ impl MessageType {
 }
 
 pub fn encode_crdt(msg: &CrdtMessage) -> Vec<u8> {
-    let payload = bincode::serialize(msg).unwrap_or_default();
-    // No thread::sleep throttling here (the old code blocked the hot path
-    // up to 5s per frame): bandwidth shaping belongs at the transport, and
-    // delta batches are capped at generation time instead.
+    let payload =
+        bincode::serde::encode_to_vec(msg, bincode::config::standard()).unwrap_or_default();
     let mut out = Vec::with_capacity(5 + payload.len());
     out.push(MessageType::Crdt as u8);
     out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -52,7 +55,8 @@ pub fn decode(buf: &[u8]) -> Option<(Decoded, usize)> {
     let payload = &buf[5..5 + len];
     let decoded = match ty {
         MessageType::Crdt => {
-            let msg: CrdtMessage = bincode::deserialize(payload).ok()?;
+            let (msg, _): (CrdtMessage, usize) =
+                bincode::serde::decode_from_slice(payload, bincode::config::standard()).ok()?;
             Decoded::Crdt(msg)
         }
     };

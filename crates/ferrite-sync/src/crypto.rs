@@ -1,4 +1,4 @@
-//! Part 10 cryptography: Ed25519 identity + self-signed X.509 wrapping.
+//! Device identity: Ed25519 keypair plus self signed wrapping.
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
@@ -17,8 +17,8 @@ pub enum CryptoError {
 
 pub type CryptoResult<T> = Result<T, CryptoError>;
 
-/// Permanent device identity — Ed25519 keypair generated once on first launch.
-#[derive(Debug)]
+/// Permanent device identity. Generated once on first launch.
+#[derive(Debug, Clone)]
 pub struct DeviceIdentity {
     pub device_id: uuid::Uuid,
     pub signing_key: SigningKey,
@@ -26,7 +26,6 @@ pub struct DeviceIdentity {
 }
 
 impl DeviceIdentity {
-    /// Generate new identity with fresh Ed25519 keypair via OsRng.
     pub fn generate() -> CryptoResult<Self> {
         let mut rng = OsRng;
         let signing_key = SigningKey::generate(&mut rng);
@@ -38,10 +37,25 @@ impl DeviceIdentity {
         })
     }
 
-    /// Generate with deterministic device_id (for tests / recovery).
     pub fn generate_with_id(device_id: uuid::Uuid) -> CryptoResult<Self> {
         let mut rng = OsRng;
         let signing_key = SigningKey::generate(&mut rng);
+        let verifying_key = signing_key_verifying(&signing_key);
+        Ok(Self {
+            device_id,
+            signing_key,
+            verifying_key,
+        })
+    }
+
+    /// Rebuild a persisted identity from its 32-byte seed (stored encrypted
+    /// in the vault; see `Vault::load_or_create_device_identity`). Wrong
+    /// length fails closed; a truncated seed must never become a key.
+    pub fn from_seed(device_id: uuid::Uuid, seed: &[u8]) -> CryptoResult<Self> {
+        let bytes: [u8; 32] = seed
+            .try_into()
+            .map_err(|_| CryptoError::KeyGen("device seed must be 32 bytes".to_owned()))?;
+        let signing_key = SigningKey::from_bytes(&bytes);
         let verifying_key = signing_key_verifying(&signing_key);
         Ok(Self {
             device_id,
@@ -61,20 +75,16 @@ impl DeviceIdentity {
 
     pub fn public_key_pem(&self) -> CryptoResult<String> {
         let pkcs8 = self.verifying_key.to_bytes();
-        // Encode raw 32B as PEM "PUBLIC KEY" for QR transport - use base64
+        // Encode raw 32B as PEM "PUBLIC KEY" for QR transport, using base64.
         let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, pkcs8);
         Ok(format!(
             "-----BEGIN PUBLIC KEY-----\n{b64}\n-----END PUBLIC KEY-----"
         ))
     }
 
-    /// Create ephemeral self-signed X.509 wrapping the permanent Ed25519 public key.
+    /// Create ephemeral self-signed X.509 wrapping the permanent Ed25519 key.
     /// Called at process startup, cert lives only in memory. The TLS keypair
-    /// IS the device identity key (PKCS#8 of the signing seed), so the
-    /// handshake signature provably binds the peer to the pinned verifying
-    /// key. The verifying key is additionally embedded as custom extension
-    /// OID 1.3.6.1.4.1.54392.1 so verifiers can extract it without PKCS#8
-    /// re-encoding.
+    /// is the device identity key, so the handshake binds the peer to it.
     pub fn self_signed_cert_pem(&self) -> CryptoResult<(String, String)> {
         let (cert_der, key_der) = self.self_signed_cert_der()?;
         let cert_pem = pem_encode("CERTIFICATE", &cert_der);
@@ -82,8 +92,8 @@ impl DeviceIdentity {
         Ok((cert_pem, key_pem))
     }
 
-    /// DER form of the bound identity certificate + PKCS#8 private key.
-    /// This is the form rustls consumes; PEM above is derived from it.
+    /// DER form of the bound identity certificate plus PKCS#8 private key.
+    /// This is the form rustls consumes. PEM above is derived from it.
     pub fn self_signed_cert_der(&self) -> CryptoResult<(Vec<u8>, Vec<u8>)> {
         let pkcs8 = ed25519_pkcs8_der(&self.signing_key);
         let key_pair = rcgen::KeyPair::from_der_and_sign_algo(
@@ -108,9 +118,8 @@ impl DeviceIdentity {
     }
 }
 
-/// PKCS#8 DER encoding of an Ed25519 seed key (RFC 8410 §7:
-/// `SEQUENCE { INTEGER 0, SEQUENCE { OID 1.3.101.112 }, OCTET STRING seed }`).
-/// Fixed 16-byte header + 32-byte seed; no external pkcs8 dependency needed.
+/// PKCS#8 DER encoding of an Ed25519 seed key (RFC 8410 section 7).
+/// Fixed 16-byte header plus 32-byte seed, no external pkcs8 dependency.
 fn ed25519_pkcs8_der(signing_key: &SigningKey) -> Vec<u8> {
     const HEADER: &[u8; 16] = &[
         0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
@@ -155,6 +164,17 @@ mod tests {
         assert_ne!(a.public_key_bytes(), b.public_key_bytes());
         assert_ne!(a.device_id, b.device_id);
         assert_eq!(a.fingerprint().len(), 8);
+    }
+
+    #[test]
+    fn seed_round_trip_rebuilds_same_identity() {
+        let a = DeviceIdentity::generate().unwrap();
+        let seed = a.signing_key.to_bytes();
+        let b = DeviceIdentity::from_seed(a.device_id, &seed).unwrap();
+        assert_eq!(a.public_key_bytes(), b.public_key_bytes());
+        assert_eq!(a.fingerprint(), b.fingerprint());
+        assert!(DeviceIdentity::from_seed(a.device_id, &seed[..16]).is_err());
+        assert!(DeviceIdentity::from_seed(a.device_id, &[]).is_err());
     }
 
     #[test]

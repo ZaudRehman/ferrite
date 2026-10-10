@@ -1,31 +1,45 @@
 {
   "app-id": "com.ferrite.Browser",
-  "runtime": "org.freedesktop.Platform",
-  "runtime-version": "23.08",
-  "sdk": "org.freedesktop.Sdk",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "48",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
   "command": "ferrite",
   "finish-args": [
     "--share=ipc",
     "--socket=fallback-x11",
     "--socket=wayland",
     "--share=network",
-    "--filesystem=home:ro",
+    "--socket=pulseaudio",
+    "--filesystem=xdg-download",
+    "--socket=cups",
     "--talk-name=org.freedesktop.portal.FileChooser",
+    "--talk-name=org.freedesktop.portal.OpenURI",
     "--device=dri"
   ],
   "modules": [
     {
       "name": "ferrite",
       "buildsystem": "simple",
+      "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "env": {
+          "CARGO_HOME": "/run/build/ferrite/cargo"
+        }
+      },
       "build-commands": [
-        "cargo build --locked --release && install -Dm755 target/release/ferrite /app/bin/ferrite",
+        "cargo build --locked --release --features ferrite-vault/sqlcipher,ferrite-archive/sqlcipher && install -Dm755 target/release/ferrite /app/bin/ferrite",
         "install -Dm644 crates/ferrite-shell/assets/ferrite.desktop /app/share/applications/com.ferrite.Browser.desktop",
+        "install -Dm644 flatpak/com.ferrite.Browser.metainfo.xml /app/share/metainfo/com.ferrite.Browser.metainfo.xml",
+        "install -Dm644 brand/icon_on_light.svg /app/share/icons/hicolor/scalable/apps/com.ferrite.Browser.svg",
         "install -Dm644 LICENSES/LICENSE-MIT /app/share/licenses/com.ferrite.Browser/LICENSE"
       ],
       "sources": [
         {
           "type": "git",
-          "url": "https://github.com/anomalyco/opencode.git",
+          "url": "https://github.com/ZaudRehman/ferrite.git",
           "tag": "v0.1.0"
         }
       ]

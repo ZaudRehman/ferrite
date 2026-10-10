@@ -1,4 +1,4 @@
-//! Breach check via k-anonymity through the local proxy.
+//! Breach check via k-anonymity (direct origin fetch, never the proxy).
 
 use sha1::{Digest, Sha1};
 use zeroize::Zeroize;
@@ -23,10 +23,7 @@ pub fn full_sha1(password: &str) -> String {
     result.iter().map(|b| format!("{b:02X}")).collect()
 }
 
-/// Local suffix match against HIBP range tails.
-/// `full_hash` must be the 40-char SHA-1; `tails` are `TAIL:count` lines
-/// (or bare tails) where TAIL is `full_hash[5..]`. Short prefixes alone
-/// cannot decide membership and return false. Never panics.
+/// Local match of a full SHA-1 against range tails. Never panics.
 pub fn check_prefix_local(full_hash: &str, full_hash_suffixes: &[String]) -> bool {
     let h = full_hash.trim().to_ascii_uppercase();
     if h.len() != 40 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -44,14 +41,34 @@ pub fn check_prefix_local(full_hash: &str, full_hash_suffixes: &[String]) -> boo
     })
 }
 
-/// Precise tail check used by `check_breach_via_proxy`.
 pub fn tail_matches_suffix(suffix_upper: &str, line_tail_upper: &str) -> bool {
     suffix_upper.eq_ignore_ascii_case(line_tail_upper)
 }
 
-/// HIBP k-anonymity range query via `https://` through the local proxy.
-/// Sends only the 5-char prefix, never the password or full hash. Password
-/// material is hashed then zeroized; responses are capped and timed out.
+/// Direct range query. Sends the 5 char prefix only. None means unknown.
+pub async fn check_breach_direct(password: &str) -> Option<bool> {
+    let prefix = hash_prefix(password);
+    let full = full_sha1(password);
+    let mut full_buf = full.clone().into_bytes();
+    let suffix = full[5..].to_owned();
+    full_buf.zeroize();
+    let host = "api.pwnedpasswords.com";
+    let target = format!("https://{host}/range/{prefix}");
+    let resp = ferrite_proxy::direct_get(&target, MAX_HEAD_BYTES + MAX_BODY_BYTES).await?;
+    if resp.status != 200 {
+        return None;
+    }
+    for line in resp.body_str().lines() {
+        if let Some((hash_tail, _count)) = line.split_once(':')
+            && tail_matches_suffix(&suffix, hash_tail.trim())
+        {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+/// Same query through the local proxy. Legacy path for offline harnesses.
 pub async fn check_breach_via_proxy(password: &str, proxy_port: u16) -> Option<bool> {
     let prefix = hash_prefix(password);
     let full = full_sha1(password);
@@ -62,10 +79,10 @@ pub async fn check_breach_via_proxy(password: &str, proxy_port: u16) -> Option<b
     let target = format!("https://{host}/range/{prefix}");
     let body = get_via_proxy(&target, host, proxy_port).await?;
     for line in body.lines() {
-        if let Some((hash_tail, _count)) = line.split_once(':') {
-            if tail_matches_suffix(&suffix, hash_tail.trim()) {
-                return Some(true);
-            }
+        if let Some((hash_tail, _count)) = line.split_once(':')
+            && tail_matches_suffix(&suffix, hash_tail.trim())
+        {
+            return Some(true);
         }
     }
     Some(false)

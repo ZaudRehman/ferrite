@@ -12,6 +12,27 @@ pub enum Classification {
     BlockedMixedContent,
 }
 
+/// Only for top level document failures the engine would render as its own
+/// dead end page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    Refused,
+    TimedOut,
+    Unreachable,
+    ServerError,
+}
+
+impl FailureKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FailureKind::Refused => "refused",
+            FailureKind::TimedOut => "timeout",
+            FailureKind::Unreachable => "unreachable",
+            FailureKind::ServerError => "server",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkEvent {
     pub timestamp: i64,
@@ -20,6 +41,7 @@ pub struct NetworkEvent {
     pub resource_type: crate::verdict::ResourceType,
     pub bytes_transferred: u64,
     pub classification: Classification,
+    pub failure: Option<FailureKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +150,7 @@ mod tests {
             resource_type: ResourceType::Script,
             bytes_transferred: 128,
             classification: Classification::Allowed,
+            failure: None,
         };
         tx.emit(ev.clone());
         assert_eq!(rx.try_recv().unwrap(), ev);
@@ -138,7 +161,6 @@ mod tests {
     fn telemetry_drops_when_full_never_blocks() {
         let (tx, _rx_kept_alive) = {
             let (t, r) = TelemetryTx::new();
-            // Hold rx alive but never drain.
             (t, std::mem::forget(r))
         };
         for _ in 0..TELEMETRY_CAPACITY {
@@ -149,9 +171,9 @@ mod tests {
                 resource_type: ResourceType::Other,
                 bytes_transferred: 0,
                 classification: Classification::FirstParty,
+                failure: None,
             });
         }
-        // Queue full → next emit drops, does not block.
         tx.emit(NetworkEvent {
             timestamp: 0,
             origin_domain: "o".into(),
@@ -159,6 +181,7 @@ mod tests {
             resource_type: ResourceType::Other,
             bytes_transferred: 0,
             classification: Classification::FirstParty,
+            failure: None,
         });
         assert_eq!(tx.dropped_count(), 1);
     }

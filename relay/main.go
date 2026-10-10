@@ -1,3 +1,5 @@
+// Package main implements the Ferrite sync relay: authed signal routing
+// plus TURN allocation. Payloads forward opaque, never decrypted here.
 package main
 
 import (
@@ -21,14 +23,9 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// Auth protocol (must match ferrite-sync relay_auth):
-//
-//	auth payload = {"pubkey": base64(32B ed25519), "ts": unix_sec,
-//	                "sig": base64(64B ed25519 over "ferrite-relay-auth-v1|<device_id>|<ts>")}
-//
-// The relay pins device_id -> pubkey on first sight and rejects mismatches,
-// so a spoofed `from` without the victim's private key is rejected and a
-// stolen device_id cannot take over the session.
+// Auth payload is {"pubkey", "ts", "sig"} over
+// "ferrite-relay-auth-v1|<device_id>|<ts>". First sight pins id to key.
+// Must match ferrite-sync relay_auth.
 const authDomain = "ferrite-relay-auth-v1"
 const maxAuthSkew = 60 // seconds
 const maxMessageBytes = 256*1024 + 4096
@@ -39,9 +36,8 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 4096,
 }
 
-// checkOrigin: native clients send no Origin and are always allowed.
-// Browser origins are allowed only when allowlisted via
-// FERRITE_RELAY_ALLOWED_ORIGINS (comma-separated, exact match).
+// checkOrigin allows native clients (no Origin) and browser origins only
+// when allowlisted via FERRITE_RELAY_ALLOWED_ORIGINS (exact match).
 func checkOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -56,6 +52,7 @@ func checkOrigin(r *http.Request) bool {
 	return false
 }
 
+// DeviceConn is one authed device session. Writes serialize on sendMu.
 type DeviceConn struct {
 	ID          string
 	PubKey      ed25519.PublicKey
@@ -63,8 +60,8 @@ type DeviceConn struct {
 	LastSeen    time.Time
 	MsgCount    int
 	WindowStart time.Time
-	mu          sync.Mutex // rate-limit window
-	sendMu      sync.Mutex // serializes concurrent websocket writes
+	mu          sync.Mutex // rate limit window
+	sendMu      sync.Mutex // websocket write lock
 }
 
 func (d *DeviceConn) send(v any) error {
@@ -73,38 +70,67 @@ func (d *DeviceConn) send(v any) error {
 	return d.Conn.WriteJSON(v)
 }
 
-// sendClose delivers a websocket close frame under the write mutex.
+// sendClose delivers a close frame. Caller must not hold sendMu.
 func (d *DeviceConn) sendClose(code int, text string) error {
 	d.sendMu.Lock()
 	defer d.sendMu.Unlock()
 	return d.Conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(code, text))
 }
 
+// Hub routes signals between authed sessions and owns the TURN server
+// plus the TTL blob store. Presence is transient map state only, never
+// disk; blobs are the single deliberate disk exception (see blob.go).
 type Hub struct {
 	mu           sync.RWMutex
-	devices      map[string]*DeviceConn // device_id -> conn
-	pubkeys      map[string]string      // device_id -> base64 pinned pubkey
-	ips          map[string]int         // ip -> connection count
+	devices      map[string]*DeviceConn
+	pubkeys      map[string]string
+	ips          map[string]int
 	turn         *turn.Server
 	turnKeys     sync.Mutex
-	turnKeyCache map[string][]byte // TURN username -> derived key
+	turnKeyCache map[string]turnKeyEntry
+	blobs        *BlobStore
 }
 
-func NewHub() *Hub {
+// turnKeyEntry is one cached TURN credential plus its mint time. Entries
+// older than turnKeyTTL are evicted on next use: without eviction a device
+// that disconnects for weeks keeps a live credential slot (and memory)
+// forever on a process that otherwise holds no state.
+type turnKeyEntry struct {
+	key []byte
+	at  time.Time
+}
+
+// TURN credential lifetime. Matches no protocol value; purely local hygiene
+// for the cache above (re-derivation is deterministic, so eviction is free).
+const turnKeyTTL = 24 * time.Hour
+
+// NewHub returns a Hub with its blob store in dir (created, 0700).
+// Operators point dir at persistent disk; tests pass a temp dir.
+func NewHub(dir string) (*Hub, error) {
+	blobs, err := NewBlobStore(dir)
+	if err != nil {
+		return nil, err
+	}
 	return &Hub{
 		devices:      make(map[string]*DeviceConn),
 		pubkeys:      make(map[string]string),
 		ips:          make(map[string]int),
-		turnKeyCache: make(map[string][]byte),
-	}
+		turnKeyCache: make(map[string]turnKeyEntry),
+		blobs:        blobs,
+	}, nil
 }
 
+// SignalMessage is the envelope for auth, signals, pairing, TURN, and
+// stored blobs. Payload stays opaque to the relay, routed by To only.
+// Blob is server-set on drain (the slot id the recipient acks); clients
+// must not set it on send (it is ignored there).
 type SignalMessage struct {
-	Type      string          `json:"type"` // "auth", "signal", "pair_init", "pair_exchange", "stun", "turn_alloc"
+	Type      string          `json:"type"` // "auth", "signal", "pair_init", "pair_exchange", "stun", "turn_alloc", "store", "ack"
 	From      string          `json:"from"`
 	To        string          `json:"to"`
 	Payload   json.RawMessage `json:"payload"`
 	Timestamp int64           `json:"ts"`
+	Blob      string          `json:"blob,omitempty"`
 }
 
 type authPayload struct {
@@ -113,15 +139,14 @@ type authPayload struct {
 	Sig    string `json:"sig"`
 }
 
+// PairInit carries the X25519 ephemeral key and device name for pairing.
 type PairInit struct {
 	EphemeralPubKey []byte `json:"ephemeral_pubkey"` // X25519 32B
 	DeviceName      string `json:"device_name"`
 }
 
-// verifyAuth checks self-consistency of an auth claim: the signature must
-// verify against the presented key, and the timestamp must be fresh.
-// It does NOT establish trust (pairing does that e2e); it binds the WS
-// session to the claimed device_id so spoofed `from` is rejected.
+// verifyAuth checks signature and freshness. It binds the session to the
+// claimed id so spoofed From is rejected. It does not establish trust.
 func verifyAuth(deviceID string, p authPayload) (ed25519.PublicKey, bool) {
 	if deviceID == "" {
 		return nil, false
@@ -153,7 +178,7 @@ func shortID(id string) string {
 }
 
 func (h *Hub) handleWS(w http.ResponseWriter, r *http.Request) {
-	// Connection cap per IP
+	// Cap of 20 connections per IP.
 	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
 	h.mu.Lock()
 	if h.ips[ip] >= 20 {
@@ -174,7 +199,10 @@ func (h *Hub) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("upgrade: %v", err)
+		// Deliberately unlogged detail: stdlib upgrade errors carry the
+		// peer address, and relay logs must stay free of IPs (see
+		// docs/LIMITATIONS.md). Upgrade failures are config issues
+		// (origins, paths), diagnosable without the peer.
 		return
 	}
 	defer conn.Close()
@@ -208,14 +236,12 @@ func (h *Hub) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	h.mu.Lock()
 	if pinned, seen := h.pubkeys[deviceID]; seen && pinned != ap.PubKey {
-		// Pinned key mismatch: possible takeover with a different key.
-		// Reject the new session; the existing holder keeps its slot.
+		// Reject takeovers: the slot stays with the first key.
 		h.mu.Unlock()
 		conn.WriteJSON(map[string]string{"error": "device id already bound to another key"})
 		return
 	}
 	if old, taken := h.devices[deviceID]; taken {
-		// Same-key reconnect: evict the stale holder before replacing.
 		old.sendClose(websocket.CloseNormalClosure, "replaced")
 		old.Conn.Close()
 	}
@@ -223,13 +249,29 @@ func (h *Hub) handleWS(w http.ResponseWriter, r *http.Request) {
 	dc := &DeviceConn{ID: deviceID, PubKey: pubkey, Conn: conn, LastSeen: time.Now(), WindowStart: time.Now()}
 	h.devices[deviceID] = dc
 	h.mu.Unlock()
-	// Explicit auth confirmation (also flushes the handshake so clients
-	// never have to infer acceptance from a read timeout).
+	// Confirm explicitly so clients never infer acceptance from timeouts.
 	dc.send(map[string]string{"status": "authed"})
 	log.Printf("device %.8s connected", shortID(deviceID))
+	// Drain stored blobs first (oldest-first): mail that arrived while
+	// this device was away. Each carries its slot id for acking; a send
+	// failure stops the drain (the client reconnects and re-drains;
+	// at-least-once delivery with idempotent apply, never silent loss).
+	for _, slot := range h.blobs.Pending(deviceID) {
+		out := SignalMessage{
+			Type:      "signal",
+			From:      slot.Blob.From,
+			To:        deviceID,
+			Payload:   slot.Blob.Payload,
+			Timestamp: slot.Blob.Ts,
+			Blob:      slot.ID,
+		}
+		if err := dc.send(out); err != nil {
+			break
+		}
+	}
 	defer func() {
 		h.mu.Lock()
-		// Only delete if we are still the holder (avoid evicting a replacement).
+		// Delete only if still the holder, never a replacement.
 		if cur, ok := h.devices[deviceID]; ok && cur == dc {
 			delete(h.devices, deviceID)
 		}
@@ -245,12 +287,12 @@ func (h *Hub) handleWS(w http.ResponseWriter, r *http.Request) {
 		if err := conn.ReadJSON(&msg); err != nil {
 			return
 		}
-		// Sender must match the authed session: spoofed `from` rejected.
+		// Sender must match the session. Spoofed From is rejected.
 		if msg.From != deviceID {
 			dc.send(map[string]string{"error": "from mismatch"})
 			continue
 		}
-		// Rate limit 10/sec per device
+		// 10 messages per second per device.
 		dc.mu.Lock()
 		now := time.Now()
 		if now.Sub(dc.WindowStart) > time.Second {
@@ -265,8 +307,28 @@ func (h *Hub) handleWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Blind forwarding - never decrypt payload, only route by To
+		// Forward opaque ciphertext, routed by To only.
 		switch msg.Type {
+		case "erase_me":
+			// GDPR self-erasure: drop the session, the id→key pin, cached
+			// TURN credentials, AND every blob addressed to this device.
+			// Blobs this device stored for others are ciphertext for
+			// others (opaque here by construction) and expire on their
+			// own clock; erasure cannot reach into another device's
+			// mailbox, so TTL is the backstop and the docs say so.
+			h.mu.Lock()
+			if cur, ok := h.devices[deviceID]; ok && cur == dc {
+				delete(h.devices, deviceID)
+			}
+			delete(h.pubkeys, deviceID)
+			h.mu.Unlock()
+			h.turnKeys.Lock()
+			delete(h.turnKeyCache, deviceID)
+			h.turnKeys.Unlock()
+			forgotten := h.blobs.ForgetRecipient(deviceID)
+			log.Printf("device %.8s forgotten (%d blobs dropped)", shortID(deviceID), forgotten)
+			dc.send(map[string]string{"status": "forgotten"})
+			return
 		case "signal", "pair_init", "pair_exchange", "turn_alloc":
 			if msg.To == "" {
 				dc.send(map[string]string{"error": "missing recipient"})
@@ -279,17 +341,44 @@ func (h *Hub) handleWS(w http.ResponseWriter, r *http.Request) {
 				dc.send(map[string]string{"error": "404 Peer Offline", "to": msg.To})
 				continue
 			}
-			// Forward opaque ciphertext (per-conn write mutex inside send)
+			// Forward under the target write lock.
 			target.send(msg)
 		case "stun":
-			// STUN: return observed public IP/port for ICE candidate
+			// Reply with the observed public address for ICE.
 			host, port, _ := net.SplitHostPort(r.RemoteAddr)
 			resp := map[string]string{"public_ip": host, "public_port": port}
 			b, _ := json.Marshal(resp)
 			msg.Payload = b
 			dc.send(msg)
+		case "store":
+			// Persist one opaque payload for an offline peer (TTL blob).
+			// Quota refusals are explicit; the sender retries later or
+			// waits for the peer; nothing is dropped silently.
+			if msg.To == "" || len(msg.Payload) == 0 {
+				dc.send(map[string]string{"error": "missing recipient"})
+				continue
+			}
+			id, refusal := h.blobs.Store(deviceID, msg.To, msg.Payload, msg.Timestamp)
+			if refusal != "" {
+				dc.send(map[string]string{"error": refusal, "to": msg.To})
+				continue
+			}
+			dc.send(map[string]string{"status": "stored", "to": msg.To, "blob": id})
+		case "ack":
+			// Delete one delivered slot. Only the recipient's own slots
+			// are deletable (id + session binding); unknown ids are a
+			// no-op success; redelivered acks after a crash must not
+			// error, or clients would retry forever.
+			var body struct {
+				Blob string `json:"blob"`
+			}
+			if err := json.Unmarshal(msg.Payload, &body); err != nil || body.Blob == "" {
+				dc.send(map[string]string{"error": "malformed ack"})
+				continue
+			}
+			h.blobs.Ack(deviceID, body.Blob)
+			dc.send(map[string]string{"status": "acked", "blob": body.Blob})
 		default:
-			// Generic signal forward
 			if msg.To != "" {
 				h.mu.RLock()
 				if target, ok := h.devices[msg.To]; ok {
@@ -302,9 +391,9 @@ func (h *Hub) handleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) turnAuthKey(username, realm string) ([]byte, bool) {
-	// TURN access requires an active authed WS session: the username must
-	// be a currently-connected device_id. Derived keys are cached so the
-	// Argon2 cost is paid once per device, not per allocation (DoS).
+	// Only connected devices may allocate. Keys derive once and cache, so
+	// Argon2 cost is paid per device, not per allocation. Stale entries
+	// evict here (amortized, no sweeper goroutine for a map this small).
 	h.mu.RLock()
 	_, connected := h.devices[username]
 	h.mu.RUnlock()
@@ -313,17 +402,37 @@ func (h *Hub) turnAuthKey(username, realm string) ([]byte, bool) {
 	}
 	h.turnKeys.Lock()
 	defer h.turnKeys.Unlock()
-	if k, ok := h.turnKeyCache[username]; ok {
-		return k, true
+	h.evictStaleTurnKeys(time.Now())
+	if entry, ok := h.turnKeyCache[username]; ok {
+		return entry.key, true
 	}
 	key := argon2.IDKey([]byte(username), []byte(realm), 1, 64*1024, 1, 32)
-	h.turnKeyCache[username] = key
+	h.turnKeyCache[username] = turnKeyEntry{key: key, at: time.Now()}
 	_ = rand.Reader
 	return key, true
 }
 
+// evictStaleTurnKeys drops credentials older than turnKeyTTL. Caller must
+// hold turnKeys. Split out for tests: re-derivation is deterministic, so
+// eviction is always safe and never needs coordination.
+func (h *Hub) evictStaleTurnKeys(now time.Time) {
+	for user, entry := range h.turnKeyCache {
+		if now.Sub(entry.at) > turnKeyTTL {
+			delete(h.turnKeyCache, user)
+		}
+	}
+}
+
+// httpPort is the WS listen port: $PORT when a host assigns one
+// (Render, Fly, Railway all do), 8080 for local runs.
+func httpPort() string {
+	if p := os.Getenv("PORT"); p != "" {
+		return p
+	}
+	return "8080"
+}
+
 func startTURN(h *Hub) {
-	// Pion TURN server allocation - blind forwarding of rustls DTLS over UDP (4.3)
 	udpListener, err := net.ListenPacket("udp4", "0.0.0.0:3478")
 	if err != nil {
 		log.Printf("TURN udp listen failed: %v", err)
@@ -337,8 +446,13 @@ func startTURN(h *Hub) {
 		} else {
 			log.Printf("FERRITE_RELAY_PUBLIC_IP invalid, using 127.0.0.1 (relayed candidates will be loopback)")
 		}
+	} else if os.Getenv("FERRITE_RELAY_ALLOW_LOOPBACK") != "1" {
+		// Fail closed: relayed candidates carrying 127.0.0.1 look like a
+		// working relay while connecting nothing. Production sets
+		// FERRITE_RELAY_PUBLIC_IP; local dev sets FERRITE_RELAY_ALLOW_LOOPBACK=1.
+		log.Fatalf("FERRITE_RELAY_PUBLIC_IP unset and FERRITE_RELAY_ALLOW_LOOPBACK!=1: refusing to advertise loopback TURN candidates")
 	} else {
-		log.Printf("FERRITE_RELAY_PUBLIC_IP unset: relayed candidates use 127.0.0.1 (set to a public IP in production)")
+		log.Printf("FERRITE_RELAY_ALLOW_LOOPBACK=1: relayed candidates use 127.0.0.1 (dev only)")
 	}
 	server, err := turn.NewServer(turn.ServerConfig{
 		Realm: "ferrite",
@@ -362,8 +476,32 @@ func startTURN(h *Hub) {
 }
 
 func main() {
-	h := NewHub()
+	// Transport note: this process speaks plain WS on :8080 and UDP TURN on
+	// :3478. Production runs it behind a TLS terminator (WS URLs are
+	// device-configured, so point them at wss://); the relay itself never
+	// sees plaintext credentials; SignalMessage payloads are opaque
+	// ciphertext routed by To, and TURN passwords are per-device Argon2
+	// derivations. Browser-origin WebSockets additionally need
+	// FERRITE_RELAY_ALLOWED_ORIGINS; native clients send no Origin.
+	// TTL blob slots persist under FERRITE_RELAY_DATA_DIR (default
+	// ./ferrite-blobs): the relay's only disk state, bounded and
+	// expiring (see blob.go). Everything else stays memory-only.
+	dataDir := os.Getenv("FERRITE_RELAY_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "./ferrite-blobs"
+	}
+	h, err := NewHub(dataDir)
+	if err != nil {
+		log.Fatalf("blob store: %v", err)
+	}
 	go startTURN(h)
+	// Expiry backstop: delivery and store paths sweep their own
+	// recipient first; this catches slots whose owners never return.
+	go func() {
+		for range time.Tick(time.Hour) {
+			h.blobs.Sweep()
+		}
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sync", h.handleWS)
@@ -372,20 +510,20 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:         ":8080",
+		Addr:         ":" + httpPort(),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
 
 	go func() {
-		log.Println("relay listening on :8080 /sync, TURN :3478")
+		log.Printf("relay listening on %s /sync, TURN :3478", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}
 	}()
 
-	// Graceful shutdown SIGTERM (5.1)
+	// Shutdown: close sessions, then the listeners.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 	<-quit

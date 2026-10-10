@@ -1,4 +1,5 @@
-//! Threat intel: hash lookup.
+//! Threat intel: SHA-256 hash lookup. Reads hit an in-memory mirror,
+//! SQLite stays off the hot path.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
@@ -17,8 +18,7 @@ pub fn hash_domain(domain: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct ThreatDb {
     inner: Arc<Mutex<Connection>>,
-    // In-memory hash set mirrors SQLite so `contains` never touches the
-    // database on the proxy hot path (no blocking Mutex+query per request).
+    // Mirror so reads skip SQLite on the hot path.
     cache: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
@@ -43,16 +43,14 @@ impl ThreatDb {
 
     pub fn new_file(path: impl AsRef<Path>) -> Result<Self, String> {
         let p = path.as_ref();
-        if let Some(parent) = p.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| format!("threat mkdir: {e}"))?;
-            }
+        if let Some(parent) = p.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| format!("threat mkdir: {e}"))?;
         }
         let conn = Connection::open(p).map_err(|e| format!("threat open {}: {e}", p.display()))?;
-        // WAL + synchronous NORMAL - durable enough for threat cache, faster.
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         Self::init_schema(&conn)?;
-        // Warm the in-memory mirror from existing rows (best-effort).
         let cached: std::collections::HashSet<String> = conn
             .prepare("SELECT hash FROM threats")
             .and_then(|mut s| {
@@ -112,13 +110,11 @@ impl ThreatDb {
 
     pub fn contains(&self, domain: &str) -> bool {
         let hash = hash_domain(&normalize_host(domain));
-        if let Ok(cache) = self.cache.read() {
-            if !cache.is_empty() {
-                return cache.contains(&hash);
-            }
+        if let Ok(cache) = self.cache.read()
+            && !cache.is_empty()
+        {
+            return cache.contains(&hash);
         }
-        // Fallback to SQLite only when the mirror is empty (fresh file DB
-        // or poisoned cache path): preserves old behavior for tests.
         let Ok(conn) = self.inner.lock() else {
             return false;
         };
@@ -129,29 +125,27 @@ impl ThreatDb {
         stmt.exists([hash]).unwrap_or(false)
     }
 
-    /// Suffix-aware check: `sub.evil.com` matches an `evil.com` entry.
-    /// Normalizes input (URL → host) and walks parent domains.
+    /// `sub.evil.com` matches an `evil.com` entry. Walks parent domains.
     pub fn contains_with_suffixes(&self, domain: &str) -> bool {
         let host = normalize_host(domain).to_lowercase();
         if host.is_empty() {
             return false;
         }
-        // Fast path: in-memory mirror.
-        if let Ok(cache) = self.cache.read() {
-            if !cache.is_empty() {
-                let mut cur = host.as_str();
-                loop {
-                    if cache.contains(&hash_domain(cur)) {
-                        return true;
-                    }
-                    match cur.find('.') {
-                        Some(i) => cur = &cur[i + 1..],
-                        None => return false,
-                    }
+        if let Ok(cache) = self.cache.read()
+            && !cache.is_empty()
+        {
+            let mut cur = host.as_str();
+            loop {
+                if cache.contains(&hash_domain(cur)) {
+                    return true;
+                }
+                match cur.find('.') {
+                    Some(i) => cur = &cur[i + 1..],
+                    None => return false,
                 }
             }
         }
-        // SQLite fallback mirrors the same walk.
+        // Same walk against SQLite.
         let Ok(conn) = self.inner.lock() else {
             return false;
         };
@@ -187,15 +181,15 @@ impl ThreatDb {
 
 fn normalize_host(input: &str) -> String {
     let trimmed = input.trim();
-    if let Ok(url) = url::Url::parse(trimmed) {
-        if let Some(host) = url.host_str() {
-            return host.to_lowercase();
-        }
+    if let Ok(url) = url::Url::parse(trimmed)
+        && let Some(host) = url.host_str()
+    {
+        return host.to_lowercase();
     }
-    if let Ok(url) = url::Url::parse(&format!("http://{trimmed}")) {
-        if let Some(host) = url.host_str() {
-            return host.to_lowercase();
-        }
+    if let Ok(url) = url::Url::parse(&format!("http://{trimmed}"))
+        && let Some(host) = url.host_str()
+    {
+        return host.to_lowercase();
     }
     trimmed
         .split(&['/', '?', '#'][..])
@@ -265,5 +259,39 @@ mod tests {
         db.load_snapshot(&["b.test", "c.test"]).unwrap();
         assert_eq!(db.len(), 2);
         assert!(!db.contains("a.test"));
+    }
+
+    #[test]
+    fn schema_holds_no_user_data() {
+        // Contract exception pin (docs/STORAGE_CONTRACT.md): this file may
+        // stay plaintext ONLY because it holds downloaded public hashes,
+        // never user content. Any new table or column trips this test and
+        // forces a contract discussion first.
+        let db = ThreatDb::new_in_memory().unwrap();
+        let conn = db.inner.lock().unwrap();
+        let mut tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        tables.sort();
+        assert_eq!(tables, vec!["meta".to_owned(), "threats".to_owned()]);
+        let cols: String = conn
+            .prepare("SELECT sql FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_ascii_lowercase();
+        for banned in ["url", "title", "password", "history", "bookmark"] {
+            assert!(
+                !cols.contains(banned),
+                "user-data column shape in threat schema: {banned}"
+            );
+        }
     }
 }

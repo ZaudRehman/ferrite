@@ -1,4 +1,4 @@
-//! Secure injection JS.
+//! Field fill script. Uses the native value setter so framework listeners fire.
 
 use zeroize::Zeroize;
 

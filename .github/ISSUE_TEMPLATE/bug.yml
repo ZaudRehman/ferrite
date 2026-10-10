@@ -1,0 +1,17 @@
+name: Bug report
+description: Something broken in the browser
+labels: [bug]
+body:
+  - type: input
+    attributes: { label: Version/commit, description: "Tag or short SHA" }
+    validations: { required: true }
+  - type: dropdown
+    attributes:
+      label: Area
+      options: [proxy, privacy, vault/credentials, tabs, shell/chrome, sync, relay, updater, docs]
+    validations: { required: true }
+  - type: textarea
+    attributes: { label: Repro steps, description: "Minimal steps, expected vs actual" }
+    validations: { required: true }
+  - type: textarea
+    attributes: { label: Logs, description: "RUST_LOG output, crash log lines (redact URLs)" }

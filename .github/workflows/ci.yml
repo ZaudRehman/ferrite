@@ -16,21 +16,42 @@ jobs:
           toolchain: "1.96.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # Native deps for --all-features: WebKitGTK/wry sys libs plus perl
+      # for the vendored SQLCipher/OpenSSL builds (see docs/SETUP.md).
+      # Without these the feature-gated build fails for missing headers,
+      # not for Ferrite code.
+      - name: Linux deps
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev perl pkg-config libssl-dev
+      # pdfium native library for --all-features tests: the pdfium-render
+      # tests bind the real engine (garbage-input assertions cannot hold
+      # against it, and bindings init once per process; see
+      # crates/ferrite-archive/src/pdf.rs). Pinned by tag AND sha256;
+      # a mismatch fails the job (native code is supply chain).
+      - name: pdfium library (pinned)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pdfium" && cd "$RUNNER_TEMP/pdfium"
+          curl -fsSL -o pdfium.tgz https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8076/pdfium-linux-x64.tgz
+          echo "d9d67bc40af03aef4fe28a60b19b1086f28ace019c8c9caf19cb7fe3d14ceca3  pdfium.tgz" | sha256sum -c -
+          tar xzf pdfium.tgz
+          echo "FERRITE_PDFIUM_PATH=$RUNNER_TEMP/pdfium/bin" >> $GITHUB_ENV
       - name: Rust fmt
         run: cargo fmt --check --all
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Tests
         run: cargo test --workspace --all-features
-      - name: Cargo audit
-        run: cargo install cargo-audit && cargo audit
       - name: Cargo deny
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           arguments: --all-features
           deny-attribute: deny
       - name: SBOM
-        run: cargo install cargo-cyclonedx && cargo cyclonedx --format json -o sbom.json && cat sbom.json
+        run: cargo install cargo-cyclonedx && cargo cyclonedx --format json -o sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.0"
@@ -43,3 +64,46 @@ jobs:
       - name: Go tests
         working-directory: relay
         run: go test ./...
+
+  # Wayland/gtk compile gate: the runtime path is behaviorally untested (no
+  # display in runners; see docs/LIMITATIONS.md), but it must at least keep
+  # compiling behind its feature flag, or the fallback rots silently.
+  wayland:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux deps
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev perl pkg-config libssl-dev
+      - name: Wayland gtk path compiles
+        run: cargo check -p ferrite-tabs --features gtk
+      - name: Wayland gtk clippy
+        run: cargo clippy -p ferrite-tabs --features gtk --all-targets -- -D warnings
+
+  # Engine matrix drift gate: docs/ENGINE.md pins exact mediation-layer
+  # versions. A bumped Cargo.lock without a re-verified matrix is how gaps
+  # get rediscovered through production bugs instead of this file.
+  engine-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned versions match ENGINE.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          check() { # check <crate> <expected-version>
+            local got
+            got=$(awk -v n="$1" 'BEGIN{name=""} /^\[\[package\]\]/{name=""} /^name = /{gsub(/"/,"",$3); name=$3} /^version = /{gsub(/"/,"",$3); if(name=="'"$1"'"){print $3; exit}}' Cargo.lock)
+            [ "$got" = "$2" ] || { echo "ENGINE.md drift: $1 is $got in Cargo.lock, expected $2 (re-verify docs/ENGINE.md or pin back)"; exit 1; }
+          }
+          # Versions below mirror docs/ENGINE.md "Pinned versions". Update
+          # both together on every bump.
+          check wry "0.56.1"
+          check winit "0.30.13"
+          grep -q 'wry | 0.56.1' docs/ENGINE.md || { echo "ENGINE.md wry row missing"; exit 1; }
+          grep -q 'winit | 0.30.13' docs/ENGINE.md || { echo "ENGINE.md winit row missing"; exit 1; }
+          echo "engine matrix in sync"

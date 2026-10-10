@@ -1,4 +1,4 @@
-//! Header helpers.
+//! GPC header and tracker cookie stripping predicates.
 
 pub fn should_add_gpc(enabled: bool) -> bool {
     enabled

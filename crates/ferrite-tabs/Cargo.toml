@@ -1,12 +1,12 @@
 [package]
 name = "ferrite-tabs"
-description = "Ferrite content layer & tab management — Vec<TabState> lifecycle, spatial sync, suspension and IPC bridge foundation (Part 2)."
+description = "Ferrite content layer & tab management: Vec<TabState> lifecycle, spatial sync, suspension and IPC bridge foundation (Part 2)."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-egui.workspace = true
 winit.workspace = true
 wry.workspace = true
 uuid.workspace = true
@@ -17,11 +17,19 @@ thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+qrcode = "0.14"
 crossbeam-channel.workspace = true
 ferrite-privacy.workspace = true
+ferrite-chrome.workspace = true
 ferrite-archive.workspace = true
 ferrite-credentials.workspace = true
 gtk = { version = "0.18.2", optional = true }
 
 [features]
 gtk = ["dep:gtk"]
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+webview2-com-sys = "0.38"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Printing"] }

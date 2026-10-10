@@ -1,13 +1,5 @@
-//! IPC bridge between JS and Rust.
-//!
-//! Bounded channel (256) with per-tab rate limiting (10 msgs/s sliding
-//! window) and a 64KB payload cap. A compromised page posting the whole DOM
-//! on every mutation (see `inspector/elements.rs`) can no longer grow memory
-//! without bound: excess messages are dropped with a warning and counted.
-//!
-//! Rate-limit state is shared (`SharedLimitsHandle`) across the bridge and
-//! every cloned sender (notably the wry IPC handler), so all producers draw
-//! from the same per-tab budget.
+//! Bounded IPC bridge with per tab rate limits and a payload cap. Excess
+//! messages drop with a warning and count. All producers share one budget.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
@@ -18,13 +10,13 @@ use uuid::Uuid;
 
 use crate::webview::IpcMessage;
 
-/// Maximum queued IPC messages process-wide.
+/// Max queued messages process wide.
 pub const IPC_QUEUE_CAP: usize = 256;
-/// Maximum accepted payload bytes per message.
+/// Max payload bytes per message.
 pub const IPC_MAX_PAYLOAD_BYTES: usize = 64 * 1024;
-/// Per-tab rate limit: messages per sliding 1s window.
+/// Per tab messages per sliding 1s window.
 pub const IPC_PER_TAB_PER_SEC: usize = 10;
-/// Maximum accepted title length (chars); longer titles are truncated.
+/// Max title chars. Longer titles truncate.
 pub const IPC_MAX_TITLE_CHARS: usize = 500;
 
 type SharedLimits = std::sync::Arc<std::sync::Mutex<LimitsInner>>;
@@ -35,7 +27,6 @@ struct LimitsInner {
     dropped_rate: u64,
 }
 
-/// Cloneable handle to the shared per-tab rate-limit state.
 #[derive(Debug, Clone)]
 pub struct SharedLimitsHandle {
     inner: SharedLimits,
@@ -49,6 +40,23 @@ enum SendOutcome {
     Closed,
 }
 
+/// Best-effort message discriminant (`type` for content posts, `cmd` for
+/// chrome posts) for drop-path logging. Cold path only: drops are already
+/// exceptional, so one JSON parse per drop is affordable. Unparseable
+/// payloads report `(unparseable)`; the discriminant itself is capped so a
+/// hostile payload cannot flood the log through its own rejection.
+fn ipc_msg_kind(payload: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|v| {
+            v.get("type")
+                .or_else(|| v.get("cmd"))
+                .and_then(|k| k.as_str())
+                .map(|s| s.chars().take(48).collect())
+        })
+        .unwrap_or_else(|| "(unparseable)".to_owned())
+}
+
 fn send_checked(
     sender: &Sender<IpcMessage>,
     limits: &SharedLimits,
@@ -58,6 +66,7 @@ fn send_checked(
         warn!(
             tab_id = %msg.tab_id,
             bytes = msg.payload.len(),
+            msg_type = ipc_msg_kind(&msg.payload),
             "ipc oversize: dropping message"
         );
         return SendOutcome::DroppedOversize;
@@ -74,19 +83,31 @@ fn send_checked(
         }
         if stamps.len() >= IPC_PER_TAB_PER_SEC {
             l.dropped_rate += 1;
-            warn!(tab_id = %msg.tab_id, "ipc rate limit: dropping message");
+            warn!(
+                tab_id = %msg.tab_id,
+                msg_type = ipc_msg_kind(&msg.payload),
+                "ipc rate limit: dropping message"
+            );
             return SendOutcome::DroppedRate;
         }
         stamps.push_back(now);
     }
     match sender.try_send(msg) {
         Ok(()) => SendOutcome::Sent,
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-            warn!("ipc queue full: dropping message");
+        Err(tokio::sync::mpsc::error::TrySendError::Full(m)) => {
+            warn!(
+                tab_id = %m.tab_id,
+                msg_type = ipc_msg_kind(&m.payload),
+                "ipc queue full: dropping message"
+            );
             SendOutcome::DroppedFull
         }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            warn!("ipc channel closed: dropping message");
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(m)) => {
+            warn!(
+                tab_id = %m.tab_id,
+                msg_type = ipc_msg_kind(&m.payload),
+                "ipc channel closed: dropping message"
+            );
             SendOutcome::Closed
         }
     }
@@ -211,6 +232,17 @@ mod tests {
     fn drain_empty_is_noop() {
         let mut bridge = IpcBridge::new();
         assert!(bridge.drain().is_empty());
+    }
+
+    #[test]
+    fn msg_kind_names_both_envelope_shapes() {
+        assert_eq!(ipc_msg_kind(r#"{"type":"link_hover"}"#), "link_hover");
+        assert_eq!(ipc_msg_kind(r#"{"cmd":"reload"}"#), "reload");
+        assert_eq!(ipc_msg_kind("{}"), "(unparseable)");
+        assert_eq!(ipc_msg_kind("garbage"), "(unparseable)");
+        assert_eq!(ipc_msg_kind(""), "(unparseable)");
+        let long = format!(r#"{{"type":"{}"}}"#, "t".repeat(100));
+        assert_eq!(ipc_msg_kind(&long).len(), 48);
     }
 
     #[test]

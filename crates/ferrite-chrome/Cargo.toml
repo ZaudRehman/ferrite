@@ -1,0 +1,12 @@
+[package]
+name = "ferrite-chrome"
+description = "Ferrite browser chrome contract: DESIGN token packs (CSS) + typed chrome IPC. Dioxus desktop shell plugs into this contract; egui shell is strangled behind it."
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

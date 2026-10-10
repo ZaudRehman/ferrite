@@ -1,0 +1,8 @@
+name: Security-adjacent report
+description: Suspected vulnerability (prefer private disclosure per SECURITY.md)
+labels: [security]
+body:
+  - type: textarea
+    attributes:
+      label: Note
+      description: "If this is exploitable, STOP and report it privately instead (see SECURITY.md)."

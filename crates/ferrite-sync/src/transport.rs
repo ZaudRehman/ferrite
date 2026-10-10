@@ -1,12 +1,9 @@
-//! QUIC p2p transport with pinned identity certs + mDNS discovery.
-//!
-//! The endpoint serves the device identity certificate (same Ed25519 key as
-//! mTLS) and verifies peers against the trusted-device store. There is no
-//! `SkipVerify` fallback: untrusted peers fail the handshake.
+//! QUIC transport with pinned identity certs and mDNS discovery. No
+//! skip verify fallback: untrusted peers fail the handshake.
 
 use std::sync::{Arc, Mutex};
 
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::crypto::DeviceIdentity;
 use crate::trusted::TrustedStore;
@@ -15,7 +12,6 @@ use crate::trusted::TrustedStore;
 pub struct P2pConfig {
     pub device_id: String,
     pub listen_port: u16,
-    pub relay_url: Option<String>,
 }
 
 impl P2pConfig {
@@ -23,7 +19,6 @@ impl P2pConfig {
         Self {
             device_id,
             listen_port,
-            relay_url: None,
         }
     }
 }
@@ -55,6 +50,9 @@ impl P2pTransport {
         let client_chain = vec![rustls_pki_types::CertificateDer::from(cert_der)];
         let key = rustls_pki_types::PrivateKeyDer::Pkcs8(key_der.clone().into());
         let client_key = rustls_pki_types::PrivateKeyDer::Pkcs8(key_der.into());
+        // Explicit provider (see ferrite-shell cert.rs): auto-detect
+        // panics under feature-unification. Already-set ignored.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let server_crypto = rustls::ServerConfig::builder()
             .with_client_cert_verifier(crate::mtls::pinned_server_verifier(Arc::clone(&trusted)))
             .with_single_cert(cert_chain, key)
@@ -91,42 +89,23 @@ impl P2pTransport {
             .unwrap_or(self.config.listen_port);
         debug!(port, "p2p quic bound");
         self.endpoint = Some(endpoint);
-        self.spawn_mdns(port);
+        // No advertiser here: `DiscoveryService` owns mDNS (one announcer
+        // per process; this used to double-advertise and ghosted removals).
         Ok(port)
     }
 
-    fn spawn_mdns(&self, port: u16) {
-        let device_id = self.config.device_id.clone();
-        std::thread::Builder::new()
-            .name("ferrite-mdns".to_owned())
-            .spawn(move || {
-                if let Ok(mdns) = mdns_sd::ServiceDaemon::new() {
-                    let _host = format!("{device_id}.local.");
-                    let props: std::collections::HashMap<String, String> =
-                        std::collections::HashMap::from([(
-                            "device".to_string(),
-                            device_id.clone(),
-                        )]);
-                    if let Ok(service) = mdns_sd::ServiceInfo::new(
-                        "_ferrite._tcp.local.",
-                        &device_id,
-                        &format!("{device_id}.local."),
-                        "",
-                        port,
-                        props,
-                    ) {
-                        if let Err(e) = mdns.register(service) {
-                            warn!(error=%e, "mdns register failed");
-                        } else {
-                            debug!("mdns registered");
-                            loop {
-                                std::thread::sleep(std::time::Duration::from_secs(3600));
-                            }
-                        }
-                    }
-                }
-            })
-            .ok();
+    /// Accept one inbound connection, if any is waiting. The session driver
+    /// loops on this with a shutdown check between calls; per-connection
+    /// streams are served by the caller, never here.
+    pub async fn accept(&self) -> Option<quinn::Connection> {
+        let ep = self.endpoint.as_ref()?;
+        ep.accept().await?.await.ok()
+    }
+
+    /// Cloned endpoint handle for serve loops that must not hold the
+    /// transport lock across awaits (accept waits indefinitely).
+    pub fn endpoint(&self) -> Option<quinn::Endpoint> {
+        self.endpoint.clone()
     }
 
     pub async fn connect(

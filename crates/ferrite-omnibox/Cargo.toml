@@ -1,17 +1,17 @@
 [package]
 name = "ferrite-omnibox"
-description = "Ferrite omnibox — URL vs search classification, search agnosticism, autocomplete and Vimium engine (Part 3)."
+description = "Ferrite omnibox: URL vs search classification, search agnosticism, autocomplete and Vimium engine (Part 3)."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-egui.workspace = true
 url.workspace = true
+# Registrable domains (PSL) for eTLD-correct highlighting. Already in the
+# lock via adblock, so no new external crate, just a direct edge.
+addr = "0.15"
 dashmap.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
-serde_json.workspace = true
-wry.workspace = true
-ferrite-tabs.workspace = true

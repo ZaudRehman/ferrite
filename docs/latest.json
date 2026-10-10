@@ -2,22 +2,22 @@
   "stable": {
     "version": "0.1.0",
     "rollout": 100,
-    "sha256": "",
-    "url": "https://github.com/anomalyco/opencode/releases/download/v0.1.0/ferrite-stable.tar.gz",
-    "patch_url": null
+    "signature": "",
+    "targets": {},
+    "severity": ""
   },
   "beta": {
     "version": "0.1.0-beta.1",
     "rollout": 10,
-    "sha256": "",
-    "url": "https://github.com/anomalyco/opencode/releases/download/v0.1.0-beta.1/ferrite-beta.tar.gz",
-    "patch_url": null
+    "signature": "",
+    "targets": {},
+    "severity": ""
   },
   "dev": {
     "version": "0.1.0-dev",
     "rollout": 100,
-    "sha256": "",
-    "url": "https://github.com/anomalyco/opencode/releases/download/v0.1.0-dev/ferrite-dev.tar.gz",
-    "patch_url": null
+    "signature": "",
+    "targets": {},
+    "severity": ""
   }
 }

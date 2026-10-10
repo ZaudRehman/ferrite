@@ -1,8 +1,5 @@
-//! Relay session-auth protocol (must match `relay/main.go`).
-//!
-//! `auth` payload = `{"pubkey": base64(32B ed25519), "ts": unix_sec,
-//! "sig": base64(64B ed25519 over "ferrite-relay-auth-v1|<device_id>|<ts>")}`.
-//! The relay pins device_id -> pubkey and rejects spoofed `from`.
+//! Relay session auth. Must match `relay/main.go`. Payload carries base64
+//! pubkey, unix time, and the Ed25519 signature. Relay pins id to pubkey.
 
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
@@ -27,9 +24,9 @@ fn unb64(s: &str) -> Option<Vec<u8>> {
     base64::engine::general_purpose::STANDARD.decode(s).ok()
 }
 
-/// Build the signed auth claim for `identity` at timestamp `now_secs`.
+/// Build the signed claim for `identity` at `now_secs`.
 pub fn build_auth(identity: &DeviceIdentity, device_id: &str, now_secs: i64) -> RelayAuthPayload {
-    // SigningKey has no Clone bound issue here: sign borrows.
+    // Signing borrows, no clone bound issue.
     let key = SigningKey::from_bytes(&identity.signing_key.to_bytes());
     let msg = format!("{AUTH_DOMAIN}|{device_id}|{now_secs}");
     let sig: Signature = key.sign(msg.as_bytes());
@@ -40,8 +37,7 @@ pub fn build_auth(identity: &DeviceIdentity, device_id: &str, now_secs: i64) -> 
     }
 }
 
-/// Verify an auth claim for `device_id` at `now_secs`. Returns the verified
-/// public key. Mirrors the relay's `verifyAuth` exactly.
+/// Verify a claim for `device_id` at `now_secs`. Returns the verified key.
 pub fn verify_auth(
     device_id: &str,
     payload: &RelayAuthPayload,

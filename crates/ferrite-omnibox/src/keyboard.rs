@@ -1,6 +1,6 @@
 //! Keyboard hints for webview navigation.
 
-/// Character set used for hint generation (spec §4.2: short letter-combos).
+/// Hint alphabet. Short letter combos.
 pub const DEFAULT_CHARSET: &str = "asdfghjkl";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,14 +33,14 @@ pub fn geist_font_face_css() -> String {
     "@font-face{font-family:'Geist Pixel Square';src:url('ferrite://assets/geist-pixel-square.ttf') format('truetype');font-weight:normal;font-style:normal;}".to_owned()
 }
 
-/// JS that overlays hint badges on clickable elements.
+/// Overlay hint badges on clickable elements.
 pub fn hint_generation_js(charset: &str, theme: &HintTheme) -> String {
     let charset = if charset.trim().is_empty() {
         DEFAULT_CHARSET
     } else {
         charset
     };
-    // Escape charset for JS string literal (only a-z expected, but be safe).
+    // Charset is filtered to letters only.
     let escaped: String = charset
         .chars()
         .filter(|c| c.is_ascii_alphabetic())
@@ -139,7 +139,6 @@ mod tests {
 
     #[test]
     fn hint_theming_is_parameterized_not_hardcoded() {
-        // Sentinel proof: brand values arrive ONLY via HintTheme params.
         let sentinel = crate::keyboard::HintTheme {
             accent_hex: "#ABCDEF".to_owned(),
             text_hex: "#123456".to_owned(),
@@ -151,7 +150,6 @@ mod tests {
         assert!(!js.contains("#4F46E5"), "no hardcoded iris in template");
         assert!(!js.contains("#E5E5E5"), "no legacy chrome text");
 
-        // Iris preset still renders its own colors end-to-end.
         let iris = hint_generation_js(DEFAULT_CHARSET, &HintTheme::iris());
         assert!(iris.contains("#4F46E5"));
         assert!(iris.contains("#020203"));

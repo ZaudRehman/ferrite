@@ -1,4 +1,5 @@
-//! Archive core.
+//! Stored snapshots with FTS search and LRU retention. Served rows are
+//! always sanitized. Decompress is capped at 10 MB per snapshot.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,20 +38,30 @@ impl Default for ArchiveConfig {
     }
 }
 
+/// Clone shares the same store and index.
 #[derive(Debug, Clone)]
 pub struct Archive {
     storage: Storage,
     pub(crate) config: ArchiveConfig,
     time_machine: Arc<DashMap<String, Vec<(String, i64)>>>,
+    /// Failed retention evictions (disk-full, lock errors). Surfaced, never
+    /// swallowed: a stuck evictor grows the DB without bound, and the only
+    /// symptom would otherwise be a full disk months later.
+    evict_errors: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Archive {
-    pub fn open(config: ArchiveConfig) -> ArchiveResult<Self> {
-        let storage = Storage::open(&config.path)?;
+    /// File store under `key` (the device master key; borrowed, never
+    /// retained; the open consumes what it needs and the caller zeroizes
+    /// its copy). Empty keys open plaintext: only the boot gate may pass
+    /// one, and only for explicitly chosen ephemeral stores.
+    pub fn open(config: ArchiveConfig, key: &[u8]) -> ArchiveResult<Self> {
+        let storage = Storage::open(&config.path, key)?;
         Ok(Self {
             storage,
             config,
             time_machine: Arc::new(DashMap::new()),
+            evict_errors: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
@@ -63,9 +74,27 @@ impl Archive {
                 max_bytes: 2 * 1024 * 1024 * 1024,
             },
             time_machine: Arc::new(DashMap::new()),
+            evict_errors: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
+    /// Whether this archive persists to disk (in-memory stores skip
+    /// rotation: there is nothing keyed to rekey).
+    pub fn is_persistent(&self) -> bool {
+        self.config.path != ":memory:"
+    }
+
+    /// Re-encrypt under `new_key`. See [`Storage::rekey`] for the contract.
+    pub fn rekey(&self, new_key: &[u8]) -> ArchiveResult<()> {
+        self.storage.rekey(self.is_persistent(), new_key)
+    }
+
+    /// Reclaim free pages. See [`Storage::reclaim_space`] for the contract.
+    pub fn reclaim_space(&self) -> ArchiveResult<usize> {
+        self.storage.reclaim_space()
+    }
+
+    /// Sanitize, compress (level 3), store, then evict.
     pub fn ingest(&self, url: &str, headers: &str, html: &[u8]) -> ArchiveResult<SnapshotId> {
         let host = url::Url::parse(url)
             .ok()
@@ -73,8 +102,6 @@ impl Archive {
         let html_str = String::from_utf8_lossy(html).into_owned();
         let sanitized = sanitize(&html_str, host.as_deref());
         let text = extract_text(&sanitized);
-        // Level 3 for ingest latency (was 10: tens of ms on the UI path per
-        // 100KB page). Cold recompression to higher levels is deferred.
         let zstd_blob = zstd::bulk::compress(sanitized.as_bytes(), 3)
             .map_err(|e| ArchiveError::Compression(e.to_string()))?;
         let timestamp = SystemTime::now()
@@ -96,15 +123,13 @@ impl Archive {
             .entry(url.to_owned())
             .or_default()
             .push((url.to_owned(), timestamp));
-        // keep dashmap bounded per url
         if let Some(mut entry) = self.time_machine.get_mut(url) {
             if entry.len() > 50 {
                 let len = entry.len();
                 entry.drain(0..len - 50);
             }
         }
-        // Global bound: DashMap has no ordering, so evict arbitrary excess
-        // keys once past 5000 URLs (each key holds <= 50 small tuples).
+        // Bounded hint: 50 per URL, 5000 URLs.
         if self.time_machine.len() > 5000 {
             let excess: Vec<String> = self
                 .time_machine
@@ -116,10 +141,20 @@ impl Archive {
                 self.time_machine.remove(&k);
             }
         }
-        let _ = self.storage.evict_lru(self.config.max_bytes);
+        if let Err(e) = self.storage.evict_lru(self.config.max_bytes) {
+            self.evict_errors
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!(error = %e, "archive retention eviction failed");
+        }
         Ok(id)
     }
 
+    /// Lifetime count of failed retention evictions (diagnostics surface).
+    pub fn evict_errors(&self) -> u64 {
+        self.evict_errors.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Store without sanitizing or indexing. Invisible to reads.
     pub fn ingest_unsanitized(
         &self,
         url: &str,
@@ -139,7 +174,7 @@ impl Archive {
     }
 
     pub fn get_latest(&self, url: &str) -> ArchiveResult<Option<Snapshot>> {
-        let Some((id, blob, headers, ts)) = self.storage.get_latest(url)? else {
+        let Some((id, blob, headers, ts, is_pinned)) = self.storage.get_latest(url)? else {
             return Ok(None);
         };
         let html_bytes = zstd::bulk::decompress(&blob, 10 * 1024 * 1024)
@@ -151,10 +186,11 @@ impl Archive {
             timestamp: ts,
             headers,
             html,
-            is_pinned: false,
+            is_pinned,
         }))
     }
 
+    /// Fallback when the exact URL missed. Literal substring match.
     pub fn get_fuzzy(&self, domain: &str) -> ArchiveResult<Option<Snapshot>> {
         let Some((id, url, blob, headers, timestamp)) = self.storage.query_fuzzy_domain(domain)?
         else {
@@ -174,6 +210,7 @@ impl Archive {
         }))
     }
 
+    /// Phrase search. Operators are literals. Limit clamped to 100.
     pub fn search(&self, query: &str, limit: usize) -> ArchiveResult<Vec<(String, String)>> {
         self.storage.search_fts(query, limit)
     }
@@ -280,5 +317,46 @@ mod tests {
         small.ingest("https://a.com/3", "", &[b'z'; 200]).unwrap();
         // pinned still exists
         assert!(small.storage.list_for_url("https://a.com/2").unwrap().len() == 1);
+    }
+
+    #[test]
+    fn evict_counter_starts_at_zero_and_clones_share_it() {
+        let arch = Archive::open_in_memory().unwrap();
+        assert_eq!(arch.evict_errors(), 0);
+        arch.ingest("https://example.com/e", "", b"<p>fine</p>")
+            .unwrap();
+        assert_eq!(arch.evict_errors(), 0, "healthy evictions never count");
+        // Clones share the store, index, and the error counter.
+        assert_eq!(arch.clone().evict_errors(), 0);
+    }
+
+    #[test]
+    fn get_latest_returns_real_pinned_value() {
+        let arch = Archive::open_in_memory().unwrap();
+        let id = arch
+            .ingest("https://example.com/pinned", "", b"<p>hi</p>")
+            .unwrap();
+        assert!(
+            !arch
+                .get_latest("https://example.com/pinned")
+                .unwrap()
+                .unwrap()
+                .is_pinned
+        );
+        arch.pin(id, true).unwrap();
+        assert!(
+            arch.get_latest("https://example.com/pinned")
+                .unwrap()
+                .unwrap()
+                .is_pinned
+        );
+        arch.pin(id, false).unwrap();
+        assert!(
+            !arch
+                .get_latest("https://example.com/pinned")
+                .unwrap()
+                .unwrap()
+                .is_pinned
+        );
     }
 }

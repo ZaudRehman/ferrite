@@ -1,0 +1,14 @@
+Koboyo Icons — third-party artwork notice
+
+Nine hand-drawn "Original"-style illustrations are vendored as static SVG
+in crates/ferrite-tabs/assets/:
+
+  house.svg, magnifying-glass.svg, person-launching-rocket.svg,
+  person-no-signal.svg, person-picking-theme.svg, shield-check.svg,
+  suitcase.svg, sync.svg, wifi-off.svg
+
+Terms (https://koboyo.com/icons/license): free for commercial use, no
+attribution required. They are inlined into Ferrite's own pages
+(offline-safe, zero fetches) and are not redistributed as a library.
+Ferrite credits them voluntarily on the ferrite://credits page and the
+About page. No license text is reproduced here because none is required.

@@ -1,17 +1,20 @@
+# PackageVersion, InstallerUrl, InstallerSha256 and ProductCode below are
+# rewritten by .github/workflows/release.yml on every tag (ProductCode is
+# read from the built MSI); do not hand-edit them for releases.
 PackageIdentifier: Ferrite.Browser
 PackageVersion: 0.1.0
 PackageName: Ferrite
 Publisher: Zaud Rehman
-License: Apache-2.0
-ShortDescription: Sovereign Browser — Usability by Default, Privacy by Choice
+License: MIT OR Apache-2.0
+ShortDescription: Privacy-first desktop browser
 Moniker: ferrite
-Tags: [browser, privacy, sovereign, archive]
-PackageUrl: https://github.com/anomalyco/opencode
+Tags: [browser, privacy]
+PackageUrl: https://github.com/ZaudRehman/ferrite
 InstallerType: msi
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/anomalyco/opencode/releases/download/v0.1.0/Ferrite-0.1.0.msi
-    InstallerSha256: REPLACE_WITH_SHA256
+    InstallerUrl: https://github.com/ZaudRehman/ferrite/releases/download/v0.1.0/Ferrite-0.1.0-x64.msi
+    InstallerSha256: REPLACE_WITH_SHA256_FROM_RELEASE_JOB
     ProductCode: "{FERRITE-BROWSER-0-1-0}"
 ManifestType: singleton
 ManifestVersion: 1.6.0

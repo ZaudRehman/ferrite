@@ -1,4 +1,4 @@
-//! Hybrid Logical Clock per Part 11 3.1/3.2 - wall + logical, no NTP reliance.
+//! Hybrid logical clock. Wall plus logical, no NTP reliance.
 
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,10 +26,8 @@ impl Hlc {
         }
     }
 
-    /// Generate next HLC timestamp (u64 millis<<16 | logical) + device tie-break via lexicographic.
-    /// Overflow-carrying: beyond 65535 events in one millisecond the
-    /// physical part advances by 1ms instead of wrapping backwards (the old
-    /// code masked and went back in time, dropping newest writes in LWW).
+    /// Next timestamp (millis shifted plus logical). Stays monotonic under
+    /// saturation by carrying into the physical part.
     pub fn next(&self) -> u64 {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let physical = now_millis();
@@ -39,17 +37,14 @@ impl Hlc {
         } else if inner.last_logical < 0xFFFF {
             inner.last_logical += 1;
         } else {
-            // Same millisecond saturated: carry into the physical part.
-            // Result stays monotonic; wall skew is <1ms and self-corrects on
-            // the next real millisecond tick.
+            // Saturated: carry into physical. Self corrects on the next tick.
             inner.last_physical += 1;
             inner.last_logical = 0;
         }
         (inner.last_physical << 16) | (inner.last_logical & 0xFFFF)
     }
 
-    /// Observe remote HLC and update clock (causality). Saturates instead of
-    /// wrapping: a saturated logical carries into the physical part.
+    /// Observe a remote timestamp for causality. Same saturation rule.
     pub fn observe(&self, remote: u64) {
         let remote_phys = remote >> 16;
         let remote_log = remote & 0xFFFF;

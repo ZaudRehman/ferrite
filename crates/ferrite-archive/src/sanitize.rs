@@ -1,4 +1,4 @@
-//! HTML sanitization for archive.
+//! Regex sanitizer for archived HTML. SVG and MathML are kept.
 
 use regex::Regex;
 use std::sync::OnceLock;
@@ -19,8 +19,6 @@ fn script_re() -> &'static Regex {
     SCRIPT_RE.get_or_init(|| Regex::new(r"(?is)<script\b[^>]*>.*?</script>").unwrap())
 }
 
-/// Leftover `<script ...>` open tags without a closer (unclosed script):
-/// the tag itself is removed; inner text stays as inert text.
 fn script_open_re() -> &'static Regex {
     SCRIPT_OPEN_RE.get_or_init(|| Regex::new(r"(?i)<script\b[^>]*>").unwrap())
 }
@@ -35,20 +33,24 @@ fn iframe_src_re() -> &'static Regex {
     })
 }
 
+/// Heuristic pre-filter for well-known tracking pixels/beacons in STORED
+/// snapshots only. This is hygiene, not enforcement: the name list is trivial
+/// to evade and is not updated like the filter lists. Real tracker blocking
+/// happens proxy-side (`ferrite-privacy`); archived pages additionally serve
+/// with `script-src 'none'`, so a missed beacon here can neither run nor phone
+/// home. Kept because stripping the obvious ones keeps snapshots smaller and
+/// the FTS index cleaner.
 fn tracker_re() -> &'static Regex {
     TRACKER_RE.get_or_init(|| {
         Regex::new(r#"(?i)<(img|link)\b[^>]*\b(src|href)\s*=\s*["'][^"']*(tracker|analytics|doubleclick|googletag|facebook|hotjar|segment|mixpanel)[^"']*["'][^>]*>"#).unwrap()
     })
 }
 
-/// Inline event handlers (` onclick=`, `onload=`, ...): the classic XSS
-/// carrier the old sanitizer missed entirely.
 fn handler_re() -> &'static Regex {
     HANDLER_RE
         .get_or_init(|| Regex::new(r#"(?i)\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)"#).unwrap())
 }
 
-/// `javascript:` URLs in active attributes. Replaced with an inert `#`.
 fn js_url_re() -> &'static Regex {
     JS_URL_RE.get_or_init(|| {
         Regex::new(r#"(?i)\b(href|src|action|xlink:href)\s*=\s*("([^"]*)"|'([^']*)'|[^\s>]+)"#)
@@ -56,9 +58,6 @@ fn js_url_re() -> &'static Regex {
     })
 }
 
-/// Tags that are never content: executable embeds, navigation hijacks,
-/// base-url rewriters. SVG/MathML are KEPT (scripts inside them are
-/// stripped as `<script>`, handlers stripped globally).
 fn dangerous_tag_re() -> &'static Regex {
     DANGEROUS_TAG_RE.get_or_init(|| {
         Regex::new(r"(?is)<(object|embed|meta|base|form|link)\b[^>]*>(.*?</(object|embed|form)>)?")
@@ -114,7 +113,6 @@ fn neutralize_js_urls(html: &str) -> String {
         .into_owned()
 }
 
-/// Extract an iframe src attribute value (quoted or unquoted), if present.
 fn extract_iframe_src(tag: &str) -> Option<String> {
     static SRC_RE: OnceLock<Regex> = OnceLock::new();
     let re =
@@ -131,11 +129,7 @@ fn extract_iframe_src(tag: &str) -> Option<String> {
     })
 }
 
-/// Compare a URL host against the page host by exact-or-suffix match.
-/// Substring matching (`evil-example.com`.contains(`example.com`)) is a
-/// bypass and is never used here.
 fn same_host(url_src: &str, page_host: &str) -> bool {
-    // Absolute URL.
     if let Ok(url) = url::Url::parse(url_src) {
         return match url.host_str() {
             Some(h) => {
@@ -146,8 +140,7 @@ fn same_host(url_src: &str, page_host: &str) -> bool {
             None => false,
         };
     }
-    // Protocol-relative URL (`//evil.com/x`): NOT same-origin despite the
-    // leading slashes the old code trusted.
+    // Protocol relative URLs are parsed, never trusted on sight.
     if let Some(rest) = url_src.strip_prefix("//") {
         if let Ok(url) = url::Url::parse(&format!("https://{rest}")) {
             return match url.host_str() {
@@ -161,17 +154,14 @@ fn same_host(url_src: &str, page_host: &str) -> bool {
         }
         return false;
     }
-    // Same-document or root/relative reference without a host.
+    // No host: same document, root, or relative reference.
     url_src.starts_with('#') || url_src.starts_with('/') || !url_src.contains(':')
 }
 
-/// Strip scripts, third-party iframes, and tracker tags.
-/// `page_host` is used to keep same-origin iframes.
+/// Keep same origin frames, drop the rest. `None` drops all frames.
 pub fn sanitize(html: &str, page_host: Option<&str>) -> String {
     let mut out = html.to_owned();
-    // Fixpoint (max 3) over BOTH pair and open-tag stripping: nested
-    // `<scr<script>ipt>` re-forms a tag after a single pass, and unclosed
-    // scripts leave open tags behind. Inner text stays as inert text.
+    // Nested input reforms tags after one pass, so run up to 3.
     for _ in 0..3 {
         let before = out.len();
         out = script_re().replace_all(&out, "").into_owned();
@@ -180,12 +170,8 @@ pub fn sanitize(html: &str, page_host: Option<&str>) -> String {
             break;
         }
     }
-    // Inline event handlers and javascript: URLs before tag removal so
-    // kept tags (same-origin iframes, svg) are inert too.
     out = handler_re().replace_all(&out, "").into_owned();
     out = neutralize_js_urls(&out);
-    // Dangerous embeds/navigation: object, embed, meta refresh, base, form,
-    // and non-stylesheet link tags. Keep link[rel=stylesheet].
     out = dangerous_tag_re()
         .replace_all(&out, |caps: &regex::Captures| {
             let tag = caps.get(0).unwrap().as_str();
@@ -199,7 +185,6 @@ pub fn sanitize(html: &str, page_host: Option<&str>) -> String {
                 return String::new();
             }
             if lower.starts_with("<meta") {
-                // Keep charset/viewport; drop refresh and other actives.
                 if lower.contains("charset") || lower.contains("name=") {
                     return tag.to_owned();
                 }
@@ -209,7 +194,6 @@ pub fn sanitize(html: &str, page_host: Option<&str>) -> String {
         })
         .into_owned();
 
-    // Remove iframes that are third-party. Keep same-origin.
     if let Some(host) = page_host {
         out = iframe_src_re()
             .replace_all(&out, |caps: &regex::Captures| {
@@ -221,10 +205,7 @@ pub fn sanitize(html: &str, page_host: Option<&str>) -> String {
                 }
             })
             .into_owned();
-        // Fallback for iframes the src pass could not vet (unquoted src,
-        // srcdoc, ...): re-check same-origin instead of blanket stripping,
-        // because kept same-origin iframes still match this pattern.
-        // srcdoc content runs in the archive origin — always strip.
+        // srcdoc runs in the archive origin, so always remove it.
         out = iframe_re()
             .replace_all(&out, |caps: &regex::Captures| {
                 let tag = caps.get(0).unwrap().as_str();
@@ -232,7 +213,6 @@ pub fn sanitize(html: &str, page_host: Option<&str>) -> String {
                 if lower.contains("srcdoc") {
                     return String::new();
                 }
-                // Extract any src= (quoted or not) and vet it.
                 let src = extract_iframe_src(tag);
                 match (src, host) {
                     (Some(s), h) if same_host(&s, h) => tag.to_owned(),
@@ -249,10 +229,8 @@ pub fn sanitize(html: &str, page_host: Option<&str>) -> String {
     out
 }
 
-/// Extract text content for FTS indexing, after sanitization.
 pub fn extract_text(html: &str) -> String {
     let text = tag_re().replace_all(html, " ");
-    // Style contents are not prose.
     let text = style_tag_re().replace_all(&text, " ");
     ws_re().replace_all(&text, " ").trim().to_owned()
 }
@@ -334,6 +312,101 @@ mod tests {
         let out = sanitize(html, None);
         assert!(!out.contains("facebook.net"));
         assert!(!out.contains("hotjar.com"));
+    }
+
+    #[test]
+    fn adversarial_markup_never_executes() {
+        // Deterministic adversarial corpus (no external fuzzer needed for
+        // this surface): sanitize is total over hostile markup: it must
+        // never panic and must never emit executable shapes. Bare inert text
+        // (e.g. the word "javascript:" with no tag or attribute around it)
+        // is fine: the archive viewer serves `script-src 'none'` regardless.
+        let mut state: u64 = 0xC2B280B5E1479355;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        const SHARDS: &[&str] = &[
+            "<script",
+            "</script",
+            "<scr<script>ipt>",
+            "javascript:",
+            "JaVaScRiPt:",
+            "onload=",
+            "onerror=",
+            "<iframe",
+            "srcdoc=",
+            "<svg",
+            "<!--",
+            "-->",
+            "%3c",
+            "&lt;",
+            "<object",
+            "<embed",
+            "<meta",
+            "<base",
+            "<form",
+            "<link",
+            "<style",
+            "expression(",
+            "url(",
+            "data:text/html",
+        ];
+        for _ in 0..2000 {
+            let len = (next() % 12) as usize;
+            let mut input = String::from("<p>safe</p>");
+            for _ in 0..len {
+                input.push_str(SHARDS[(next() % SHARDS.len() as u64) as usize]);
+            }
+            let out = sanitize(&input, Some("example.com"));
+            let lower = out.to_ascii_lowercase();
+            assert!(!has_script_opener(&lower), "exec tag for {input:?}");
+            assert!(!has_js_url(&lower), "exec url for {input:?}");
+        }
+    }
+
+    /// `javascript:` URL in a URL-bearing attribute (`href`/`src`/`action`/
+    /// `xlink:href`, quoted or bare). Bare inert text mentioning the scheme
+    /// correctly survives (the viewer runs `script-src 'none'` regardless).
+    fn has_js_url(lower: &str) -> bool {
+        const ATTRS: &[&str] = &["href", "src", "action", "xlink:href"];
+        for attr in ATTRS {
+            let mut rest = lower;
+            while let Some(i) = rest.find(attr) {
+                let after_attr = &rest[i + attr.len()..];
+                let val = after_attr.trim_start_matches([' ', '\t', '\n', '\r']);
+                let Some(eq) = val.strip_prefix('=') else {
+                    rest = after_attr;
+                    continue;
+                };
+                let val = eq.trim_start_matches([' ', '\t', '\n', '\r', '"', '\'']);
+                if val.starts_with("javascript:") {
+                    return true;
+                }
+                rest = after_attr;
+            }
+        }
+        false
+    }
+
+    /// `<script` tag opener that a browser could act on: the name followed
+    /// by whitespace, `/`, or `>`. `<scriptdata` is inert tag soup and a
+    /// trailing unterminated `<script` at EOF tokenizes as text per the HTML
+    /// spec; both correctly survive sanitizing.
+    fn has_script_opener(lower: &str) -> bool {
+        let mut rest = lower;
+        while let Some(i) = rest.find("<script") {
+            let after = rest[i + "<script".len()..].chars().next();
+            match after {
+                Some(c) if c.is_whitespace() || c == '>' || c == '/' => return true,
+                _ => {
+                    rest = &rest[i + "<script".len()..];
+                }
+            }
+        }
+        false
     }
 
     #[test]

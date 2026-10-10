@@ -1,4 +1,4 @@
-//! Real-time hash-prefix lookup via proxy (k-anonymity).
+//! Realtime hash prefix lookup. Direct origin fetch, never the loopback proxy.
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -7,10 +7,29 @@ const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
 const MAX_HEAD_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 256 * 1024;
 
-/// K-anonymity prefix lookup via the local proxy.
-/// Sends only hex-validated prefix (≥4 chars) as a query param; the proxy
-/// telemetry path must not log query strings (callers: do not `tracing`
-/// the full target).
+/// Keyed SafeBrowsing URL. Pure for tests: prefix and key are already
+/// validated hex/non-empty by the caller.
+pub fn safebrowsing_url(prefix: &str, api_key: &str) -> String {
+    let host = "safebrowsing.googleapis.com";
+    format!("https://{host}/v4/threatMatches:find?prefix={prefix}&key={api_key}")
+}
+
+/// Direct lookup. Prefix only (hex, min 4 chars). Do not log the target.
+/// Absent/empty key is an honest no-op: None without any network call.
+pub async fn lookup_direct(prefix: &str, api_key: Option<&str>) -> Option<bool> {
+    if prefix.len() < 4 || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let key = api_key.map(str::trim).filter(|k| !k.is_empty())?;
+    let target = safebrowsing_url(prefix, key);
+    let resp = ferrite_proxy::direct_get(&target, MAX_HEAD_BYTES + MAX_BODY_BYTES).await?;
+    if resp.status != 200 {
+        return None;
+    }
+    Some(resp.body_str().contains(prefix))
+}
+
+/// Legacy proxy path. Tests and offline harnesses only.
 pub async fn lookup(prefix: &str, port: u16) -> Option<bool> {
     if prefix.len() < 4 || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
@@ -21,8 +40,6 @@ pub async fn lookup(prefix: &str, port: u16) -> Option<bool> {
     if resp.status != 200 {
         return None;
     }
-    // Body is a JSON array of full hashes; a hit contains our prefix.
-    // Avoid false positives from unrelated fields by scanning string values.
     Some(resp.body.contains(prefix))
 }
 
@@ -84,4 +101,36 @@ fn parse_status(head: &str) -> Option<u16> {
     let mut parts = line.split_whitespace();
     parts.next()?;
     parts.next()?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keyed_url_carries_prefix_and_key() {
+        let url = safebrowsing_url("abcd1234", "test-key-123");
+        assert!(url.starts_with("https://safebrowsing.googleapis.com/"));
+        assert!(url.contains("prefix=abcd1234"));
+        assert!(url.contains("key=test-key-123"));
+    }
+
+    #[tokio::test]
+    async fn absent_key_is_noop_without_network() {
+        // No socket is opened: any well-formed prefix returns None fast.
+        let start = std::time::Instant::now();
+        assert_eq!(lookup_direct("abcd1234", None).await, None);
+        assert_eq!(lookup_direct("abcd1234", Some("")).await, None);
+        assert_eq!(lookup_direct("abcd1234", Some("   ")).await, None);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "absent key must not do network I/O"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_prefix_returns_none_even_with_key() {
+        assert_eq!(lookup_direct("xyz", Some("k")).await, None);
+        assert_eq!(lookup_direct("", Some("k")).await, None);
+    }
 }

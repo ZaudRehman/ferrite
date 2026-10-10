@@ -1,14 +1,14 @@
 [package]
 name = "ferrite-vault"
-description = "Ferrite encrypted vault and telemetry pipeline — SQLCipher, keyring, dashmap, sessions, import/export (Part 7)."
+description = "Ferrite encrypted vault and telemetry pipeline: SQLCipher, keyring, dashmap, sessions, import/export (Part 7)."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
-tokio.workspace = true
 crossbeam-channel.workspace = true
 dashmap.workspace = true
 uuid = { version = "1.7", features = ["v4", "serde"] }
@@ -21,9 +21,8 @@ getrandom = "0.2"
 aes-gcm = "0.11"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 regex.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 url.workspace = true
+serde_json.workspace = true
 
 [features]
 sqlcipher = ["rusqlite/bundled-sqlcipher-vendored-openssl"]

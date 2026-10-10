@@ -3,29 +3,22 @@
 use thiserror::Error;
 use uuid::Uuid;
 
-/// All fallible outcomes from the tab/content layer.
 pub type TabResult<T> = Result<T, TabError>;
 
-/// Failures produced by `TabManager` and `TabState` operations.
 #[derive(Debug, Error)]
 pub enum TabError {
-    /// No tab exists for the given identifier.
     #[error("tab not found: {id}")]
     TabNotFound { id: Uuid },
 
-    /// Close refused: the tab is pinned (unpin first or force-close).
     #[error("tab is pinned, unpin or force close: {id}")]
     PinnedTab { id: Uuid },
 
-    /// Index is outside the current `Vec<TabState>` bounds.
     #[error("tab index out of bounds: {index} (len={len})")]
     IndexOutOfBounds { index: usize, len: usize },
 
-    /// Tab limit exceeded (spec §5.1 memory guard, now unlimited by default, limit only if configured).
     #[error("tab limit exceeded: {current} >= {limit}")]
     TabLimitExceeded { current: usize, limit: usize },
 
-    /// The URL is not valid per RFC 3986 (`url` crate).
     #[error("invalid url '{url}': {source}")]
     InvalidUrl {
         url: String,
@@ -33,29 +26,33 @@ pub enum TabError {
         source: url::ParseError,
     },
 
-    /// `wry` failed to create the underlying OS webview.
     #[error("webview creation failed: {source}")]
     WebViewCreationFailed {
         #[source]
         source: wry::Error,
     },
 
-    /// A webview operation (`set_bounds`, `set_visible`, `load_url`, `evaluate_script`) failed.
     #[error("webview operation failed: {source}")]
     WebViewOperationFailed {
         #[source]
         source: wry::Error,
     },
 
-    /// The IPC channel is closed or the receiver was dropped.
-    #[error("ipc channel closed")]
-    IpcChannelClosed,
-
-    /// No active tab is selected (`active_tab_index` is `None`).
     #[error("no active tab")]
     NoActiveTab,
 
-    /// Session file could not be written or read.
+    #[error("tab group not found: {id}")]
+    GroupNotFound { id: Uuid },
+
+    #[error("workspace not found: {id}")]
+    WorkspaceNotFound { id: Uuid },
+
+    #[error("invalid group name (empty or over 64 chars)")]
+    InvalidGroupName,
+
+    #[error("invalid group color index: {color}")]
+    InvalidGroupColor { color: u8 },
+
     #[error("session persistence: {message}")]
     SessionIo { message: String },
 }

@@ -1,5 +1,7 @@
-//! Sovereign Archive and native PDF engine.
+//! Offline page archive (sanitized snapshots, FTS5, LRU) and isolated PDF rendering.
 
+//! Nested guards stay nested: collapsing them into let-chains trades the
+//! step-by-step failure narrative for no behavior gain.
 #![allow(clippy::collapsible_if)]
 
 pub mod archive;

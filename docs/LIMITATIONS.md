@@ -1,83 +1,79 @@
-# Ferrite Limitations (Honest Disclosure) — Production Browser for Millions
+# Ferrite Limitations
 
-This document honestly discloses what is hardened, what is deferred, and
-what operators must provision. Updated 2026-09-11 after P0–P2.
+Honest disclosure of what Ferrite does not do. Each item states the
+behavior; where a remedy exists, it says so. The engineering detail
+behind these lives with the maintainers; nothing here is hidden via stub.
 
-## Hardened in P0–P2 (no longer limitations)
+## Network
 
-- **Proxy choke**: chunked re-framing, `host:port` pooling with TTL, exact
-  `ferrite` internal hosts, split timeouts, header hygiene, pipelined-body
-  handling. `CONNECT` remains a blind tunnel by design (no MITM).
-- **Privacy recall**: real-URL adblock matching, suffix threat intel,
-  in-memory hot path, bounded tracker LRU, strict proxy-client fetchers.
-- **Storage crypto**: SQLCipher fail-fast (no silent plaintext), strict
-  AES-GCM everywhere, exact-origin credential matching, tombstones + HLC
-  LWW, atomic settings/session writes.
-- **Privileged UI**: escaped `ferrite://` with real 404 + CSP, exact route
-  matching, bounded + rate-limited IPC, title-spoof fix.
-- **Sync trust**: identity-bound certs, fail-closed pinning with real
-  handshake-signature verification, signed relay sessions, signed releases
-  (fail-closed without a provisioned root), real failover probing.
-- **Durability**: transactional archive/FTS, FTS/LIKE escaping, bounded
-  retention everywhere, hardened sanitizer + shm + renderer protocol.
-- **Perf**: OnDemand repaint with dirty triggers, virtualized tab paint,
-  paged history with DB fallback, SQL-filtered deltas, Raft replaced by
-  TTL live-tab presence.
+- DNS is unencrypted OS DNS unless you opt into encrypted DNS in Settings.
+- No predictive pre-connect; connections open on demand.
+- If the local proxy dies mid-session, tabs are not re-probed. Restart
+  the browser.
 
-## Still deferred (honest)
+## Sync
 
-### Network
-- **DoH / encrypted DNS**: plain OS DNS via `TcpStream::connect`. Packet
-  capture shows plaintext DNS on port 53.
-- **Predictive pre-connect**: the pool is reactive only (LRU 64×2).
-- **Passive TLS metadata**: `CONNECT` tunnels carry no ClientHello
-  inspection; `NetworkEvent` has no TLS version/cipher fields.
+- Sync reaches devices on the local network, or anywhere through a
+  self-hosted relay (Settings → Sync). There is no Ferrite-operated relay.
+- Pairing needs an explicit code exchange plus your approval on each side.
+- History syncs only if you opt in. Revoking a device cuts it at the next
+  round.
+- Discovery broadcasts a stable device ID on the LAN while sync runs.
 
-### Process isolation
-- Proxy + PDF renderer run as threads/child processes without heartbeat
-  supervision or hot-restart. A dead proxy degrades to direct traffic with
-  only a log line (see `shell.rs` proxy-spawn fallback).
+## Updates
 
-### Vault / Crypto operations
-- SQLCipher builds require `perl` + a C toolchain (see `docs/SETUP.md`).
-  Without `--features sqlcipher`, keyed vaults **refuse to open**
-  (fail-closed, never plaintext).
-- Release-root key provisioning is an operator step: without
-  `provision_release_root` (app) and `FERRITE_RELEASE_SIGNING_SEED` (CI),
-  the updater refuses all updates (fail-closed).
+- Updates install only with a provisioned signing root; without one the
+  updater refuses everything rather than installing unverified builds.
 
-### Credentials
-- Wordlist is synthetic `wordXXXX` entries with correct 77.5-bit entropy
-  but not real EFF memorability. TOTP is SHA1/6-digit/30s only.
+## Search
 
-### Sync scale
-- **Shell integration**: `ferrite-sync` has no entry point into `ShellApp`
-  (no `Arc` held, no background tasks spawned, no pairing UI), so
-  cross-device sync is inert no matter how solid the crate is in isolation.
-  Wiring it is shell lifecycle + pairing UI work, not yet scheduled.
-- Per-device causality is approximated by HLC high-water marks (origin
-  columns deferred). Vector-clock counters are diagnostic.
-- mDNS/DNS-SD storms beyond ~50 LAN peers untested. Relay is a single
-  process (no sharding); presence is in-memory only.
-- TURN requires a live WS session per username; no shared-secret rotation.
+- Remote suggestions are DuckDuckGo-only and opt-in. With any other
+  default engine, the toggle does nothing.
 
-### Platform
-- Wayland: `WRY_WAYLAND` + `gtk` feature path exists but is CI-untested;
-  primary target is Windows + X11.
-- Single-instance lock: not implemented (two processes share DB files via
-  SQLite locking; settings/session last-writer-wins).
-- Downloads page/badge: files land safely in Downloads with events in
-  diagnostics; no dedicated downloads UI yet.
+## Media
 
-### Accessibility / UX
-- Dark-only theme, no light/high-contrast mode, no font scaling, no
-  screen-reader roles audit, no `prefers-reduced-motion` handling beyond
-  the 2Hz OnDemand heartbeat. Diagnostics default off (F3).
+- No Widevine CDM: Widevine-gated content does not play (notably the
+  Spotify web player). Most premium video also serves PlayReady, which
+  plays normally, as does all unencrypted media. Per-service status is
+  unverified, so the claim stops there. A blocked player names
+  the cause.
+- macOS and Linux DRM support is unconfirmed. No casting, no GPU toggle.
 
-### Privacy operations
-- Relay logs truncated device IDs + IPs; no log redaction pipeline or
-  GDPR erase API yet. mDNS broadcasts stable device IDs on the LAN.
+## Platform
 
-All above are **deferred honestly**, not hidden via `let _ =` stubs.
-Historical `CHECKSUM`/`I-*` tracking references in earlier revisions are
-superseded by `docs/PRODUCTION_PLAN.md` (P0–P2 DONE).
+- Windows 10 1809+ and Linux X11 are the working targets. macOS and
+  Wayland paths are largely unverified.
+- macOS and Linux show engine-default script dialogs; Windows shows
+  Ferrite's own origin-attributed overlay.
+- Single window only: no tab tear-off, no multi-window (profiles run as
+  separate processes). No page screenshots, no live tab thumbnails.
+
+## Printing
+
+- Print dialog only. No silent printing, no Ferrite print settings panel.
+
+## Appearance and accessibility
+
+- No high-contrast mode, no font scaling, no screen-reader audit yet.
+  Reduced-motion preferences are honored.
+
+## Imports
+
+- Payments, cookies, keychains, open tabs, Firefox compressed backups,
+  and Safari binary plists are never imported; each refusal names the
+  export to produce instead. Every import is an explicit click with
+  exact counts back.
+
+## Privacy boundaries (inherited, not chosen)
+
+- WebView2 sends renderer crash minidumps to Microsoft; Ferrite cannot
+  disable this (also stated on the About page). SmartScreen stays off;
+  malware and phishing protection is Ferrite's own proxy stack.
+- Push subscription endpoints are unverified and may resolve to
+  third-party infrastructure; payloads stay end-to-end encrypted either way.
+- Ferrite itself collects no usage data (see `TELEMETRY.md`).
+
+## Crash reporting
+
+- Ferrite's own crash log is local, version-tagged, capped, and
+  URL-scrubbed, copied only when you click.

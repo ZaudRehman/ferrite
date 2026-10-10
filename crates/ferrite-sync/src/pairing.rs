@@ -1,4 +1,4 @@
-//! Part 10 pairing: QR payload (4.1), verification flow (4.2), rate limiting (6.4), mesh propagation (4.3).
+//! QR pairing, verification flow, rate limits, and mesh propagation.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -6,11 +6,20 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use crate::trusted::{TrustedDevice, TrustedStore};
+
+/// QR pairing payload, versioned. v0 is the legacy shape (no version,
+/// no timestamp: accepted without expiry). v1 stamps both: receivers
+/// reject future versions outright (a v2 code must never misparse as
+/// v1) and expired v1 codes at the door. The version only ever gates
+/// *freshness*, never trust: approval still binds the key.
+pub const PAIRING_VERSION: u32 = 1;
+/// A shown code stays usable long enough to walk across a room and scan
+/// it, then dies. Stale screenshots and shoulder-surfed copies rot fast.
+pub const PAIRING_CODE_TTL_MS: i64 = 15 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairingPayload {
@@ -19,6 +28,12 @@ pub struct PairingPayload {
     pub device_id: String,
     pub public_key: Vec<u8>,
     pub device_name: String,
+    /// 0 when absent (legacy codes predate the field).
+    #[serde(default)]
+    pub version: u32,
+    /// Milliseconds since epoch at show time (v1 only).
+    #[serde(default)]
+    pub created_at_ms: Option<i64>,
 }
 
 impl PairingPayload {
@@ -32,14 +47,25 @@ impl PairingPayload {
         serde_json::from_slice(&bytes).ok()
     }
 
-    pub fn to_qr_png(&self) -> Option<Vec<u8>> {
-        let _code = QrCode::new(self.encode()).ok()?;
-        // Return base64 payload bytes for egui rendering; PNG encoding handled by UI layer
-        Some(self.encode().into_bytes())
+    /// Freshness gate for an approve/deny decision at `now_ms`. v0 has
+    /// no timestamp and stays accepted (legacy interop); v1 must carry
+    /// a timestamp within TTL (clock skew included both ways); anything
+    /// from the future beyond skew, or any version we don't know, is
+    /// refused; a newer client must upgrade this side, not seamlessly
+    /// pair with semantics it can't verify.
+    pub fn is_fresh(&self, now_ms: i64) -> bool {
+        match self.version {
+            0 => true,
+            PAIRING_VERSION => match self.created_at_ms {
+                Some(t) => t <= now_ms + 60_000 && now_ms - t <= PAIRING_CODE_TTL_MS,
+                None => false,
+            },
+            _ => false,
+        }
     }
 }
 
-/// Per-IP rate limiter for pairing requests (6.4): one pending per IP per window.
+/// One pending request per IP per window.
 pub struct PairingRateLimiter {
     window_ms: i64,
     last: Arc<Mutex<HashMap<IpAddr, i64>>>,
@@ -59,7 +85,9 @@ impl PairingRateLimiter {
             if let Some(prev) = m.get(&ip)
                 && now.wrapping_sub(*prev) < self.window_ms
             {
-                warn!(%ip, "pairing rate limited");
+                // No address in the log line: pairing attempts are sensitive
+                // (a LAN IP identifies a device), counters suffice here.
+                warn!("pairing rate limited");
                 return false;
             }
             m.insert(ip, now);
@@ -108,11 +136,13 @@ impl PairingService {
             device_id,
             public_key,
             device_name,
+            version: PAIRING_VERSION,
+            created_at_ms: Some(now_millis()),
         }
     }
 
-    /// Handle incoming pairing request from scanning device (4.2 steps 5-7)
-    /// Returns true if approved and stored; caller should show UI prompt before calling approve path.
+    /// Handle incoming pairing request from scanning device (4.2 steps 5-7).
+    /// Returns true if approved and stored. Caller shows a UI prompt first.
     pub fn handle_pairing_request(
         &self,
         payload: &PairingPayload,
@@ -187,11 +217,67 @@ mod tests {
             device_id: "dev-123".to_owned(),
             public_key: vec![1, 2, 3, 4],
             device_name: "Desktop".to_owned(),
+            version: PAIRING_VERSION,
+            created_at_ms: Some(1_700_000_000_000),
         };
         let enc = p.encode();
         let dec = PairingPayload::decode(&enc).unwrap();
         assert_eq!(dec.device_id, "dev-123");
         assert_eq!(dec.port, 8443);
+        assert_eq!(dec.version, PAIRING_VERSION);
+    }
+
+    #[test]
+    fn payload_version_and_expiry() {
+        let now = 1_700_000_000_000i64;
+        // Legacy v0 (no fields on the wire): accepted, no expiry.
+        let legacy = PairingPayload {
+            ip: "192.168.1.10".to_owned(),
+            port: 8443,
+            device_id: "dev-123".to_owned(),
+            public_key: vec![1, 2, 3, 4],
+            device_name: "Desktop".to_owned(),
+            version: 0,
+            created_at_ms: None,
+        };
+        let back = PairingPayload::decode(&legacy.encode()).expect("legacy decodes");
+        assert_eq!(back.version, 0);
+        assert!(back.is_fresh(now));
+        assert!(back.is_fresh(now + 365 * 24 * 60 * 60 * 1000));
+        // Fresh v1 round-trips with stamp.
+        let fresh = PairingPayload {
+            version: PAIRING_VERSION,
+            created_at_ms: Some(now),
+            ..legacy.clone()
+        };
+        let back = PairingPayload::decode(&fresh.encode()).expect("v1 decodes");
+        assert!(back.is_fresh(now));
+        assert!(back.is_fresh(now + PAIRING_CODE_TTL_MS));
+        // Expired, future (beyond skew), missing stamp, future version.
+        let old = PairingPayload {
+            version: PAIRING_VERSION,
+            created_at_ms: Some(now - PAIRING_CODE_TTL_MS - 1),
+            ..legacy.clone()
+        };
+        assert!(!old.is_fresh(now));
+        let future = PairingPayload {
+            version: PAIRING_VERSION,
+            created_at_ms: Some(now + 60_001),
+            ..legacy.clone()
+        };
+        assert!(!future.is_fresh(now));
+        let nostamp = PairingPayload {
+            version: PAIRING_VERSION,
+            created_at_ms: None,
+            ..legacy.clone()
+        };
+        assert!(!nostamp.is_fresh(now));
+        let v2 = PairingPayload {
+            version: PAIRING_VERSION + 1,
+            created_at_ms: Some(now),
+            ..legacy.clone()
+        };
+        assert!(!v2.is_fresh(now));
     }
 
     #[test]
@@ -205,6 +291,8 @@ mod tests {
             device_id: "host".to_owned(),
             public_key: vec![9],
             device_name: "Host".to_owned(),
+            version: 0,
+            created_at_ms: None,
         };
         assert!(svc.handle_pairing_request(&pl, ip, "dev-b".to_owned(), vec![1, 2], true));
         // Immediate second from same IP should be rate limited

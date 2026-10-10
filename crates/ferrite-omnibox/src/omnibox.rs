@@ -23,79 +23,58 @@ pub enum OmniboxAction {
 #[derive(Debug, Default)]
 pub struct OmniboxState {
     pub input: String,
-    pub last_edit: Option<std::time::Instant>,
     pub registry: SearchEngineRegistry,
-    pub focused: bool,
 }
 
 impl OmniboxState {
-    /// Maximum accepted input length (chars). Pastes beyond this are
-    /// truncated so a 10KB paste cannot build a 10KB search URL.
+    /// Max input chars. Longer pastes are truncated.
     pub const MAX_INPUT_LEN: usize = 2048;
 
     pub fn new(registry: SearchEngineRegistry) -> Self {
         Self {
             input: String::new(),
-            last_edit: None,
             registry,
-            focused: false,
         }
     }
 
     pub fn set_input(&mut self, raw: String) {
         self.input = truncate_chars(&raw, Self::MAX_INPUT_LEN);
-        self.note_edit();
-    }
-
-    pub fn request_focus(&mut self) {
-        self.focused = true;
-    }
-
-    pub fn consume_focus(&mut self) -> bool {
-        let was = self.focused;
-        self.focused = false;
-        was
-    }
-
-    pub const AUTOCOMPLETE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(50);
-
-    pub fn note_edit(&mut self) {
-        self.last_edit = Some(std::time::Instant::now());
-    }
-
-    pub fn effective_query(&self, now: std::time::Instant) -> Option<&str> {
-        if self.input.trim().is_empty() {
-            return None;
-        }
-        let settled = match self.last_edit {
-            Some(t) => now.duration_since(t) >= Self::AUTOCOMPLETE_DEBOUNCE,
-            None => true,
-        };
-        if settled {
-            Some(self.input.as_str())
-        } else {
-            None
-        }
     }
 
     pub fn clear(&mut self) {
         self.input.clear();
-        self.last_edit = None;
     }
 
     pub fn classify(&self, raw: &str) -> OmniboxResult<OmniboxAction> {
+        self.classify_for(raw, false)
+    }
+
+    /// Private windows use the private default when set. Routing never differs.
+    pub fn classify_for(&self, raw: &str, private: bool) -> OmniboxResult<OmniboxAction> {
         let trimmed = truncate_chars(raw.trim(), Self::MAX_INPUT_LEN);
         let trimmed = trimmed.as_str();
         if trimmed.is_empty() {
             return Err(OmniboxError::EmptyInput);
         }
 
-        // Internal scheme, case-insensitive, and ALWAYS internal — even with
-        // trailing spaces — so `ferrite://...` text never leaks to an
-        // external search engine.
+        // Always internal, even with trailing text, so it never leaks to search.
         if trimmed.len() >= 10 && trimmed[..10].eq_ignore_ascii_case("ferrite://") {
             return Ok(OmniboxAction::Internal {
                 uri: trimmed.to_owned(),
+            });
+        }
+
+        // `view-source:` maps to the internal viewer, target kept verbatim.
+        if trimmed.len() >= 12 && trimmed[..12].eq_ignore_ascii_case("view-source:") {
+            let target = trimmed[12..].trim();
+            if target.is_empty() {
+                return Err(OmniboxError::EmptyInput);
+            }
+            return Ok(OmniboxAction::Internal {
+                uri: format!(
+                    "ferrite://viewsource?u={}",
+                    crate::search::encode_query(target)
+                ),
             });
         }
 
@@ -103,10 +82,9 @@ impl OmniboxState {
             return Ok(OmniboxAction::Navigate { url });
         }
 
-        // Fallback: search
         let query = trimmed.to_owned();
-        let engine_id = self.registry.current_id().to_owned();
-        let search_url = self.registry.search_url(None, &query)?;
+        let engine_id = self.registry.effective_id(private).to_owned();
+        let search_url = self.registry.search_url_for(&engine_id, &query)?;
         Ok(OmniboxAction::Search {
             query,
             engine_id,
@@ -115,7 +93,11 @@ impl OmniboxState {
     }
 
     pub fn url_for_input(&self, raw: &str) -> OmniboxResult<String> {
-        match self.classify(raw)? {
+        self.url_for_input_for(raw, false)
+    }
+
+    pub fn url_for_input_for(&self, raw: &str, private: bool) -> OmniboxResult<String> {
+        match self.classify_for(raw, private)? {
             OmniboxAction::Navigate { url } => Ok(url),
             OmniboxAction::Search { search_url, .. } => Ok(search_url),
             OmniboxAction::Internal { uri } => Ok(uri),
@@ -123,11 +105,66 @@ impl OmniboxState {
     }
 }
 
+/// Split into (scheme, subdomain, domain, path). Host is punycode, so
+/// homograph glyphs cannot reach display. None for hostless input.
+/// The domain is the PSL registrable root (`example.co.uk`, not `co.uk`),
+/// so emphasis never bolds a public suffix.
+pub fn display_parts(raw: &str) -> Option<(String, String, String, String)> {
+    let url = url::Url::parse(raw).ok()?;
+    let host = url.host_str()?;
+    if host.is_empty() {
+        return None;
+    }
+    let domain = host.to_owned();
+    let (sub, dom) = split_registrable(&domain);
+    let mut path = url.path().to_owned();
+    if path == "/" {
+        path.clear();
+    }
+    if let Some(q) = url.query() {
+        path.push('?');
+        path.push_str(q);
+    }
+    Some((url.scheme().to_owned(), sub, dom, path))
+}
+
+/// Split a host into (subdomain-prefix, registrable domain) with the
+/// trailing-dot convention the renderer expects (`mail.` + `example.com`).
+/// PSL root when known (`mail.example.co.uk` → `mail.` + `example.co.uk`);
+/// IPs and unknown shapes fall back to last-two-labels, never to the bare
+/// host (which would leave nothing emphasized and hide the real domain).
+fn split_registrable(domain: &str) -> (String, String) {
+    if let Ok(name) = addr::parse_domain_name(domain)
+        && name.has_known_suffix()
+        && let Some(root) = name.root()
+        && !root.is_empty()
+    {
+        let sub = domain
+            .strip_suffix(root)
+            .unwrap_or("")
+            .trim_end_matches('.')
+            .to_owned();
+        let sub = if sub.is_empty() {
+            String::new()
+        } else {
+            format!("{sub}.")
+        };
+        return (sub, root.to_owned());
+    }
+    let parts: Vec<&str> = domain.split('.').collect();
+    if parts.len() >= 2 {
+        let d = parts[parts.len() - 2..].join(".");
+        (domain[..domain.len() - d.len()].to_owned(), d)
+    } else {
+        (String::new(), domain.to_owned())
+    }
+}
+
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_owned();
     }
-    // Byte cut may split a char boundary; walk back to one.
+    // Walk back to a char boundary after the byte cut.
     let mut end = max;
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
@@ -135,8 +172,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
     s[..end].to_owned()
 }
 
-/// Schemes that must never become navigations (script execution / local
-/// file access via a crafted omnibox paste). They fall through to Search.
+/// Blocked schemes fall through to search, never navigate.
 fn is_blocked_scheme(input: &str) -> bool {
     let lower = input.to_ascii_lowercase();
     ["javascript:", "data:", "file:", "vbscript:", "blob:"]
@@ -152,6 +188,14 @@ fn is_windows_drive_path(input: &str) -> bool {
 
 fn try_as_url(input: &str) -> Option<String> {
     if input.contains(' ') {
+        return None;
+    }
+    // Control characters never reach `Url::parse`: WHATWG strips ASCII
+    // tab/newline before parsing, so `java\tscript:`-shaped input would
+    // dodge the scheme blocklist below yet normalize into a blocked scheme
+    // (or a userinfo swap like `trusted.com\t@evil.com`). Searches may
+    // contain anything; navigations may not contain controls.
+    if input.chars().any(|c| c.is_control()) {
         return None;
     }
     if is_blocked_scheme(input) || is_windows_drive_path(input) {
@@ -179,10 +223,8 @@ fn try_as_url(input: &str) -> Option<String> {
     let parsed = url::Url::parse(&with_scheme).ok()?;
     let host = parsed.host_str()?;
 
-    // A bare `:` no longer forces host-like: `foo:123` and `a:b` are
-    // searches (the old rule turned credential-like `user:pass@host`
-    // input into navigations). Port forms still work via the
-    // localhost/IP branches below.
+    // Bare `:` is a search (`user:pass@host`, `a:b`). Ports still work
+    // via the localhost and IP branches above.
     let is_host_like =
         host.contains('.') || host == "localhost" || host.parse::<std::net::IpAddr>().is_ok();
 
@@ -211,6 +253,84 @@ mod tests {
             state().classify("   "),
             Err(OmniboxError::EmptyInput)
         ));
+        assert!(matches!(
+            state().classify("view-source:"),
+            Err(OmniboxError::EmptyInput)
+        ));
+        assert!(matches!(
+            state().classify("view-source:   "),
+            Err(OmniboxError::EmptyInput)
+        ));
+    }
+
+    #[test]
+    fn classify_survives_byte_soup() {
+        // Deterministic adversarial corpus. Classify is total over pastes:
+        // hostile bytes must resolve to Navigate/Search/Internal or a typed
+        // error, never panic. Dangerous schemes must never Navigate.
+        let s = state();
+        let mut state_rng: u64 = 0x2545F4914F6CDD1D;
+        let mut next = move || {
+            state_rng ^= state_rng << 13;
+            state_rng ^= state_rng >> 7;
+            state_rng ^= state_rng << 17;
+            state_rng
+        };
+        const SHARDS: &[&str] = &[
+            "javascript:",
+            "data:",
+            "vbscript:",
+            "file://",
+            "blob:",
+            "ferrite://",
+            "https://",
+            "user:pass@",
+            ":1234",
+            "C:\\",
+            "..",
+            "%00",
+            "\u{7f}",
+            "view-source:",
+            "?",
+            "#",
+            "@",
+            " ",
+        ];
+        for _ in 0..3000 {
+            let len = (next() % 40) as usize;
+            let mut input = String::new();
+            for _ in 0..len {
+                input.push_str(SHARDS[(next() % SHARDS.len() as u64) as usize]);
+            }
+            if let Ok(OmniboxAction::Navigate { url }) = s.classify(&input) {
+                let lower = url.to_lowercase();
+                assert!(
+                    !lower.starts_with("javascript:")
+                        && !lower.starts_with("data:")
+                        && !lower.starts_with("vbscript:")
+                        && !lower.starts_with("file:"),
+                    "blocked scheme navigated for {input:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn view_source_prefix_maps_to_internal_viewer() {
+        let s = state();
+        assert_eq!(
+            s.classify("view-source:https://example.com/a?b=c").unwrap(),
+            OmniboxAction::Internal {
+                uri: "ferrite://viewsource?u=https%3A%2F%2Fexample.com%2Fa%3Fb%3Dc".to_owned()
+            }
+        );
+        // Case-insensitive prefix, verbatim target.
+        assert_eq!(
+            s.classify("VIEW-SOURCE:https://example.com").unwrap(),
+            OmniboxAction::Internal {
+                uri: "ferrite://viewsource?u=https%3A%2F%2Fexample.com".to_owned()
+            }
+        );
     }
 
     #[test]
@@ -237,7 +357,7 @@ mod tests {
             s.classify("FERRITE://newtab").unwrap(),
             OmniboxAction::Internal { .. }
         ));
-        // Trailing spaces must not leak internal text to the search engine.
+        // Trailing text stays internal, never leaks to search.
         assert!(matches!(
             s.classify("ferrite://newtab evil").unwrap(),
             OmniboxAction::Internal { .. }
@@ -274,11 +394,38 @@ mod tests {
     }
 
     #[test]
+    fn control_characters_never_navigate() {
+        // WHATWG strips tab/newline before parsing, so blocklist checks on
+        // the raw text would miss `java\tscript:`-shaped input that
+        // normalizes into a blocked scheme (or a userinfo swap). Controls
+        // force Search, no matter the shape around them.
+        let s = state();
+        for hostile in [
+            "java\tscript:alert(1)",
+            "java\nscript:alert(1)",
+            "java\rscript:alert(1)",
+            "javascript\n://evil.test",
+            "https://trusted.test\t@evil.test/",
+            "https://example.com/\u{7f}",
+            "data\t:text/html,hi",
+        ] {
+            assert!(
+                matches!(s.classify(hostile).unwrap(), OmniboxAction::Search { .. }),
+                "must search, not navigate: {hostile:?}"
+            );
+        }
+        // Ordinary URLs are untouched by the gate.
+        assert!(matches!(
+            s.classify("https://example.com/a?b=1").unwrap(),
+            OmniboxAction::Navigate { .. }
+        ));
+    }
+
+    #[test]
     fn input_truncated_to_2k() {
         let mut s = state();
         s.set_input("x".repeat(10_000));
         assert_eq!(s.input.len(), OmniboxState::MAX_INPUT_LEN);
-        // Classify also truncates defensively.
         let action = s.classify(&"y".repeat(10_000)).unwrap();
         match action {
             OmniboxAction::Search { search_url, .. } => {
@@ -388,49 +535,39 @@ mod tests {
     }
 
     #[test]
-    fn debounce_holds_then_settles() {
-        let mut s = state();
-        s.set_input("rust".to_owned());
-        assert_eq!(s.effective_query(std::time::Instant::now()), None);
-        std::thread::sleep(
-            OmniboxState::AUTOCOMPLETE_DEBOUNCE + std::time::Duration::from_millis(10),
+    fn display_parts_splits_domain() {
+        let (sch, sub, dom, path) = display_parts("https://mail.example.com/a/b?q=1").unwrap();
+        assert_eq!(sch, "https");
+        assert_eq!(sub, "mail.");
+        assert_eq!(dom, "example.com");
+        assert_eq!(path, "/a/b?q=1");
+    }
+
+    #[test]
+    fn display_parts_bolds_registrable_not_suffix() {
+        // Multi-label public suffixes must not steal the emphasis:
+        // `co.uk` is infrastructure, `example.co.uk` is the domain.
+        let (_, sub, dom, _) = display_parts("https://mail.example.co.uk/").unwrap();
+        assert_eq!(dom, "example.co.uk");
+        assert_eq!(sub, "mail.");
+        let (_, sub, dom, _) = display_parts("https://example.co.uk/").unwrap();
+        assert_eq!(dom, "example.co.uk");
+        assert_eq!(sub, "");
+    }
+
+    #[test]
+    fn display_parts_homograph_goes_punycode() {
+        let (_, _, dom, _) = display_parts("https://ex\u{430}mple.com/").unwrap();
+        assert!(
+            dom.starts_with("xn--"),
+            "mixed script must not render: {dom}"
         );
-        assert_eq!(s.effective_query(std::time::Instant::now()), Some("rust"));
-    }
-
-    #[test]
-    fn debounce_resets_on_new_keystroke_and_clear() {
-        let mut s = state();
-        s.set_input("ru".to_owned());
-        std::thread::sleep(OmniboxState::AUTOCOMPLETE_DEBOUNCE);
-        s.note_edit();
-        assert_eq!(s.effective_query(std::time::Instant::now()), None);
-        s.clear();
-        assert_eq!(s.effective_query(std::time::Instant::now()), None);
-    }
-
-    #[test]
-    fn whitespace_only_never_queries() {
-        let mut s = state();
-        s.set_input("   ".to_owned());
-        std::thread::sleep(OmniboxState::AUTOCOMPLETE_DEBOUNCE);
-        assert_eq!(s.effective_query(std::time::Instant::now()), None);
-    }
-
-    #[test]
-    fn programmatic_fill_without_note_settles_immediately() {
-        // Direct field write (e.g. restoring state) bypasses the keystroke
-        // path, so no debounce applies.
-        let mut s = state();
-        s.input = "abc".to_owned();
-        assert_eq!(s.effective_query(std::time::Instant::now()), Some("abc"));
-    }
-    #[test]
-    fn focus_request_consume() {
-        let mut s = state();
-        assert!(!s.consume_focus());
-        s.request_focus();
-        assert!(s.consume_focus());
-        assert!(!s.consume_focus());
+        // Parser output is ASCII only.
+        let (_, _, dom, _) = display_parts("https://m\u{fc}nchen.de/").unwrap();
+        assert!(dom.starts_with("xn--"), "{dom}");
+        assert!(dom.is_ascii(), "{dom}");
+        let (_, _, dom, _) = display_parts("https://example.com/").unwrap();
+        assert_eq!(dom, "example.com");
+        assert!(display_parts("not a url").is_none());
     }
 }
