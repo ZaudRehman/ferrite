@@ -1604,7 +1604,7 @@ impl WryFactory {
         if std::env::var("WRY_WAYLAND").is_ok() {
             #[cfg(feature = "gtk")]
             {
-                use gtk::prelude::*;
+                use wry::WebViewBuilderExtUnix;
                 let _ = gtk::init();
                 let fixed = gtk::Fixed::new();
                 let webview = builder
