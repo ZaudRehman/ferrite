@@ -6,7 +6,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install license tools
-        run: cargo install cargo-deny cargo-about --features cli --locked
+        run: cargo install cargo-deny --locked
+      - name: Install attribution tool
+        run: cargo install cargo-about --features cli --locked
       - name: Deny unlisted licenses
         run: cargo deny check licenses
       - name: Attribution snapshot is fresh

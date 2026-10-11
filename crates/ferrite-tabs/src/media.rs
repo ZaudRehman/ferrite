@@ -179,9 +179,9 @@ mod tests {
 
     #[test]
     fn windows_capabilities_name_the_gap() {
-        let caps = DrmCapabilities::current();
         #[cfg(target_os = "windows")]
         {
+            let caps = DrmCapabilities::current();
             assert!(caps.playready, "PlayReady is native to WebView2");
             assert!(!caps.widevine, "Widevine has no WebView2 support");
         }

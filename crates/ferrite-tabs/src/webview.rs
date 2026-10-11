@@ -939,10 +939,14 @@ pub struct WryFactory {
     /// Shared engine profile behind the data dir: one cache/cookie jar for
     /// all normal tabs (lazily built so `new()` stays infallible). Kept for
     /// process lifetime, dropping it mid-session loses custom-protocol
-    /// handling on macOS (wry's documented warning). Mutex-guarded because
-    /// the builder needs `&mut` at creation; creation is synchronous, so no
-    /// await ever runs under this lock.
-    shared_context: std::sync::Arc<std::sync::Mutex<Option<wry::WebContext>>>,
+    /// handling on macOS (wry's documented warning). RefCell-guarded
+    /// because the builder needs `&mut` at creation; creation is
+    /// synchronous, so no await ever runs under this borrow.
+    /// Single-threaded by architecture (the factory lives in an `Rc`,
+    /// never crosses threads): `Rc`, not `Arc`, because
+    /// `wry::WebContext` is `!Send` on some platforms and an
+    /// `Arc<Mutex<...>>` around `!Send` data shares nothing.
+    shared_context: std::rc::Rc<std::cell::RefCell<Option<wry::WebContext>>>,
     /// Download sink plus pending map, shared per webview creation.
     downloads: Option<crate::downloads::DownloadManager>,
     /// Download destination override, shared with the shell: Guest mode
@@ -1021,7 +1025,7 @@ impl WryFactory {
             private_proxy: None,
             archive: None,
             data_dir: None,
-            shared_context: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            shared_context: std::rc::Rc::new(std::cell::RefCell::new(None)),
             downloads: None,
             download_dir_override: std::sync::Arc::new(std::sync::Mutex::new(None)),
             private_download_dir: None,
@@ -1243,7 +1247,7 @@ impl WryFactory {
         // of constraint as the proxy port: set at creation, no live move
         // between persistent and incognito stores, close + reopen instead).
         // The guard lives until build_as_child consumes the builder below;
-        // creation is synchronous, so nothing awaits under this lock.
+        // creation is synchronous, so nothing awaits under this borrow.
         // No cache-size API exists in pinned wry: the engine sizes its own
         // disk cache from free disk space. A max-size setting would be a
         // fake control, so there isn't one (honest gap, not a stub).
@@ -1251,7 +1255,7 @@ impl WryFactory {
         // partitioning (cache included) ships default-on in the engines we
         // wrap, setting it via Windows browser-args would clobber wry's
         // own `--proxy-server` default, so hands off.
-        let mut shared = self.shared_context.lock().ok();
+        let mut shared = self.shared_context.try_borrow_mut().ok();
         let ctx: Option<&mut wry::WebContext> = match (self.data_dir.clone(), shared.as_mut()) {
             (Some(dir), Some(guard)) => {
                 let slot = guard.get_or_insert_with(|| wry::WebContext::new(Some(dir)));

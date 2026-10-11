@@ -634,7 +634,7 @@ mod tests {
             let data = std::fs::read(&path).unwrap();
             assert!(!data.starts_with(b"SQLite format 3\0"));
             // Wrong key fails closed, never decodes garbage.
-            assert!(Storage::open(&path, &vec![0xBB; 32]).is_err());
+            assert!(Storage::open(&path, &[0xBB; 32]).is_err());
             // Same key reopens.
             assert!(Storage::open(&path, &key).is_ok());
         }
