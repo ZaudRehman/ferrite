@@ -6,3 +6,4 @@
 /relay/ferrite-blobs/
 /ferrite-blobs/
 /graphify-out/
+crates/*/sbom.json

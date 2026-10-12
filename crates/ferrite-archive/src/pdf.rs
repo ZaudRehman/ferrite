@@ -1478,6 +1478,7 @@ impl IsolatedPdfRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     /// Minimal one-page PDF with a text field and rendered text. Valid
     /// enough for real pdfium (page count, search, fill, save all work)
@@ -1509,7 +1510,10 @@ mod tests {
         ENGINE.get_or_init(|| PdfEngine::new().expect("pdfium lib"))
     }
 
+    // Serial: the shared engine is not safe under concurrent test use
+    // (flaky native heap abort). Production never shares in-process.
     #[test]
+    #[serial]
     fn load_simple_pdf() {
         let doc = test_engine().load(minimal_pdf(), None).unwrap();
         assert_eq!(doc.info().page_count, 1);
@@ -1522,6 +1526,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn password_required() {
         let engine = test_engine();
         // A literal /Encrypt marker with no real encryption: the fallback
@@ -1545,6 +1550,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn search() {
         let doc = test_engine().load(minimal_pdf(), None).unwrap();
         assert_eq!(doc.search("hello").len(), 1);
@@ -1557,6 +1563,7 @@ mod tests {
     /// run feature tests (same as the render assertions above).
     #[cfg(feature = "pdfium-render")]
     #[test]
+    #[serial]
     fn filled_text_survives_save_reload() {
         let mut doc = test_engine().load(minimal_pdf(), None).unwrap();
         assert!(!doc.is_dirty());

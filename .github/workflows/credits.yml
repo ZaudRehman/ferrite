@@ -2,7 +2,7 @@ name: credits
 on: [push, pull_request]
 jobs:
   licenses:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install license tools

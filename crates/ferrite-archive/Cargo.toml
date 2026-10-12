@@ -23,3 +23,6 @@ pdfium-render = { version = "0.9", optional = true }
 [features]
 sqlcipher = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
 default = []
+
+[dev-dependencies]
+serial_test = "4.0.1"
