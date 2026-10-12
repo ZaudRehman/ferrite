@@ -344,6 +344,10 @@ fn chunked_response_is_reframed() {
     // Upstream speaks raw chunked framing; the proxy must re-encode valid
     // chunked framing so the client does not hang.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    // New tokio refuses blocking sockets (tokio#7172): flip before from_std.
+    listener
+        .set_nonblocking(true)
+        .expect("upstream nonblocking");
     let up_port = listener.local_addr().unwrap().port();
     let join = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -414,6 +418,10 @@ fn chunked_response_is_reframed() {
 #[test]
 fn chunked_upload_is_forwarded() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    // New tokio refuses blocking sockets (tokio#7172): flip before from_std.
+    listener
+        .set_nonblocking(true)
+        .expect("upstream nonblocking");
     let up_port = listener.local_addr().unwrap().port();
     let join = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -622,6 +630,12 @@ fn document_mid_body_failure_yields_error_status() {
     // proxy must send a status (Document -> 302 to the error page), never a
     // bare close.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    // New tokio refuses blocking sockets (tokio#7172): flip before from_std.
+    // (Without this the helper thread dies unnoticed and this test passes
+    // vacuously: a dead upstream looks exactly like a dropped one.)
+    listener
+        .set_nonblocking(true)
+        .expect("upstream nonblocking");
     let up_port = listener.local_addr().unwrap().port();
     let join = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
