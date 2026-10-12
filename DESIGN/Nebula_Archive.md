@@ -95,34 +95,20 @@ spacing:
 ---
 
 ## Brand & Style
-The design system embodies the "Cosmic Archeology" aesthetic, a synthesis of cold, industrial deep-space technology and the warmth of historical preservation. It targets the "Scholar in the Stars," users who require a high-performance environment for long-form intellectual work and the archival of "eternal" records.
-
-The visual style is a hybrid of **Minimalism** and **High-Contrast Digital Editorial**. It utilizes heavy whitespace (the vacuum), precision typography (the archive), and atmospheric glows (the nebula) to create a focused, immersive experience. The emotional response is one of solemnity, vastness, and intellectual permanence.
-
-## Soul of the Design
-The soul of Nebula Archive is defined by "Cosmic Archeology." It is a design language that reimagines the NoteFlow workspace as a high-fidelity digital vault, a terminal floating in the starless deep, dedicated to the eternal preservation of knowledge.
-
-At its core, this design is anchored by:
-
-- The Starless Deep: The foundation is a near-black, obsidian substrate (#16130c). Unlike standard dark modes that use charcoal or navy, Nebula Archive uses a warm, deep void that feels infinitely vast and stable, providing a heavy, focused background where your thoughts can truly take center stage.
-- Pulsar Gold Accents: The primary energy of the interface comes from Pulsar Gold (#f0c75e). This isn't a bright, neon yellow; it is a metallic, "worn" gold that evokes the feel of antique brass scientific instruments or the gold-plated shielding of deep-space probes. It signals that the actions you take are precise, technical, and permanent.
-- Archival Geometry: The design rejects the "friendly" roundness of modern SaaS in favor of Sharp, Industrial Lines. Zero-radius corners and 1px borders communicate a sense of rugged, uncompromising rigor. It is an architecture built for durability, not just for today, but for decades of archival integrity.
-- Folio-Grade Typography: By pairing authoritative, weighted serif headings with high-performance monospace labels, the system treats your notes as Sacred Data. The typography bridges the gap between a classical leather-bound folio and a high-tech terminal readout, optimizing for both long-form intellectual exploration and technical analysis.
-
-In essence, the soul of Nebula Archive is Rugged Permanence. It is built for the "Eternal Scholar", the researcher, developer, or theorist who views their work not as temporary drafts, but as a legacy that deserves to be stored in a workspace as vast and enduring as the cosmos itself.
+Cold, industrial deep-space surfaces with a historical-preservation register. Heavy whitespace, precision typography, atmospheric glows. Built for long-form reading and archival reference.
 
 ## Colors
-The palette is rooted in the "Starless Deep," a near-black base that minimizes eye strain and maximizes focus. 
+The palette is a near-black base with Pulsar Gold and Nebula Violet accents.
 
-- **Primary (Pulsar Gold):** Used for critical interactions and brand moments. It mimics the look of weathered brass instruments.
+- **Primary (Pulsar Gold #f0c75e):** Used for critical interactions and brand moments.
 - **Secondary (Nebula Violet):** Used for highlights, data visualization, and tertiary navigational cues.
-- **Surface (Obsidian Shard):** Used for containers, sidebars, and nested components to create subtle structural hierarchy without breaking the immersion of the dark theme.
+- **Surface (Obsidian Shard #16130c):** Used for containers, sidebars, and nested components.
 - **Accent Glows:** Instead of standard shadows, components use 1px inner strokes or soft outer glows using low-opacity versions of Pulsar Gold and Nebula Violet to simulate light reflecting off surfaces in a void.
 
 ## Typography
 The typography balances the traditional authority of a serif with the utilitarian precision of a sans-serif.
 
-- **Headlines:** Use DM Serif Display to evoke the feeling of a classic library or a printed tome. Large display sizes should use tighter letter spacing to maintain a cohesive visual block.
+- **Headlines:** DM Serif Display for a classic library register. Large display sizes use tighter letter spacing.
 - **Body:** Use Inter for all reading and input tasks. The line height is intentionally generous (1.6) to ensure legibility against the deep dark background.
 - **Labels:** Small labels use Inter in uppercase with increased letter spacing to mimic technical data readouts found on spacecraft instrumentation.
 
@@ -131,7 +117,7 @@ The layout follows a **Fixed Grid** philosophy on desktop to create a sense of o
 
 - **The Column System:** A 12-column grid with 24px gutters. Elements should be aligned strictly to the grid to maintain the industrial, serious tone.
 - **Rhythm:** All spacing (padding, margins) is derived from a 4px base unit. 
-- **The "Vacuum" Principle:** Significant vertical breathing room (64px+) should be used between major sections to emphasize the vastness of the "space" aesthetic.
+- **The "Vacuum" Principle:** 64px+ vertical breathing room between major sections.
 
 ## Elevation & Depth
 In this design system, depth is communicated through **Tonal Layers** and **Luminescent Borders** rather than traditional shadows.

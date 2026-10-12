@@ -116,50 +116,34 @@ spacing:
 ---
 
 ## Brand & Style
-Tenebra is built on one rule: **there is only one light in the room**. Inspired by Caravaggio's tenebrism and the brass picture-light bar mounted above museum paintings, every viewport has a single fixed light origin, off-canvas at 10 o'clock (-12%, -10%). Nothing is lit globally. Everything is struck, grazed, or left in darkness. Where Art Deco Lumina was symmetrical architecture, Tenebra is asymmetric theater: roughly 70% of any screen should read as near-black, with light rationed like it's expensive. The emotional register is a private viewing room after hours, one fixture, one object, total silence.
+One fixed light origin, off-canvas at 10 o'clock (-12%, -10%). Nothing is lit globally. Roughly 70% of any screen stays near-black; light is reserved for the single most important element per view.
 
 Key visual principles:
 - **Tenebrism over decoration:** Darkness is the default material. Light is the ornament.
 - **The Terminator:** Every lit element has a razor-sharp boundary where illumination ends, like the moon's day-night line. No feathered transitions on component edges.
 - **Catalog Precision:** All metadata, indices, and labels are set in spaced monospace, like accession numbers stenciled beside a painting.
 
-## Soul of the Design
-**Tenebra's soul is restraint as reverence**, the belief that attention is sacred, and light should never be given away cheaply.
-
-The Core Idea:
-Most design systems ask: *"How do we make everything visible?"* Tenebra asks the opposite: *"What deserves to be seen?"* Darkness isn't a backdrop here, it's the subject, and light is the only protagonist. One fixture, one beam, one moment. The interface doesn't perform for the user; the user is granted an audience with it.
-
-What It Believes:
-- **Scarcity creates meaning.** When 70% of the screen lives in shadow, a single lit element carries the weight of a candle in a cathedral. Light is spent the way a curator spends wall space, reluctantly, and only on what matters.
-- **Darkness is atmosphere, not absence.** The warm umber blacks are aged varnish, museum walls, the quiet between movements. Empty space isn't wasted; it's where the eye rests.
-- **Physics is more honest than decoration.** Shadows don't blur because real umbra doesn't blur. Objects farther from the light are dimmer because that's how light works. Every decorative shortcut is refused, because it would break the one truth the system protects: the light is real, and it's over there.
-
-Its Emotional Signature:
-Tenebra feels like someone unlocked a door for you after closing time. One painting, one light, and the sense that you're the only person in the world currently looking at it. It's not minimalism, stripping away for clarity. It's **curation**, stripping away for intimacy.
-
-In one line: *an interface that doesn't want to be looked at, it wants to be witnessed.*
-
 ## Colors
-The palette replaces Deco's neutral charcoal-and-brass with **warm umber blacks**, every dark token leans brown, like aged varnish on an old canvas.
+The palette uses **warm umber blacks**, every dark token leans brown.
 
-- **Void Umber (#0D0A06):** The canvas. Not neutral, warm, organic, museum-wall dark.
-- **Flame Core (#FFC670):** The primary. The hottest point of a candle flame. Reserved for the single most important action per view, rationing it is what makes it feel expensive.
-- **Verdigris (#A7C0AE):** The secondary. The patina on old bronze fixtures. Used for success states, secondary data, and quiet interactive affordances.
-- **Venetian Red (#D98E73):** The tertiary. Oxide pigment straight from a Renaissance palette. Sparingly used for emphasis and editorial accents.
+- **Void Umber (#0D0A06):** The canvas. Warm, organic, near-black.
+- **Flame Core (#FFC670):** The primary. Reserved for the single most important action per view.
+- **Verdigris (#A7C0AE):** The secondary. Used for success states, secondary data, and quiet interactive affordances.
+- **Venetian Red (#D98E73):** The tertiary. Used sparingly for emphasis and editorial accents.
 - **Lumen Tiers (lumen-1 → lumen-5):** A five-step darkness scale replacing generic surface elevation. Surfaces are assigned a tier by their *distance from the light origin*, not by stacking order.
 
 ## Typography
-**Cormorant Garamond** is the voice, an extreme-contrast serif with hairline strokes that behave like light itself: thick strokes catch the beam, thin strokes vanish into shadow. Use it at large sizes only; its hairlines dissolve below 24px on dark backgrounds. **Archivo** handles body copy with a neutral grotesque that stays out of the way. **IBM Plex Mono** is the signature move: all labels, buttons, tags, and metadata use `label-catalog` at 0.22em tracking, evoking stenciled museum catalog plates. Editorial numerals are old-style; data numerals are always tabular mono.
+**Cormorant Garamond** is the display voice, an extreme-contrast serif. Use it at large sizes only; its hairlines dissolve below 24px on dark backgrounds. **Archivo** handles body copy. **IBM Plex Mono** sets all labels, buttons, tags, and metadata at `label-catalog` 0.22em tracking. Editorial numerals are old-style; data numerals are always tabular mono.
 
 ## Layout & Spacing
-The grid abandons Deco's symmetry for **the hanging wall**. Content hangs in the upper-left two-thirds of the viewport, nearest the light; the bottom-right third is intentionally sparse, that's the deep field, and emptiness there is a feature, not a bug.
+The grid abandons symmetry. Content hangs in the upper-left two-thirds of the viewport, nearest the light; the bottom-right third stays intentionally sparse.
 
 - **Falloff rhythm:** Vertical spacing between sections grows by `falloff-step` (16px) as you move down the page, 32px near the top, 48px, then 64px, physically expressing distance from the fixture.
 - **Beam offset:** All hard shadows offset 14px down-right, aligned to the 62° ray. Never deviate; the light never moves.
 - **Mobile:** The light origin stays proportionally fixed. Collapse to a single column, but preserve the growing falloff rhythm, it's the brand's signature cadence.
 
 ## Elevation & Depth
-Elevation is measured in **lumens, not layers**. This is the system's most radical departure: instead of surfaces brightening as they rise, surfaces are assigned a lumen tier by proximity to the light origin, and modals don't float *up*, they step *into the light*.
+Elevation is measured in **lumens, not layers**. Surfaces are assigned a lumen tier by proximity to the light origin, and modals step *into the light* rather than floating *up*.
 
 - **Hard umbra only:** Shadows are zero-blur, 100% hard-edged, colored `terminator`, offset exactly `beam-offset`. Soft shadows are forbidden, they imply ambient light, which doesn't exist here.
 - **The Plinth:** Cards rest on a solid 4px `lumen-5` slab offset down-right, like an object on a gallery plinth. The gap between card and plinth is the terminator.
@@ -167,17 +151,17 @@ Elevation is measured in **lumens, not layers**. This is the system's most radic
 - **Glow rule:** Only the focused element may glow, and only from its top-left corner, a directional bloom, never a uniform halo.
 
 ## Shapes
-The shape language is **The Orb and The Blade**, perfect circles against absolute straight lines, nothing in between. This directly opposes Deco's beveled rectangles.
+The shape language is **The Orb and The Blade**: perfect circles against absolute straight lines, nothing in between.
 
 - **Orbs:** Light sources, seals, avatars, and focal markers are perfect circles. A circle always represents something that *emits* or *reflects* light.
 - **Blades:** Panels and containers are 0px-radius rectangles, but with exactly one clipped corner: bottom-right, 12px, 45°. The corner where the shadow escapes. Never clip any other corner.
 - **Slatted light:** Section transitions and image reveals use 3–5 horizontal bands of `on-surface` at 4–8% opacity with 2px gaps, light leaking through a louvre blind. This is the system's most recognizable decorative motif.
 
 ## Components
-- **Buttons:** Primary is the "lit switch", solid `primary` fill with a vertical gradient (Flame Core → `primary-container`) so it reads hottest at top-left, plus the hard umbra. Secondary is unlit: transparent with a 1px `outline-variant` border. On hover, primary buttons don't brighten uniformly, the bloom expands from the top-left corner outward, like the fixture warming up.
-- **Inputs, The Aperture:** Resting state is a single 1px `outline-variant` blade along the bottom edge only. On focus, the left end of the blade ignites in Flame Core and travels rightward over 250ms, like an iris opening. Labels always use `label-catalog`, positioned above, prefixed by an index number (01, 02…).
+- **Buttons:** Primary is solid `primary` fill with a vertical gradient (Flame Core → `primary-container`), hottest at top-left, plus the hard umbra. Secondary is unlit: transparent with a 1px `outline-variant` border. On hover, the bloom expands from the top-left corner outward.
+- **Inputs, The Aperture:** Resting state is a single 1px `outline-variant` blade along the bottom edge only. On focus, the left end of the blade ignites in Flame Core and travels rightward over 250ms. Labels always use `label-catalog`, positioned above, prefixed by an index number (01, 02…).
 - **Cards, The Lit Object:** A radial gradient emanates from the global light origin (not the card's own corner, cards near screen-right are dimmer than cards near screen-left, by design). Each card carries a `lumen-1` top edge that fades to nothing by its midpoint. Title set in Cormorant; accession number in catalog mono at top-right.
-- **Chips, Wax Seals:** Perfect circles or pill-free circles with a 1px embossed inner ring (`outline` at 40%). Selected state fills with Venetian Red, not the primary, a curatorial stamp, not a light.
+- **Chips, Wax Seals:** Perfect circles or pill-free circles with a 1px embossed inner ring (`outline` at 40%). Selected state fills with Venetian Red, not the primary.
 - **Lists:** No rule lines. Rows are separated by **shadow gaps**, 1px `terminator` lines that are only visible in their leftmost 25%, dissolving into darkness rightward. On hover, a single slatted-light band sweeps down the row.
 - **Iconography, Eclipse strokes:** 1.5px strokes drawn only along the top-left 180° arc of each glyph; the shadow-side arc is open. Icons look half-eclipsed. No fills, no rounded caps, and any circular icon element must break at the 5 o'clock position.
 - **Ambient detail, Dust motes:** Optional 1px particles at 2–6% opacity, drifting slowly down-right (with the light, never against it), visible only inside lit regions. Cap at ~20 per viewport; they should be felt, not seen.

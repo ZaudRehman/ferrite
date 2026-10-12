@@ -73,31 +73,17 @@ spacing:
 ---
 
 ## Brand & Style
-The brand is an exercise in extreme clarity and intellectual focus. It is "Abstract Minimalist," stripping away everything but the essential. It targets researchers, writers, and minimalists who require a zero-distraction environment.
-
-The style is characterized by **Maximum Whitespace** and **Refractive Interaction**. The UI starts as a pure white "void." Color only appears as a light-splitting prism effect, spectral gradients on hair-thin lines or when the user interacts with an element.
-
-## Soul of the Design
-The soul of Prism Void is defined by "Intellectual Absolute." It is a design language that rejects the clutter of the physical world in favor of a pure, digital architecture where ideas can exist in their most concentrated form.
-
-At its core, this design is defined by:
-
-- The Infinite Substrate: The palette is anchored by an Absolute White (#ffffff). Unlike standard light modes that use off-whites or subtle grays, Prism Void uses a stark, high-luminance canvas to create a "void" of distraction. It is a sterile, gallery-like environment where the only color comes from the user's thoughts.
-- The Hairline Boundary: Instead of shadows or heavy fills, hierarchy is defined by Ultra-Thin 0.5px Strokes. These boundaries are surgical and precise, signaling that the system respects the structure of your data without imposing its own weight upon it. It is the "Ghost in the Machine" aesthetic, present but weightless.
-- Monochrome Precision: By utilizing the Geist typeface and a strictly monochromatic scale, the interface adopts the tone of a high-end technical manual or a research colophon. It treats text not as decoration, but as data, optimizing for the "Flow State" where the tool disappears and the work becomes the interface.
-- Contextual Elevation: Rejecting traditional "layered" UI, Prism Void indicates interaction through subtle shifts in border thickness or high-contrast monochromatic inversions. This geometric discipline mirrors the uncompromising logic of minimalist architecture, communicating a sense of permanence, clarity, and intellectual focus.
-
-In essence, the soul of Prism Void is Extreme Clarity. It is built for the "Pure Thinker", the researcher, writer, or theorist who demands a workspace that is as empty, sharp, and focused as a new sheet of paper, allowing the gravity of their own ideas to define the space.
+Abstract minimalism. The UI starts as a pure white void; color appears only as spectral gradients on hair-thin lines or on interaction.
 
 ## Colors
 The system is strictly monochromatic: Pure White (#ffffff) for surfaces and Pitch Black (#000000) for text. 
 
-The "Rainbow-Refraction" is the only source of color. It is never used for fills; it is only applied to **0.5px hairlines** or as a "fringe" effect on the edges of active elements. It represents the "splitting of light" that occurs when a thought becomes a note.
+The "Rainbow-Refraction" is the only source of color. Never used for fills; only applied to **0.5px hairlines** or as a fringe on the edges of active elements.
 
 ## Typography
 **Geist** is chosen for its mathematical precision and developer-centric clarity. The typography is spaced out significantly to emphasize the "Void" concept.
 
-Headlines are never bold; they use light weights and wide tracking to feel airy and architectural. Body text is optimized for long-form reading with a generous 1.8 line height. Every character should feel like it has room to breathe.
+Headlines are never bold; they use light weights and wide tracking. Body text uses a generous 1.8 line height for long-form reading.
 
 ## Layout & Spacing
 The system uses **No Grid** in the traditional sense. It relies on **Contextual Layout** and massive safe-area margins (10vw). Content is centered or aligned to specific typographic anchors rather than columns.

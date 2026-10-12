@@ -8,10 +8,17 @@ jobs:
       - name: Install license tools
         run: cargo install cargo-deny --locked
       - name: Install attribution tool
-        run: cargo install cargo-about --features cli --locked
+        # Pinned: the freshness diff consumes this output, so the generator
+        # version is part of the contract. Bump together with a regen.
+        run: cargo install cargo-about --version 0.9.2 --features cli --locked
       - name: Deny unlisted licenses
         run: cargo deny check licenses
       - name: Attribution snapshot is fresh
+        # Compares the license dependency list, not raw bytes: cargo-about
+        # embeds absolute local paths, which can never match between the
+        # maintainer's machine and CI. Adding, removing, or bumping a
+        # dependency still fails this check, with the culprit in the log.
         run: |
           cargo about generate --format json -o /tmp/credits.json
-          diff /tmp/credits.json crates/ferrite-tabs/assets/credits.json
+          list() { jq -r '.licenses[] | .id as $l | .used_by[].crate | "\($l) \(.name) \(.version)"' "$1" | sort; }
+          diff <(list /tmp/credits.json) <(list crates/ferrite-tabs/assets/credits.json)

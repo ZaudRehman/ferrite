@@ -109,21 +109,7 @@ spacing:
 ---
 
 ## Brand & Style
-The design system is anchored in a philosophy of "Warm Minimalism." It targets a premium audience seeking a sophisticated, tactile digital experience that feels organic rather than clinical. The visual narrative combines the clarity of modern editorial design with the inviting warmth of Mediterranean architecture.
-
-The design style is a hybrid of **Minimalism** and **Tactile/Skeuomorphism**, utilizing soft tonal layering and extremely subtle light-source shadows to create a sense of physical presence. The emotional response should be one of calm, effortless luxury, and grounded reliability.
-
-## Soul of the Design
-The soul of Solar Silk is defined by "Radiant Serenity." It is a design language that captures the warmth of late-afternoon sun filtering through a window, creating a workspace that feels organic, tactile, and deeply human.
-
-At its core, this design is defined by:
-
-- Sun-Kissed Foundations: The palette is anchored by Solar Porcelain (#fef8f6) and soft Dusty Clay (#ded9e3). This "high-key" environment avoids the clinical sterility of pure white in favor of a warm, "creamy" substrate that mimics the look of hand-pressed paper. It creates a breathable, low-stress environment that makes long writing sessions feel more like a ritual than a task.
-- The Earthy Pulse: The primary accent, a muted Terracotta (#a24e3d), serves as a sophisticated focal point. It’s an organic, earth-toned red that provides a clear "signal" without the urgency of a standard notification color. It represents the "clay" from which ideas are shaped, warm, grounded, and enduring.
-- Timeless Articulation: By utilizing Libre Caslon Text, the theme leans into the heritage of 18th-century typography. It is a typeface built for long-form reading, with a rhythmic, elegant flow that turns every note into a "manuscript." It signals that the content here is being curated with care and intellectual depth.
-- Organic Softness: With a 4px roundness, the interface maintains a disciplined structure while gently softening the edges of the digital grid. This subtle radius provides a tactile, "hand-finished" quality that complements the classic typography, ensuring the workspace feels modern and accessible without losing its artisanal character.
-
-In essence, the soul of Solar Silk is Grounded Elegance. It is built for the "Modern Intellectual", the writer, philosopher, or creator who seeks a workspace that feels as warm, quiet, and timeless as a sun-lit library.
+Warm minimalism. Soft tonal layering and subtle light-source shadows over an off-white canvas. Generous whitespace, 8px base unit.
 
 ## Colors
 The palette is inspired by natural materials, baked clay, raw silk, and charcoal. 
@@ -131,14 +117,15 @@ The palette is inspired by natural materials, baked clay, raw silk, and charcoal
 - **Primary (Terracotta):** Used for key actions, brand moments, and critical highlights. It provides a grounded energy against the lighter surfaces.
 - **Secondary (Silk):** The primary surface color. An off-white that reduces eye strain and provides a premium, parchment-like feel.
 - **Tertiary (Sand):** Used for secondary containers, subtle borders, and background depth.
+- **Dusty Clay (#ded9e3):** Muted lavender-gray for secondary surfaces.
 - **Neutral (Charcoal):** Reserved for typography and high-contrast iconography to ensure maximum legibility and a classic editorial look.
 
 ## Typography
 The typography strategy pairings a literary, high-contrast serif for headings with a clean, understated geometric sans-serif for functional text.
 
-- **Headlines:** Libre Caslon Text evokes an authoritative, timeless feel. Use it sparingly for titles and significant editorial callouts.
-- **Body & Labels:** DM Sans provides a contemporary, low-contrast balance that ensures the UI remains functional and accessible.
-- **Labels:** Small labels and buttons use increased letter spacing and medium weights to maintain a "luxury brand" feel even at small scales.
+- **Headlines:** Libre Caslon Text, used sparingly for titles and editorial callouts.
+- **Body & Labels:** DM Sans for functional text.
+- **Labels:** Small labels and buttons use increased letter spacing and medium weights.
 
 ## Layout & Spacing
 The layout follows a **Fluid Grid** model with generous margins to reinforce the premium, airy brand personality. 
@@ -156,7 +143,7 @@ Depth is communicated through **Tonal Layers** and soft, directional shadows tha
 - **Base Layer:** Secondary color (#FDF9F3).
 - **Raised Surfaces:** Tertiary color (#E8DED1) with a soft 1px stroke (5% Charcoal) to define edges.
 - **Shadows:** Use "Ambient Glow" shadows, low opacity (4-8%), large blur (20px-40px), with a slight warm tint to the shadow color rather than pure black. This creates an effect of objects resting gently on a soft surface.
-- **Transitions:** All elevation changes should be smooth and ease-in-out to maintain the "Silk" narrative.
+- **Transitions:** All elevation changes ease in and out.
 
 ## Shapes
 Shapes in this design system are "Soft." They avoid the playfulness of fully rounded corners while shunning the harshness of sharp 90-degree angles.
@@ -166,7 +153,7 @@ Shapes in this design system are "Soft." They avoid the playfulness of fully rou
 - **Interactive Elements:** Buttons follow the Primary Radius to maintain a structured, professional look.
 
 ## Components
-Consistent execution of components ensures the "Solar Silk" aesthetic remains cohesive.
+Consistent execution of components keeps the aesthetic cohesive.
 
 - **Buttons:** 
   - *Primary:* Terracotta background, Silk text, no border.

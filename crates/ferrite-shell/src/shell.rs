@@ -4840,6 +4840,7 @@ impl ShellApp {
         self.dialogs.pop_head(tab_id);
         // Prompt text travels only for accepted prompts. Every other
         // kind ignores response text (there is nowhere for it to go).
+        #[cfg(target_os = "windows")]
         let result_text = if accepted && head.kind == DialogKind::Prompt {
             Some(
                 text.chars()
@@ -15406,6 +15407,9 @@ fn open_path(name: &str, reveal: bool) {
 }
 
 /// `#rrggbb` to Windows COLORREF (`0x00bbggrr`). `None` on malformed input.
+/// Windows-only in lib builds (the caption-tint path is its sole caller);
+/// also compiled under `test` everywhere so the pure-logic tests keep running.
+#[cfg(any(windows, test))]
 fn hex_to_colorref(hex: &str) -> Option<u32> {
     let h = hex.strip_prefix('#')?;
     if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {

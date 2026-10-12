@@ -155,7 +155,7 @@ pub fn system_accent_hex() -> Option<String> {
             .trim()
             .trim_matches('\'')
             .to_owned();
-        return match name.as_str() {
+        match name.as_str() {
             "blue" => Some("#3584e4".to_owned()),
             "teal" => Some("#2190a4".to_owned()),
             "green" => Some("#3a9104".to_owned()),
@@ -166,7 +166,7 @@ pub fn system_accent_hex() -> Option<String> {
             "purple" => Some("#9141ac".to_owned()),
             "slate" => Some("#6e6c6e".to_owned()),
             _ => None,
-        };
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {

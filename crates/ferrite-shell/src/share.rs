@@ -29,6 +29,7 @@ impl From<ferrite_tabs::share::SharePayload> for NativeShare {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ShareError {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[error("system share failed: {0}")]
     Native(String),
     #[error("couldn't open your mail app")]
@@ -154,6 +155,7 @@ mod tests {
             format!("{}", ShareError::MailOpen),
             "couldn't open your mail app"
         );
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         assert_eq!(
             format!("{}", ShareError::Native("x".to_owned())),
             "system share failed: x"

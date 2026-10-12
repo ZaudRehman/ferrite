@@ -116,7 +116,7 @@ fn os_default_root() -> Option<PathBuf> {
                     .join("ferrite"),
             );
         }
-        return None;
+        None
     }
 }
 

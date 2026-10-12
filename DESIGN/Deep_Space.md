@@ -111,28 +111,14 @@ spacing:
 
 ## Brand & Style
 
-This design system is built upon a cinematic and minimalist aesthetic, drawing inspiration from the quiet vastness of the cosmos. It prioritizes immersion and focus through high-ratio whitespace (negative space) and a reduction of interface clutter.
-
-The visual style blends **Minimalism** with subtle **Glassmorphism**. Surfaces are not solid but appear as deep, translucent layers that allow background "nebulae" or subtle gradients to breathe through. The emotional response is one of calm, professional authority, and expansive possibility. Interactions should feel frictionless and ethereal, utilizing soft glows rather than harsh transitions.
-
-## Soul of the Design
-The soul of Deep Space is defined by "Submerged Logic." It is a design language that captures the silence, depth, and immense scale of a journey through the furthest reaches of the cosmos.
-
-At its core, this design is defined by:
-
-- Abyssal Depth: The palette is anchored by Celestial Navy (#0c1324), a background color that feels less like a "surface" and more like an infinite volume. By using varying shades of deep ink and slate, the UI creates a sense of layered hierarchy that mimics looking into a starless void, stable, quiet, and profoundly focused.
-- The Stellar Beacon: The primary accent, a cold Glacial Slate (#e2e8f0), acts as a high-contrast signal against the dark expanse. It represents "light in the dark", the data, the text, and the critical actions that cut through the silence with calm, unwavering clarity.
-- Humanistic Engineering: By utilizing Space Grotesk, the theme balances the rigid mathematical rhythm of a technical interface with subtle humanistic apertures. It feels like a high-end navigation system, built for complex data, yet inherently legible and approachable for the person behind the screen.
-- Disciplined Precision: With its 4px roundness, the design avoids the "loud" energy of sharp corners and the "softness" of pill-shaped buttons. This subtle, consistent radius provides a polished, modern frame that feels engineered and deliberate, signaling an environment built for deep-work and long-term endurance.
-
-In essence, the soul of Deep Space is Immutable Focus. It is built for the "Deep-Sea Diver of Ideas", the thinker who needs their environment to be silent, vast, and steady so they can explore their most complex thoughts without distraction.
+Minimalist surfaces with subtle glassmorphism. Translucent layers over deep gradients, high-ratio whitespace, soft glows instead of hard transitions.
 
 ## Colors
 
 The palette is anchored in a monochromatic "Midnight" spectrum to maintain a low-light, cinematic environment.
 
 *   **Primary (Silver):** Used for high-contrast text and critical icons to ensure legibility against dark backgrounds.
-*   **Secondary (Slate):** Used for secondary text, borders, and inactive states.
+*   **Secondary (Slate #e2e8f0):** Used for secondary text, borders, and inactive states.
 *   **Neutral (Midnight Navy):** The core surface color. The background is nearly black (`#020617`), while containers use a slightly lighter navy (`#0F172A`).
 *   **Accent Glow:** A subtle cyan-blue used sparingly for focus states, progress indicators, and "active" ethereal glows to simulate light reflecting in a vacuum.
 
@@ -142,7 +128,7 @@ The typography strategy balances technical precision with high-end editorial fla
 
 *   **Headlines:** *Space Grotesk* provides a geometric, futuristic feel. For large display sizes, tight letter spacing and heavy weights create a commanding, cinematic presence.
 *   **Body:** *Inter* is used for its exceptional readability in dark mode environments, preventing "halving" (text blurring) on high-resolution displays.
-*   **Labels/Technical Data:** *Geist* is employed for UI small-print, button labels, and data points. The monospaced-adjacent feel reinforces a sense of precision and technology.
+*   **Labels/Technical Data:** *Geist* is employed for UI small-print, button labels, and data points.
 
 ## Layout & Spacing
 
@@ -151,7 +137,7 @@ This design system utilizes a **Fluid Grid** with generous padding to evoke a se
 *   **The 8px Rule:** All spacing increments are multiples of 8px to ensure mathematical harmony.
 *   **Section Gaps:** Vertical rhythm is intentionally slow. Use large gaps (80px to 120px) between major content sections to allow the eye to rest.
 *   **Margins:** Desktop layouts should use wide outer margins (64px+) to keep content centered and focused, mimicking a widescreen cinematic frame. 
-*   **Mobile Reflow:** On mobile, margins tighten to 20px, and multi-column layouts collapse into a single-column stack, prioritizing vertical "scroll-telling."
+*   **Mobile Reflow:** On mobile, margins tighten to 20px, and multi-column layouts collapse into a single-column stack.
 
 ## Elevation & Depth
 
@@ -180,4 +166,4 @@ Avoid "Pill" shapes for buttons unless they are secondary floating actions; rect
 *   **Cards:** Use the "Surface" color with a very subtle gradient (top-left to bottom-right). No heavy shadows; use a 1px border to separate from the background.
 *   **Chips:** Small, all-caps Geist text. Backgrounds should be nearly transparent with a stroke that matches the label color at low opacity.
 *   **Lists:** High-contrast Silver text for primary items, Slate for descriptions. Separators should be dim (10% opacity Silver) and never full-width.
-*   **Status Indicators:** Instead of solid red/green/yellow circles, use glowing dots with a "pulse" animation for a more immersive, "live" feel.
+*   **Status Indicators:** Glowing dots with a "pulse" animation instead of solid red/green/yellow circles.
