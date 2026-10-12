@@ -31,8 +31,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pdfium" && cd "$RUNNER_TEMP/pdfium"
-          curl -fsSL -o pdfium.tgz https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8076/pdfium-linux-x64.tgz
-          echo "d9d67bc40af03aef4fe28a60b19b1086f28ace019c8c9caf19cb7fe3d14ceca3  pdfium.tgz" | sha256sum -c -
+          # Binary MUST match the crate's bindings ceiling: pdfium-render
+          # 0.9.x tops out at pdfium_7881 (pdfium_latest). A newer binary
+          # with older bindings is ABI drift and dies as heap corruption
+          # (free(): invalid pointer) deep in the test run, not at load.
+          curl -fsSL -o pdfium.tgz https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-linux-x64.tgz
+          echo "1470e21b8b4a3b4ad7f85684e2da11d94f3b69a86d81dee11b9b6709d927ac1d  pdfium.tgz" | sha256sum -c -
           tar xzf pdfium.tgz
           # Locate, don't assume: the archive's internal layout is upstream's
           # business (bin/ vs lib/ has changed before). Fail fast with a
