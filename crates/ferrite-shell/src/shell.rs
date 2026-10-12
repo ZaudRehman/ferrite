@@ -4811,8 +4811,10 @@ impl ShellApp {
     /// Overlay response for the shown frame. Applies only when `seq`
     /// matches the visible head. Stale or forged responses are ignored
     /// (replays can only echo the open frame, seq is random per frame).
-    fn dialog_respond(&mut self, seq: u64, accepted: bool, text: String, suppress: bool) {
-        use ferrite_tabs::{DialogKind, origin_key};
+    fn dialog_respond(&mut self, seq: u64, _accepted: bool, _text: String, suppress: bool) {
+        #[cfg(target_os = "windows")]
+        use ferrite_tabs::DialogKind;
+        use ferrite_tabs::origin_key;
         let Some((tab_id, shown)) = self.dlg_shown else {
             debug!("dialog response with no shown frame ignored");
             return;
@@ -4841,9 +4843,10 @@ impl ShellApp {
         // Prompt text travels only for accepted prompts. Every other
         // kind ignores response text (there is nowhere for it to go).
         #[cfg(target_os = "windows")]
-        let result_text = if accepted && head.kind == DialogKind::Prompt {
+        let result_text = if _accepted && head.kind == DialogKind::Prompt {
             Some(
-                text.chars()
+                _text
+                    .chars()
                     .take(ferrite_tabs::DIALOG_MESSAGE_CAP)
                     .collect::<String>(),
             )
@@ -4852,7 +4855,7 @@ impl ShellApp {
         };
         #[cfg(target_os = "windows")]
         if let Some(sink) = self.dialog_sink.as_ref()
-            && !sink.complete(seq, accepted, result_text.as_deref())
+            && !sink.complete(seq, _accepted, result_text.as_deref())
         {
             debug!("dialog deferral already gone");
         }
