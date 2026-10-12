@@ -34,7 +34,12 @@ jobs:
           curl -fsSL -o pdfium.tgz https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8076/pdfium-linux-x64.tgz
           echo "d9d67bc40af03aef4fe28a60b19b1086f28ace019c8c9caf19cb7fe3d14ceca3  pdfium.tgz" | sha256sum -c -
           tar xzf pdfium.tgz
-          echo "FERRITE_PDFIUM_PATH=$RUNNER_TEMP/pdfium/bin" >> $GITHUB_ENV
+          # Locate, don't assume: the archive's internal layout is upstream's
+          # business (bin/ vs lib/ has changed before). Fail fast with a
+          # listing instead of a cryptic DlOpen error deep in the test run.
+          LIB="$(find "$RUNNER_TEMP/pdfium" -name libpdfium.so | head -n 1)"
+          test -n "$LIB" || { echo "libpdfium.so not found after extract:"; find "$RUNNER_TEMP/pdfium" -maxdepth 3; exit 1; }
+          echo "FERRITE_PDFIUM_PATH=$(dirname "$LIB")" >> $GITHUB_ENV
       - name: Rust fmt
         run: cargo fmt --check --all
       - name: Clippy
