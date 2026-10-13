@@ -22,3 +22,7 @@ jobs:
           cargo about generate --format json -o /tmp/credits.json
           list() { jq -r '.licenses[] | .id as $l | .used_by[].crate | "\($l) \(.name) \(.version)"' "$1" | sort; }
           diff <(list /tmp/credits.json) <(list crates/ferrite-tabs/assets/credits.json)
+          # The snapshot ships in the binary (include_str!): it must never
+          # leak maintainer machine paths. Scrub source_path values to
+          # crate-relative tails after every regen; this fails loud if not.
+          ! grep -E '"(source_path|path)":"([A-Za-z]:|/home/|/Users/)' crates/ferrite-tabs/assets/credits.json

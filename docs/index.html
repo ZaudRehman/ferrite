@@ -108,7 +108,7 @@ h2{font:700 clamp(32px,5.4vw,60px)/1 var(--sa);letter-spacing:-.045em;margin:0 0
 .cm button{font:12px var(--px);background:0;color:var(--pf);border:1px solid var(--p3);padding:6px 12px;min-height:36px;cursor:pointer}.cm button:hover{background:var(--ac);color:#15120e;border-color:var(--ac)}
 .uh{display:grid;gap:1px;background:var(--ln);border:1px solid var(--ln)}
 .uh div{background:var(--s);padding:22px 24px;font:12.5px/1.8 var(--mo);color:var(--i2)}.uh h3{font:400 12px var(--px);color:var(--at);margin:0 0 8px;text-transform:uppercase}
-.two{display:grid;gap:56px}.two p{margin:0;color:var(--i2)}
+.two{display:grid;gap:56px}.two>*{min-width:0}.two p{margin:0;color:var(--i2)}
 pre{margin:20px 0;overflow:auto;background:var(--pn);color:var(--pf);padding:20px;font:12.5px/1.8 var(--mo);border:2px solid var(--ink)}
 details{border-top:1px solid var(--ln)}details:last-of-type{border-bottom:1px solid var(--ln)}
 summary{cursor:pointer;list-style:none;min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:16px;font:600 19px var(--sa);letter-spacing:-.02em}
@@ -191,7 +191,7 @@ footer{padding-top:48px;overflow:hidden}
 <h1 class="r" style="--d:.08s">Your browser should <em>answer to you.</em></h1>
 <p class="lead r" style="--d:.16s">Ferrite keeps your history, passwords, and tabs on your own devices. No accounts, no cloud, nothing to opt out of.</p>
 <div class="cta r" style="--d:.24s"><a class="b dl" href="https://github.com/ZaudRehman/ferrite/releases/latest">Download Ferrite</a><a class="b g" href="https://github.com/ZaudRehman/ferrite">View source</a></div>
-<p class="alt r" style="--d:.3s"><a href="https://github.com/ZaudRehman/ferrite/releases/latest">Linux (.deb)</a><a href="https://github.com/ZaudRehman/ferrite/releases/latest">Windows (.msi)</a><a href="https://github.com/ZaudRehman/ferrite/releases/latest">macOS (.dmg, beta)</a><br><span id="ver"></span>Signed, reproducible, Apache-2.0. <a href="/latest.json">latest.json</a></p>
+<p class="alt r" style="--d:.3s"><a href="https://github.com/ZaudRehman/ferrite/releases/latest">Linux (.deb)</a><a href="https://github.com/ZaudRehman/ferrite/releases/latest">Windows (.msi)</a><a href="https://github.com/ZaudRehman/ferrite/releases/latest">macOS (.dmg, beta)</a><br><span id="ver"></span>Signed, reproducible, Apache-2.0. <a href="/ferrite/latest.json">latest.json</a></p>
 <div class="win r" style="--d:.4s" role="img" aria-label="Simulated request ledger: trackers are blocked, and zero requests are sent to Ferrite.">
 <div class="tb" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span class="tabs"><span class="on">Shield</span><span>notes.local</span><span>news.example</span></span></div>
 <div class="url" aria-hidden="true"><span>ferrite://shield</span><em>this session</em></div>
@@ -287,7 +287,7 @@ cargo build --locked --release --features ferrite-vault/sqlcipher,ferrite-archiv
 <footer><div class="w">
 <div class="fg">
 <div><p class="fk">Ferrite collects nothing.</p><p class="nt">No analytics, no ads, no tracking, on this page (except messages you choose to send) or in the browser. Update manifest at <code>/latest.json</code> is a stateless CDN edge, purged 24 to 48h.</p></div>
-<ul class="fx"><li><a href="https://github.com/ZaudRehman/ferrite"><b>Source</b><span>github.com/ZaudRehman/ferrite</span></a></li><li><a href="/latest.json"><b>Update manifest</b><span id="fv">latest.json</span></a></li><li><a href="#contact"><b>Contact</b><span>Talk to a human</span></a></li></ul>
+<ul class="fx"><li><a href="https://github.com/ZaudRehman/ferrite"><b>Source</b><span>github.com/ZaudRehman/ferrite</span></a></li><li><a href="/ferrite/latest.json"><b>Update manifest</b><span id="fv">latest.json</span></a></li><li><a href="#contact"><b>Contact</b><span>Talk to a human</span></a></li></ul>
 </div>
 <div class="fz"><span>&copy; 2026 Zaud Rehman, Apache-2.0.</span><a href="#main">Back to top</a></div>
 </div></footer>
@@ -449,7 +449,7 @@ else bad('Send failed: '+(j.message||'try again later.'))})
 .catch(function(){bad('Network error. Try again later.')})});
 document.getElementById('ca').onclick=function(){f.classList.remove('ok');f.elements.name.focus()};
 })();
-fetch('/latest.json').then(function(r){return r.json()}).then(function(m){var fv=$('fv');if(fv&&m.stable&&m.stable.version)fv.textContent='stable v'+m.stable.version;if(m.stable&&m.stable.version)$('ver').textContent='v'+m.stable.version+' \u00b7 '}).catch(function(){});
+fetch('/ferrite/latest.json').then(function(r){return r.json()}).then(function(m){var fv=$('fv');if(fv&&m.stable&&m.stable.version)fv.textContent='stable v'+m.stable.version;if(m.stable&&m.stable.version)$('ver').textContent='v'+m.stable.version+' \u00b7 '}).catch(function(){});
 })();
 </script>
 </body>

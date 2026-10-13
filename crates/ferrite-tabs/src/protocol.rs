@@ -965,6 +965,9 @@ button:hover{border-color:var(--f-accent)}
 /// Generated attribution snapshot (cargo-about JSON, committed, see
 /// `about.toml`; regenerate with `cargo about generate --format json -o
 /// crates/ferrite-tabs/assets/credits.json`). Parsed once per process.
+/// After regenerating, scrub machine-absolute `source_path`/`path` values
+/// to crate-relative tails before committing: the snapshot ships in the
+/// binary, and CI fails loud if maintainer paths leak back in.
 const CREDITS_JSON: &str = include_str!("../assets/credits.json");
 
 struct CreditGroup {
