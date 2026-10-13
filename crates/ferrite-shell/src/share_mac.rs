@@ -3,7 +3,7 @@
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{AllocAnyThread, MainThreadMarker};
+use objc2::{AllocAnyThread, MainThreadMarker, msg_send};
 use objc2_app_kit::{NSEvent, NSSharingServicePicker, NSView, NSWindow, NSWorkspace};
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, NSURL};
 
@@ -32,8 +32,11 @@ pub fn show(payload: &NativeShare, ns_view: *mut std::ffi::c_void) -> Result<(),
     let items: [&AnyObject; 2] = [&*url, &*title];
     let array = NSArray::from_slice(&items);
     // SAFETY: every item is an `NSPasteboardWriting` type (`NSURL`,
-    // `NSString`), satisfying `initWithItems:`'s contract.
-    let picker = unsafe { NSSharingServicePicker::alloc().initWithItems(&array) };
+    // `NSString`), satisfying `initWithItems:`'s contract. Sent via
+    // `msg_send!` (selector verified against the generated binding) rather
+    // than the typed method.
+    let picker: Retained<NSSharingServicePicker> =
+        unsafe { msg_send![NSSharingServicePicker::alloc(), initWithItems: &*array] };
 
     // Anchor at the cursor: screen point → window base → view coords, in a
     // 1×1 rect so the popover hugs the click that summoned it.
