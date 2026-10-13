@@ -22,9 +22,6 @@ yanked = "deny"
 # Reviewed 2026-10-04, re-review on every wry/gtk bump (see
 # CHECKSUM/ENGINE_BUMP_CHECKLIST.md). Both are transitive-only, neither is
 # called by Ferrite code, and neither has an upgrade path today:
-# - RUSTSEC-2024-0429 (glib VariantStrIter unsoundness): reachable only
-#   by calling the buggy iterator; Ferrite never touches GVariant
-#   iteration (gtk-rs windowing glue does). Linux-only surface.
 # - RUSTSEC-2024-0370 (proc-macro-error unmaintained): build-time macro
 #   helper, never shipped in any binary. Dies with the syn-1.x upgrade.
 # - RUSTSEC-2025-0141 (bincode unmaintained, whole project including the
@@ -39,7 +36,7 @@ yanked = "deny"
 #   inside ab_glyph for window decorations (Linux-only); inputs are OS
 #   fonts via fontconfig, never network bytes. Dies with the winit/gtk
 #   stack upgrade.
-ignore = ["RUSTSEC-2024-0429", "RUSTSEC-2024-0370", "RUSTSEC-2026-0192", "RUSTSEC-2025-0141"]
+ignore = ["RUSTSEC-2024-0370", "RUSTSEC-2026-0192", "RUSTSEC-2025-0141"]
 
 [licenses]
 allow = [
