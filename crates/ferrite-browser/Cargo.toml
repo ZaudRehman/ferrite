@@ -10,6 +10,14 @@ rust-version.workspace = true
 name = "ferrite"
 path = "src/main.rs"
 
+# Packaging metadata (cargo-bundle deb/dmg; cargo-wix reads its own wix/
+# scaffolding). The bundle name uses the display spelling so macOS emits
+# Ferrite.app, which the release workflow hard-codes downstream.
+[package.metadata.bundle]
+name = "Ferrite"
+identifier = "io.ferrite.browser"
+category = "Utility"
+
 [dependencies]
 ferrite-shell = { path = "../ferrite-shell" }
 anyhow.workspace = true

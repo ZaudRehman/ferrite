@@ -67,13 +67,16 @@ jobs:
         working-directory: relay
       - name: Package Linux deb
         if: matrix.pkg == 'deb'
-        run: cargo install cargo-bundle && cargo bundle --release --target ${{ matrix.target }} --format deb
+        run: cargo install --locked cargo-bundle@0.12.0 && cargo bundle -p ferrite-browser --release --target ${{ matrix.target }} --format deb
+      - name: WiX Toolset (MSI packaging)
+        if: matrix.pkg == 'msi'
+        run: choco install wixtoolset -y --no-progress
       - name: Package Windows msi
         if: matrix.pkg == 'msi'
-        run: cargo install cargo-wix && cargo wix --release --target ${{ matrix.target }} --nocapture
+        run: cargo install --locked cargo-wix@0.3.9 && cargo wix -p ferrite-browser --target ${{ matrix.target }} --nocapture
       - name: Package macOS dmg
         if: matrix.pkg == 'dmg'
-        run: cargo install cargo-bundle && cargo bundle --release --target ${{ matrix.target }} --format dmg
+        run: cargo install --locked cargo-bundle@0.12.0 && cargo bundle -p ferrite-browser --release --target ${{ matrix.target }} --format dmg
       - name: Sign Windows Authenticode
         if: matrix.os == 'windows-latest' && env.WINDOWS_SIGNING_CERT != ''
         env:
@@ -123,7 +126,7 @@ jobs:
           tar czf "ferrite-${{ matrix.target }}.tar.gz" -C "$(dirname "$bin")" "$(basename "$bin")"
           sha256sum "ferrite-${{ matrix.target }}.tar.gz" | tee "SHA256-tarball-${{ matrix.target }}.txt"
       - name: SBOM cyclonedx
-        run: cargo install cargo-cyclonedx && cargo cyclonedx --format json --target ${{ matrix.target }} -o sbom-${{ matrix.target }}.json
+        run: cargo install --locked cargo-cyclonedx@0.5.9 && cargo cyclonedx --format json --target ${{ matrix.target }} --override-filename sbom-${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: ferrite-${{ matrix.target }}
@@ -132,10 +135,10 @@ jobs:
             ferrite-${{ matrix.target }}.tar.gz
             SHA256SUMS-${{ matrix.target }}.txt
             SHA256-tarball-${{ matrix.target }}.txt
-            sbom-${{ matrix.target }}.json
-            *.dmg
-            *.msi
-            *.deb
+            crates/*/sbom-${{ matrix.target }}.json
+            **/*.dmg
+            **/*.msi
+            **/*.deb
       - name: Reproducible verify
         shell: bash
         run: |
