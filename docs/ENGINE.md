@@ -27,7 +27,8 @@ bugs when this file goes stale.
 | wry | 0.56.1 | `devtools` feature on (engine inspector, no CDP port) |
 | webview2-com / -sys | 0.38.2 | Windows only: dialogs, loader queries |
 | windows | 0.61.3 | Windows only: ShareUI, COM, ShellExecute |
-| objc2 stack | 0.6.x / app-kit+foundation 0.3.2 | macOS only: share sheet, openURL |
+| objc2 / app-kit / foundation | 0.6.4 / 0.3.2 / 0.3.2 (exact pins in shell Cargo.toml) | macOS only: share sheet, openURL |
+| raw-window-handle | 0.6.2 (exact pin) | macOS window handle (ns_view; ns_window removed upstream) |
 | winit | 0.30.13 | All platforms |
 | gtk | 0.18.2 | Linux only: Wayland build path (compile-covered, behaviorally untested) |
 

@@ -54,6 +54,10 @@ windows = { version = "0.61", features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSArray", "NSGeometry"] }
-objc2-app-kit = { version = "0.3", features = ["NSSharingService", "NSView", "NSWindow", "NSEvent", "NSResponder", "NSWorkspace"] }
+# Exact pins, not carets: macOS-only code compiles solely in the release
+# workflow, so a silent minor bump here rots until release day (0.6.x API
+# churn broke the share sheet once already). Bump deliberately with the
+# ENGINE.md matrix and the Apple-target check in hand.
+objc2 = "=0.6.4"
+objc2-foundation = { version = "=0.3.2", features = ["NSString", "NSURL", "NSArray", "NSGeometry"] }
+objc2-app-kit = { version = "=0.3.2", features = ["NSSharingService", "NSView", "NSWindow", "NSEvent", "NSResponder", "NSWorkspace"] }

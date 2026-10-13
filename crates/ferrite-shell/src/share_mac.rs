@@ -1,23 +1,27 @@
 //! macOS native share via `NSSharingServicePicker` at the cursor. Main
 //! thread only, called synchronously from winit event handlers.
 
-use objc2::{AllocAnyThread, AnyObject, MainThreadMarker};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{AllocAnyThread, MainThreadMarker};
 use objc2_app_kit::{NSEvent, NSSharingServicePicker, NSView, NSWindow, NSWorkspace};
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, NSURL};
 
 use super::NativeShare;
 
-/// Show the system share sheet for `payload` in `ns_window`.
+/// Show the system share sheet for `payload` in `ns_view`.
 /// # Safety
-/// `ns_window` must point to a live `NSWindow` on the main thread.
-pub fn show(payload: &NativeShare, ns_window: *mut std::ffi::c_void) -> Result<(), String> {
+/// `ns_view` must point to a live `NSView` on the main thread. The parent
+/// window is resolved from the view, so the caller passes the content view
+/// it already holds (raw-window-handle no longer exposes the window).
+pub fn show(payload: &NativeShare, ns_view: *mut std::ffi::c_void) -> Result<(), String> {
     let mtm =
         MainThreadMarker::new().ok_or_else(|| "sharing must run on the main thread".to_owned())?;
-    // SAFETY: caller guarantees a live main-thread window for the call.
-    let window: &NSWindow = unsafe { &*ns_window.cast::<NSWindow>() };
-    let view: &NSView = &window
-        .contentView()
-        .ok_or_else(|| "window has no content view".to_owned())?;
+    // SAFETY: caller guarantees a live main-thread view for the call.
+    let view: &NSView = unsafe { &*ns_view.cast::<NSView>() };
+    let window: Retained<NSWindow> = view
+        .window()
+        .ok_or_else(|| "view is not installed in a window".to_owned())?;
 
     let url_text = NSString::from_str(&payload.url);
     let url =
@@ -54,6 +58,9 @@ pub fn show(payload: &NativeShare, ns_window: *mut std::ffi::c_void) -> Result<(
 /// Open a URL with the default handler (the `mailto:` path).
 pub fn open_url(url: &str) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or_else(|| "must run on the main thread".to_owned())?;
+    // Held for the call: AppKit requires the main thread even where the
+    // generated bindings do not take the marker.
+    let _ = mtm;
     let text = NSString::from_str(url);
     let nsurl = NSURL::URLWithString(&text).ok_or_else(|| "bad URL".to_owned())?;
     if NSWorkspace::sharedWorkspace().openURL(&nsurl) {

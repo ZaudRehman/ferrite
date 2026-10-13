@@ -58,9 +58,9 @@ pub fn show_native(payload: NativeShare, window: &winit::window::Window, notices
     }
     #[cfg(target_os = "macos")]
     {
-        match ns_window_of(window) {
-            Some(ptr) => {
-                if let Err(e) = platform_mac::show(&payload, ptr) {
+        match ns_view_of(window) {
+            Some(view) => {
+                if let Err(e) = platform_mac::show(&payload, view) {
                     tracing::warn!(error = %e, "macos share failed");
                     let _ = notices.send(ShareError::Native(e).to_string());
                 }
@@ -114,10 +114,10 @@ fn hwnd_of(window: &winit::window::Window) -> Option<isize> {
 }
 
 #[cfg(target_os = "macos")]
-fn ns_window_of(window: &winit::window::Window) -> Option<*mut std::ffi::c_void> {
+fn ns_view_of(window: &winit::window::Window) -> Option<*mut std::ffi::c_void> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     match window.window_handle().ok()?.as_raw() {
-        RawWindowHandle::AppKit(h) => Some(h.ns_window.as_ptr() as *mut _),
+        RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr() as *mut _),
         _ => None,
     }
 }

@@ -114,6 +114,18 @@ jobs:
           # both together on every bump.
           check wry "0.56.1"
           check winit "0.30.13"
+          # have() instead of check(): these crates legitimately appear
+          # twice in the lock (older copies ride along inside winit/wry),
+          # so assert presence of the pinned direct version, not first-match.
+          have() { # have <crate> <version>
+            grep -A1 "^name = \"$1\"$" Cargo.lock | grep -q "^version = \"$2\"$"
+          }
+          have objc2 "0.6.4"
+          have objc2-foundation "0.3.2"
+          have objc2-app-kit "0.3.2"
+          have raw-window-handle "0.6.2"
           grep -q 'wry | 0.56.1' docs/ENGINE.md || { echo "ENGINE.md wry row missing"; exit 1; }
           grep -q 'winit | 0.30.13' docs/ENGINE.md || { echo "ENGINE.md winit row missing"; exit 1; }
+          grep -q 'objc2.*0.6.4' docs/ENGINE.md || { echo "ENGINE.md objc2 row missing"; exit 1; }
+          grep -q 'raw-window-handle | 0.6.2' docs/ENGINE.md || { echo "ENGINE.md rwh row missing"; exit 1; }
           echo "engine matrix in sync"
