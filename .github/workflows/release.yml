@@ -99,9 +99,9 @@ jobs:
           set -euo pipefail
           cargo install --locked cargo-bundle@0.12.0
           cargo bundle -p ferrite-browser --release --target ${{ matrix.target }} --format dmg --binary-path target/${{ matrix.target }}/release/ferrite
-          dmg=target/${{ matrix.target }}/release/bundle/macos/Ferrite.dmg
+          dmg=target/${{ matrix.target }}/release/bundle/dmg/Ferrite.dmg
           test -f "$dmg" || { echo "bundler produced no dmg at $dmg"; exit 1; }
-          mv "$dmg" "target/${{ matrix.target }}/release/bundle/macos/Ferrite-${{ matrix.target }}.dmg"
+          mv "$dmg" "target/${{ matrix.target }}/release/bundle/dmg/Ferrite-${{ matrix.target }}.dmg"
       - name: Sign Windows Authenticode
         if: matrix.os == 'windows-latest' && env.WINDOWS_SIGNING_CERT != ''
         env:
@@ -126,7 +126,7 @@ jobs:
         run: |
           # Overwrite the bundled dmg in place (never a second file at
           # the same asset name) so signing keeps one dmg per arch.
-          dmg=target/${{ matrix.target }}/release/bundle/macos/Ferrite-${{ matrix.target }}.dmg
+          dmg=target/${{ matrix.target }}/release/bundle/dmg/Ferrite-${{ matrix.target }}.dmg
           codesign --deep --force --verify --verbose --sign "Developer ID Application: Ferrite Browser" target/${{ matrix.target }}/release/bundle/macos/*.app
           ditto -c -k --keepParent target/${{ matrix.target }}/release/bundle/macos/Ferrite.app "$dmg"
           xcrun notarytool submit "$dmg" --apple-id $APPLE_ID --password $APPLE_PASSWORD --team-id $APPLE_TEAM_ID --wait
