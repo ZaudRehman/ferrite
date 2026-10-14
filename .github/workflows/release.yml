@@ -386,6 +386,11 @@ jobs:
           print("store manifests rewritten")
           EOF
       - name: Store manifests PR
+        # Best-effort automation, never a release blocker: the branch is
+        # pushed either way, so a human opens the PR when the repo
+        # forbids Actions-created pull requests. The release above
+        # already succeeded; this step warns instead of failing it.
+        continue-on-error: true
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
