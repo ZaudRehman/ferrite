@@ -67,16 +67,16 @@ jobs:
         working-directory: relay
       - name: Package Linux deb
         if: matrix.pkg == 'deb'
-        run: cargo install --locked cargo-bundle@0.12.0 && cargo bundle -p ferrite-browser --release --target ${{ matrix.target }} --format deb
+        run: cargo install --locked cargo-bundle@0.12.0 && cargo bundle -p ferrite-browser --release --target ${{ matrix.target }} --format deb --binary-path target/${{ matrix.target }}/release/ferrite
       - name: WiX Toolset (MSI packaging)
         if: matrix.pkg == 'msi'
         run: choco install wixtoolset -y --no-progress
       - name: Package Windows msi
         if: matrix.pkg == 'msi'
-        run: cargo install --locked cargo-wix@0.3.9 && cargo wix -p ferrite-browser --target ${{ matrix.target }} --nocapture
+        run: cargo install --locked cargo-wix@0.3.9 && cargo wix -p ferrite-browser --target ${{ matrix.target }} --nocapture --no-build --target-bin-dir target/${{ matrix.target }}/release
       - name: Package macOS dmg
         if: matrix.pkg == 'dmg'
-        run: cargo install --locked cargo-bundle@0.12.0 && cargo bundle -p ferrite-browser --release --target ${{ matrix.target }} --format dmg
+        run: cargo install --locked cargo-bundle@0.12.0 && cargo bundle -p ferrite-browser --release --target ${{ matrix.target }} --format dmg --binary-path target/${{ matrix.target }}/release/ferrite
       - name: Sign Windows Authenticode
         if: matrix.os == 'windows-latest' && env.WINDOWS_SIGNING_CERT != ''
         env:
