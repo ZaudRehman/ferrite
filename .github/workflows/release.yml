@@ -173,7 +173,7 @@ jobs:
             ferrite-${{ matrix.target }}.tar.gz
             SHA256SUMS-${{ matrix.target }}.txt
             SHA256-tarball-${{ matrix.target }}.txt
-            crates/*_*${{ matrix.target }}.cdx.json
+            crates/*/*_${{ matrix.target }}.cdx.json
             **/*.dmg
             **/*.msi
             **/*.deb

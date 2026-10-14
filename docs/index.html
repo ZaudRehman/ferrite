@@ -191,7 +191,7 @@ footer{padding-top:48px;overflow:hidden}
 <h1 class="r" style="--d:.08s">Your browser should <em>answer to you.</em></h1>
 <p class="lead r" style="--d:.16s">Ferrite keeps your history, passwords, and tabs on your own devices. No accounts, no cloud, nothing to opt out of.</p>
 <div class="cta r" style="--d:.24s"><a class="b dl" href="https://github.com/ZaudRehman/ferrite/releases/latest">Download Ferrite</a><a class="b g" href="https://github.com/ZaudRehman/ferrite">View source</a></div>
-<p class="alt r" style="--d:.3s"><a href="https://github.com/ZaudRehman/ferrite/releases/latest">Linux (.deb)</a><a href="https://github.com/ZaudRehman/ferrite/releases/latest">Windows (.msi)</a><a href="https://github.com/ZaudRehman/ferrite/releases/latest">macOS (.dmg, beta)</a><br><span id="ver"></span>Signed, reproducible, Apache-2.0. <a href="/ferrite/latest.json">latest.json</a></p>
+<p class="alt r" style="--d:.3s"><a id="dl-linux" href="https://github.com/ZaudRehman/ferrite/releases/latest">Linux (.deb)</a><a id="dl-win" href="https://github.com/ZaudRehman/ferrite/releases/latest">Windows (.msi)</a><a id="dl-arm" href="https://github.com/ZaudRehman/ferrite/releases/latest">macOS Apple Silicon (.dmg)</a><a id="dl-intel" href="https://github.com/ZaudRehman/ferrite/releases/latest">macOS Intel (.dmg)</a><br><span id="ver"></span>Signed, reproducible, Apache-2.0. <a href="/ferrite/latest.json">latest.json</a></p>
 <div class="win r" style="--d:.4s" role="img" aria-label="Simulated request ledger: trackers are blocked, and zero requests are sent to Ferrite.">
 <div class="tb" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span class="tabs"><span class="on">Shield</span><span>notes.local</span><span>news.example</span></span></div>
 <div class="url" aria-hidden="true"><span>ferrite://shield</span><em>this session</em></div>
@@ -296,7 +296,7 @@ cargo build --locked --release --features ferrite-vault/sqlcipher,ferrite-archiv
 <script>
 (function(){var d=document,$=function(i){return d.getElementById(i)};d.documentElement.className='js';
 var p='';try{p=(navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||''}catch(e){}
-p=String(p).toLowerCase();var l=/win/.test(p)?'Windows (.msi)':/mac/.test(p)?'macOS (.dmg, beta)':/linux/.test(p)?'Linux (.deb)':'';
+p=String(p).toLowerCase();var l=/win/.test(p)?'Windows (.msi)':/mac/.test(p)?'macOS Apple Silicon (.dmg)':/linux/.test(p)?'Linux (.deb)':'';
 if(l)d.querySelectorAll('.dl').forEach(function(a){a.textContent='Download for '+l});
 var mq=d.querySelector('.mq div');mq.innerHTML+=mq.innerHTML;
 var ol=$('lg'),a=$('c1'),b=$('c2'),f=$('fl'),n=0,k=0,r=[],
@@ -449,7 +449,7 @@ else bad('Send failed: '+(j.message||'try again later.'))})
 .catch(function(){bad('Network error. Try again later.')})});
 document.getElementById('ca').onclick=function(){f.classList.remove('ok');f.elements.name.focus()};
 })();
-fetch('/ferrite/latest.json').then(function(r){return r.json()}).then(function(m){var fv=$('fv');if(fv&&m.stable&&m.stable.version)fv.textContent='stable v'+m.stable.version;if(m.stable&&m.stable.version)$('ver').textContent='v'+m.stable.version+' \u00b7 '}).catch(function(){});
+fetch('/ferrite/latest.json').then(function(r){return r.json()}).then(function(m){var fv=$('fv');if(fv&&m.stable&&m.stable.version)fv.textContent='stable v'+m.stable.version;if(m.stable&&m.stable.version)$('ver').textContent='v'+m.stable.version+' \u00b7 ';var v=m.stable&&m.stable.version;if(!v)return;var base='https://github.com/ZaudRehman/ferrite/releases/download/v'+v+'/';var set=function(id,u){var e=$(id);if(e)e.href=u};set('dl-win',base+'ferrite-browser-'+v+'-x86_64.msi');set('dl-linux',base+'ferrite_'+v+'_amd64.deb');set('dl-arm',base+'Ferrite-aarch64-apple-darwin.dmg');set('dl-intel',base+'Ferrite-x86_64-apple-darwin.dmg');d.querySelectorAll('.dl').forEach(function(a){if(/win/.test(p))a.href=base+'ferrite-browser-'+v+'-x86_64.msi';else if(/linux/.test(p))a.href=base+'ferrite_'+v+'_amd64.deb';else if(/mac/.test(p))a.href=base+'Ferrite-aarch64-apple-darwin.dmg'})}).catch(function(){});
 })();
 </script>
 </body>
