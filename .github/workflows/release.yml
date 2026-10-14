@@ -110,8 +110,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum target/${{ matrix.target }}/release/ferrite* target/${{ matrix.target }}/release/bundle/**/* 2>/dev/null | tee SHA256SUMS-${{ matrix.target }}.txt
-          cat SHA256SUMS-${{ matrix.target }}.txt
+          # nullglob: an unmatched pattern must vanish, not reach sha256sum
+          # as a literal string (which fails with the evidence hidden when
+          # stderr is redirected). Never silence this command again: its
+          # failure output names the missing file in one second.
+          shopt -s nullglob
+          files=(target/${{ matrix.target }}/release/ferrite*)
+          files+=(target/${{ matrix.target }}/release/bundle/**/* target/wix/*.msi)
+          ((${#files[@]})) || { echo "no artifacts to hash"; exit 1; }
+          sha256sum "${files[@]}" | tee SHA256SUMS-${{ matrix.target }}.txt
       - name: Channel tarball (per-target update artifact)
         shell: bash
         run: |
