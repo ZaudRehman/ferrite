@@ -13,8 +13,8 @@ PackageUrl: https://github.com/ZaudRehman/ferrite
 InstallerType: msi
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/ZaudRehman/ferrite/releases/download/v0.1.0/Ferrite-0.1.0-x64.msi
-    InstallerSha256: REPLACE_WITH_SHA256_FROM_RELEASE_JOB
-    ProductCode: "{FERRITE-BROWSER-0-1-0}"
+    InstallerUrl: https://github.com/ZaudRehman/ferrite/releases/download/v0.1.0/ferrite-browser-0.1.0-x86_64.msi
+    InstallerSha256: b6fb32b5bac9e311b08275cca189eb4075c62488279359e10b8bf306fe747d3e
+    ProductCode: "{7651E74C-FA28-46CA-8CCA-E37C1F6C82C3}"
 ManifestType: singleton
 ManifestVersion: 1.6.0
