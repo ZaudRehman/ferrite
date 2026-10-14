@@ -92,7 +92,16 @@ jobs:
         run: cargo install --locked cargo-wix@0.3.9 && cargo wix -p ferrite-browser --target ${{ matrix.target }} --nocapture --no-build --target-bin-dir target/${{ matrix.target }}/release
       - name: Package macOS dmg
         if: matrix.pkg == 'dmg'
-        run: cargo install --locked cargo-bundle@0.12.0 && cargo bundle -p ferrite-browser --release --target ${{ matrix.target }} --format dmg --binary-path target/${{ matrix.target }}/release/ferrite
+        # Arch-suffix at the source: both mac jobs emit a generic
+        # Ferrite.dmg, which collides in the flat asset namespace and
+        # matches no cask URL (Ferrite-<triple>-apple-darwin.dmg).
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-bundle@0.12.0
+          cargo bundle -p ferrite-browser --release --target ${{ matrix.target }} --format dmg --binary-path target/${{ matrix.target }}/release/ferrite
+          dmg=target/${{ matrix.target }}/release/bundle/macos/Ferrite.dmg
+          test -f "$dmg" || { echo "bundler produced no dmg at $dmg"; exit 1; }
+          mv "$dmg" "target/${{ matrix.target }}/release/bundle/macos/Ferrite-${{ matrix.target }}.dmg"
       - name: Sign Windows Authenticode
         if: matrix.os == 'windows-latest' && env.WINDOWS_SIGNING_CERT != ''
         env:
@@ -115,10 +124,13 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          # Overwrite the bundled dmg in place (never a second file at
+          # the same asset name) so signing keeps one dmg per arch.
+          dmg=target/${{ matrix.target }}/release/bundle/macos/Ferrite-${{ matrix.target }}.dmg
           codesign --deep --force --verify --verbose --sign "Developer ID Application: Ferrite Browser" target/${{ matrix.target }}/release/bundle/macos/*.app
-          ditto -c -k --keepParent target/${{ matrix.target }}/release/bundle/macos/Ferrite.app Ferrite-${{ matrix.target }}.dmg
-          xcrun notarytool submit Ferrite-${{ matrix.target }}.dmg --apple-id $APPLE_ID --password $APPLE_PASSWORD --team-id $APPLE_TEAM_ID --wait
-          xcrun stapler staple Ferrite-${{ matrix.target }}.dmg
+          ditto -c -k --keepParent target/${{ matrix.target }}/release/bundle/macos/Ferrite.app "$dmg"
+          xcrun notarytool submit "$dmg" --apple-id $APPLE_ID --password $APPLE_PASSWORD --team-id $APPLE_TEAM_ID --wait
+          xcrun stapler staple "$dmg"
       - name: Warn when macOS signing skipped
         if: matrix.os == 'macos-latest' && env.APPLE_ID == ''
         run: 'echo "::warning::No Apple credentials configured: DMG ships unsigned and unnotarized (Gatekeeper will block it)"'
