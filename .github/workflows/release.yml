@@ -393,6 +393,8 @@ jobs:
           title: "chore(release): update store manifests"
           body: "Automated manifest refresh for this tag (Homebrew cask, Winget). SHAs computed from release artifacts."
           branch: "chore/release-manifests"
+          # Tag checkouts detach HEAD, so the base must be explicit.
+          base: main
           add-paths: |
             homebrew/Ferrite.rb
             winget/Ferrite.Browser.yaml
