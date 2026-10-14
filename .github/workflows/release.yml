@@ -57,11 +57,12 @@ jobs:
         run: choco install strawberryperl -y --no-progress
       - name: Prefer Strawberry Perl on PATH
         # Git Bash prepends its own MSYS2 perl, which lacks core modules
-        # OpenSSL's Configure needs. Add-Content (not >>, which writes
-        # UTF-16 and poisons the file; not a leading-quoted string, which
-        # YAML reads as a block scalar and breaks the whole file).
+        # OpenSSL's Configure needs.
         if: matrix.os == 'windows-latest'
-        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:/Strawberry/perl/bin'
+        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\Strawberry\perl\bin'
+      - name: Repair MSYS2 perl module set (fallback perl)
+        if: matrix.os == 'windows-latest'
+        run: '& "C:\Program Files\Git\mingw64\bin\pacman.exe" -S --noconfirm perl-Locale-Maketext-Simple'
       - name: Set SOURCE_DATE_EPOCH
         shell: bash
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> $GITHUB_ENV
