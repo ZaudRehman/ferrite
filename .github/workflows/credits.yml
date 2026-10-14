@@ -14,15 +14,13 @@ jobs:
       - name: Deny unlisted licenses
         run: cargo deny check licenses
       - name: Attribution snapshot is fresh
-        # Compares the license dependency list, not raw bytes: cargo-about
-        # embeds absolute local paths, which can never match between the
-        # maintainer's machine and CI. Adding, removing, or bumping a
-        # dependency still fails this check, with the culprit in the log.
+        # Compares the dependency list, not raw bytes: cargo-about embeds
+        # absolute local paths, which differ on every machine. Dependency
+        # changes still fail this check.
         run: |
           cargo about generate --format json -o /tmp/credits.json
           list() { jq -r '.licenses[] | .id as $l | .used_by[].crate | "\($l) \(.name) \(.version)"' "$1" | sort; }
           diff <(list /tmp/credits.json) <(list crates/ferrite-tabs/assets/credits.json)
-          # The snapshot ships in the binary (include_str!): it must never
-          # leak maintainer machine paths. Scrub source_path values to
-          # crate-relative tails after every regen; this fails loud if not.
+          # The snapshot ships in the binary: scrub machine paths after
+          # every regen; this fails loud if they leak back in.
           ! grep -E '"(source_path|path)":"([A-Za-z]:|/home/|/Users/)' crates/ferrite-tabs/assets/credits.json

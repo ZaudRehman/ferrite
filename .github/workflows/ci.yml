@@ -16,31 +16,25 @@ jobs:
           toolchain: "1.96.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # Native deps for --all-features: WebKitGTK/wry sys libs plus perl
-      # for the vendored SQLCipher/OpenSSL builds (see docs/SETUP.md).
-      # Without these the feature-gated build fails for missing headers,
-      # not for Ferrite code.
+      # WebKitGTK/wry sys libs plus perl for the vendored SQLCipher/OpenSSL
+      # builds (see docs/SETUP.md).
       - name: Linux deps
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev perl pkg-config libssl-dev
-      # pdfium native library for --all-features tests: the pdfium-render
-      # tests bind the real engine (garbage-input assertions cannot hold
-      # against it, and bindings init once per process; see
-      # crates/ferrite-archive/src/pdf.rs). Pinned by tag AND sha256;
-      # a mismatch fails the job (native code is supply chain).
+      # pdfium native library for --all-features tests (they bind the
+      # real engine; see crates/ferrite-archive/src/pdf.rs). Pinned by tag
+      # AND sha256; a mismatch fails the job.
       - name: pdfium library (pinned)
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pdfium" && cd "$RUNNER_TEMP/pdfium"
-          # Binary MUST match the crate's bindings ceiling: pdfium-render
-          # 0.9.x tops out at pdfium_7881 (pdfium_latest). A newer binary
-          # with older bindings is ABI drift and dies as heap corruption
-          # (free(): invalid pointer) deep in the test run, not at load.
+          # Binary must match the crate's bindings ceiling (0.9.x tops out
+          # at pdfium_7881). A newer binary with older bindings corrupts
+          # the heap instead of failing at load.
           curl -fsSL -o pdfium.tgz https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-linux-x64.tgz
           echo "1470e21b8b4a3b4ad7f85684e2da11d94f3b69a86d81dee11b9b6709d927ac1d  pdfium.tgz" | sha256sum -c -
           tar xzf pdfium.tgz
-          # Locate, don't assume: the archive's internal layout is upstream's
-          # business (bin/ vs lib/ has changed before). Fail fast with a
-          # listing instead of a cryptic DlOpen error deep in the test run.
+          # Locate, don't assume: the archive layout changes across
+          # releases. Fail fast with a listing, not a cryptic DlOpen error.
           LIB="$(find "$RUNNER_TEMP/pdfium" -name libpdfium.so | head -n 1)"
           test -n "$LIB" || { echo "libpdfium.so not found after extract:"; find "$RUNNER_TEMP/pdfium" -maxdepth 3; exit 1; }
           echo "FERRITE_PDFIUM_PATH=$(dirname "$LIB")" >> $GITHUB_ENV
@@ -53,9 +47,8 @@ jobs:
       - name: Cargo deny
         uses: EmbarkStudios/cargo-deny-action@v2
       - name: SBOM
-        # Pinned like the other generators. The tool writes one file per
-        # manifest (CrateName pattern), not a single root file, so collect
-        # by glob; fail loudly if the layout ever changes again.
+      # Pinned like the other generators. One file per manifest, so
+      # collect by glob; fail loudly if that layout ever changes.
         run: cargo install --locked cargo-cyclonedx@0.5.9 && cargo cyclonedx --format json --override-filename sbom
       - uses: actions/upload-artifact@v4
         with:
@@ -75,9 +68,8 @@ jobs:
         working-directory: relay
         run: go test ./...
 
-  # Wayland/gtk compile gate: the runtime path is behaviorally untested (no
-  # display in runners; see docs/LIMITATIONS.md), but it must at least keep
-  # compiling behind its feature flag, or the fallback rots silently.
+  # Wayland/gtk compile gate: behaviorally untested (no display in
+  # runners), but it must keep compiling or the fallback rots.
   wayland:
     runs-on: ubuntu-24.04
     steps:
@@ -94,9 +86,8 @@ jobs:
       - name: Wayland gtk clippy
         run: cargo clippy -p ferrite-tabs --features gtk --all-targets -- -D warnings
 
-  # Engine matrix drift gate: docs/ENGINE.md pins exact mediation-layer
-  # versions. A bumped Cargo.lock without a re-verified matrix is how gaps
-  # get rediscovered through production bugs instead of this file.
+  # Engine matrix drift gate: a bumped lockfile without a re-verified
+  # matrix rediscovers gaps via production bugs.
   engine-matrix:
     runs-on: ubuntu-24.04
     steps:
