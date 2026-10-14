@@ -169,9 +169,6 @@ jobs:
         shell: bash
         run: |
           echo "Reproducible: rebuilding with --locked and diffing"
-          # Git Bash prepends its own MSYS2 dirs ahead of PATH inside every
-          # bash step, so the GITHUB_PATH entry does not cover this step:
-          # export the portable perl explicitly (openssl-src needs it).
           if [ "${{ matrix.os }}" = 'windows-latest' ]; then export PATH="$RUNNER_TEMP/strawberry/perl/bin:$PATH"; fi
           # Clean rebuild in the SAME directory: native static libs embed
           # absolute OUT_DIR paths, so any other directory compares
@@ -337,8 +334,11 @@ jobs:
         run: |
           set -euo pipefail
           version=${GITHUB_REF#refs/tags/v}
-          arm_dmg=$(find . -name 'Ferrite-*aarch64-apple-darwin.dmg' | head -1)
-          intel_dmg=$(find . -name 'Ferrite-*x86_64-apple-darwin.dmg' | head -1)
+          # Match by artifact directory (which carries the triple), not by
+          # filename: unsigned builds skip the ditto rename, so both mac
+          # jobs produce a generic Ferrite.dmg in their own directories.
+          arm_dmg=$(find . -path '*aarch64-apple-darwin*' -name '*.dmg' | head -1)
+          intel_dmg=$(find . -path '*x86_64-apple-darwin*' -name '*.dmg' | head -1)
           msi=$(find . -name '*.msi' | head -1)
           test -n "$arm_dmg" || { echo "missing arm64 dmg"; exit 1; }
           test -n "$intel_dmg" || { echo "missing x64 dmg"; exit 1; }
