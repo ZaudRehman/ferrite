@@ -15,6 +15,9 @@ jobs:
       WINDOWS_SIGNING_CERT: ${{ secrets.WINDOWS_SIGNING_CERT }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
     strategy:
+      # One platform's failure must not hide the others': each OS has its
+      # own packaging path with its own failure modes.
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -41,6 +44,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          # Failed runs must still cache: each release retry otherwise
+          # recompiles everything from scratch.
+          cache-on-failure: true
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.0"
@@ -53,6 +59,12 @@ jobs:
       - name: Set SOURCE_DATE_EPOCH
         shell: bash
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> $GITHUB_ENV
+      # RUSTFLAGS must be exported from a run step: `env:` values are
+      # literal (no $VAR expansion), so the remap flags below would reach
+      # rustc unexpanded and match nothing. GITHUB_ENV expands in shell.
+      - name: Set reproducible flags
+        shell: bash
+        run: echo "RUSTFLAGS=--remap-path-prefix $GITHUB_WORKSPACE=/ferrite --remap-path-prefix $HOME/.cargo=/cargo" >> $GITHUB_ENV
       # SQLCipher features are mandatory in release: the per-crate build.rs
       # gates fail the build without them (docs/STORAGE_CONTRACT.md).
       # Packaging steps below rebuild via cargo: if a packager does not
@@ -61,7 +73,6 @@ jobs:
         run: cargo build --locked --release --target ${{ matrix.target }} --features ferrite-vault/sqlcipher,ferrite-archive/sqlcipher
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
-          RUSTFLAGS: "--remap-path-prefix $GITHUB_WORKSPACE=/ferrite --remap-path-prefix $HOME/.cargo=/cargo"
       - name: Build Go relay
         run: go build -ldflags="-s -w" -o ferrite-relay${{ matrix.os == 'windows-latest' && '.exe' || '' }} ./...
         working-directory: relay
@@ -116,7 +127,12 @@ jobs:
           # failure output names the missing file in one second.
           shopt -s nullglob
           files=(target/${{ matrix.target }}/release/ferrite*)
-          files+=(target/${{ matrix.target }}/release/bundle/**/* target/wix/*.msi)
+          # Files only: the bundler leaves a staging directory beside the
+          # .deb (same name, no extension) and sha256sum dies on directories.
+          for d in target/${{ matrix.target }}/release/bundle target/wix; do
+            [ -d "$d" ] || continue
+            while IFS= read -r f; do files+=("$f"); done < <(find "$d" -type f | sort)
+          done
           ((${#files[@]})) || { echo "no artifacts to hash"; exit 1; }
           sha256sum "${files[@]}" | tee SHA256SUMS-${{ matrix.target }}.txt
       - name: Channel tarball (per-target update artifact)
@@ -139,6 +155,8 @@ jobs:
           name: ferrite-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/ferrite*
+            !target/${{ matrix.target }}/release/*.d
+            !target/${{ matrix.target }}/release/*.pdb
             ferrite-${{ matrix.target }}.tar.gz
             SHA256SUMS-${{ matrix.target }}.txt
             SHA256-tarball-${{ matrix.target }}.txt
@@ -150,14 +168,30 @@ jobs:
         shell: bash
         run: |
           echo "Reproducible: rebuilding with --locked and diffing"
-          cargo build --locked --release --target ${{ matrix.target }} --offline --features ferrite-vault/sqlcipher,ferrite-archive/sqlcipher
-          sha256sum target/${{ matrix.target }}/release/ferrite* target/${{ matrix.target }}/release/bundle/**/* 2>/dev/null | tee verify.txt
+          # Fresh target dir: otherwise cargo finds everything up to date and
+          # the check passes vacuously without recompiling anything.
+          CARGO_TARGET_DIR=/tmp/verify-target cargo build --locked --release --target ${{ matrix.target }} --offline --features ferrite-vault/sqlcipher,ferrite-archive/sqlcipher
+          shopt -s nullglob
+          # Fresh-build outputs; packaged installers below come from the
+          # original tree (they are inputs here, rebuilt by nothing).
+          files=(/tmp/verify-target/${{ matrix.target }}/release/ferrite*)
+          # Same files-only collection as the checksum step above: the two
+          # lists must be built identically or the diff fails spuriously.
+          for d in target/${{ matrix.target }}/release/bundle target/wix; do
+            [ -d "$d" ] || continue
+            while IFS= read -r f; do files+=("$f"); done < <(find "$d" -type f | sort)
+          done
+          sha256sum "${files[@]}" | tee verify.txt
           diff SHA256SUMS-${{ matrix.target }}.txt verify.txt || { echo "::error::Reproducibility check failed: rebuild differs from release build"; exit 1; }
 
   publish:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
@@ -281,9 +315,9 @@ jobs:
         run: |
           set -euo pipefail
           version=${GITHUB_REF#refs/tags/v}
-          arm_dmg=$(ls Ferrite-*-aarch64-apple-darwin.dmg 2>/dev/null || ls **/Ferrite-*-aarch64-apple-darwin.dmg 2>/dev/null | head -1)
-          intel_dmg=$(ls Ferrite-*-x86_64-apple-darwin.dmg 2>/dev/null || ls **/Ferrite-*-x86_64-apple-darwin.dmg 2>/dev/null | head -1)
-          msi=$(ls **/*.msi 2>/dev/null | head -1)
+          arm_dmg=$(find . -name 'Ferrite-*aarch64-apple-darwin.dmg' | head -1)
+          intel_dmg=$(find . -name 'Ferrite-*x86_64-apple-darwin.dmg' | head -1)
+          msi=$(find . -name '*.msi' | head -1)
           test -n "$arm_dmg" || { echo "missing arm64 dmg"; exit 1; }
           test -n "$intel_dmg" || { echo "missing x64 dmg"; exit 1; }
           test -n "$msi" || { echo "missing msi"; exit 1; }
