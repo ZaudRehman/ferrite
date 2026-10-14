@@ -150,7 +150,7 @@ jobs:
           tar czf "ferrite-${{ matrix.target }}.tar.gz" -C "$(dirname "$bin")" "$(basename "$bin")"
           sha256sum "ferrite-${{ matrix.target }}.tar.gz" | tee "SHA256-tarball-${{ matrix.target }}.txt"
       - name: SBOM cyclonedx
-        run: cargo install --locked cargo-cyclonedx@0.5.9 && cargo cyclonedx --format json --target ${{ matrix.target }} --override-filename sbom-${{ matrix.target }}
+        run: cargo install --locked cargo-cyclonedx@0.5.9 && cargo cyclonedx --format json --target ${{ matrix.target }} --target-in-filename
       - uses: actions/upload-artifact@v4
         with:
           name: ferrite-${{ matrix.target }}
@@ -161,7 +161,7 @@ jobs:
             ferrite-${{ matrix.target }}.tar.gz
             SHA256SUMS-${{ matrix.target }}.txt
             SHA256-tarball-${{ matrix.target }}.txt
-            crates/*/sbom-${{ matrix.target }}.json
+            crates/*_*${{ matrix.target }}.cdx.json
             **/*.dmg
             **/*.msi
             **/*.deb
@@ -219,13 +219,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            **/ferrite-*
+            **/ferrite-*.tar.gz
             **/*.dmg
             **/*.msi
             **/*.deb
             **/SHA256SUMS-*.txt
             **/SHA256-tarball-*.txt
-            **/sbom-*.json
+            **/*.cdx.json
           generate_release_notes: true
       - name: Update latest.json manifest
         run: |

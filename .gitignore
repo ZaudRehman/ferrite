@@ -7,3 +7,4 @@
 /ferrite-blobs/
 /graphify-out/
 crates/*/sbom.json
+ferrite-threat.db*
