@@ -374,7 +374,10 @@ jobs:
           s = open(rb).read()
           s = re.sub(r'version "[^"]+"', f'version "{version}"', s, count=1)
           s = re.sub(r'sha256 arm:\s*"[^"]+"', f'sha256 arm:   "{arm_sha}"', s, count=1)
-          s = re.sub(r'intel:\s*"[^"]+"', f'intel: "{intel_sha}"', s, count=1)
+          # The intel pattern is line-anchored: a bare `intel:` also
+          # matches the `arch arm:, intel:` label line above the block,
+          # which would clobber the architecture name with the SHA.
+          s = re.sub(r'(?m)^(\s*)intel:\s*"[^"]+"', f'\\1intel: "{intel_sha}"', s, count=1)
           open(rb, "w").write(s)
           y = "winget/Ferrite.Browser.yaml"
           s = open(y).read()

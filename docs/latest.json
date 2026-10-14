@@ -1,9 +1,29 @@
 {
   "stable": {
     "version": "0.1.0",
-    "rollout": 100,
-    "signature": "",
-    "targets": {},
+    "rollout": 1,
+    "targets": {
+      "x86_64-pc-windows-msvc": {
+        "url": "https://github.com/ZaudRehman/ferrite/releases/download/v0.1.0/ferrite-x86_64-pc-windows-msvc.tar.gz",
+        "sha256": "0c523c5f5aba599889041217154e69c761027af1ff8a1f4a0488a084ef708d30",
+        "patch_url": null
+      },
+      "x86_64-unknown-linux-gnu": {
+        "url": "https://github.com/ZaudRehman/ferrite/releases/download/v0.1.0/ferrite-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "e59e58c459b89c682554f5e7aa319562e42379b047f4b8adc5dd472417f582e0",
+        "patch_url": null
+      },
+      "x86_64-apple-darwin": {
+        "url": "https://github.com/ZaudRehman/ferrite/releases/download/v0.1.0/ferrite-x86_64-apple-darwin.tar.gz",
+        "sha256": "beb38f9a8e6fd8b6cab620ecb19c4ae60c47d3aacc6df68e551eb5cc004e8ab1",
+        "patch_url": null
+      },
+      "aarch64-apple-darwin": {
+        "url": "https://github.com/ZaudRehman/ferrite/releases/download/v0.1.0/ferrite-aarch64-apple-darwin.tar.gz",
+        "sha256": "3f19632463c69b61b8c9bfe1b8409e487318938356c8a35cefb31a6deb40f1ec",
+        "patch_url": null
+      }
+    },
     "severity": ""
   },
   "beta": {
