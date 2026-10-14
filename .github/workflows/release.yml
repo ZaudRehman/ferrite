@@ -168,13 +168,17 @@ jobs:
         shell: bash
         run: |
           echo "Reproducible: rebuilding with --locked and diffing"
-          # Fresh target dir: otherwise cargo finds everything up to date and
-          # the check passes vacuously without recompiling anything.
-          CARGO_TARGET_DIR=/tmp/verify-target cargo build --locked --release --target ${{ matrix.target }} --offline --features ferrite-vault/sqlcipher,ferrite-archive/sqlcipher
+          # Clean rebuild in the SAME directory: native static libs embed
+          # absolute OUT_DIR paths in their DWARF, so a fresh target dir
+          # compares differently by construction. Artifacts are already
+          # uploaded and lists/tarballs live outside target/, so wiping it
+          # destroys nothing the later steps need.
+          cargo clean
+          cargo build --locked --release --target ${{ matrix.target }} --offline --features ferrite-vault/sqlcipher,ferrite-archive/sqlcipher
           shopt -s nullglob
-          # Fresh-build outputs; packaged installers below come from the
-          # original tree (they are inputs here, rebuilt by nothing).
-          files=(/tmp/verify-target/${{ matrix.target }}/release/ferrite*)
+          # Same files-only collection as the checksum step above: the two
+          # lists must be built identically or the diff fails spuriously.
+          files=(target/${{ matrix.target }}/release/ferrite*)
           # Same files-only collection as the checksum step above: the two
           # lists must be built identically or the diff fails spuriously.
           for d in target/${{ matrix.target }}/release/bundle target/wix; do
