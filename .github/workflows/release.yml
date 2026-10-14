@@ -169,6 +169,10 @@ jobs:
         shell: bash
         run: |
           echo "Reproducible: rebuilding with --locked and diffing"
+          # Git Bash prepends its own MSYS2 dirs ahead of PATH inside every
+          # bash step, so the GITHUB_PATH entry does not cover this step:
+          # export the portable perl explicitly (openssl-src needs it).
+          if [ "${{ matrix.os }}" = 'windows-latest' ]; then export PATH="$RUNNER_TEMP/strawberry/perl/bin:$PATH"; fi
           # Clean rebuild in the SAME directory: native static libs embed
           # absolute OUT_DIR paths, so any other directory compares
           # differently by construction. Artifacts are already uploaded.
