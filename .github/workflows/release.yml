@@ -144,7 +144,7 @@ jobs:
         run: |
           echo "Reproducible: rebuilding with --locked and diffing"
           cargo build --locked --release --target ${{ matrix.target }} --offline --features ferrite-vault/sqlcipher,ferrite-archive/sqlcipher
-          sha256sum target/${{ matrix.target }}/release/ferrite* | tee verify.txt
+          sha256sum target/${{ matrix.target }}/release/ferrite* target/${{ matrix.target }}/release/bundle/**/* 2>/dev/null | tee verify.txt
           diff SHA256SUMS-${{ matrix.target }}.txt verify.txt || { echo "::error::Reproducibility check failed: rebuild differs from release build"; exit 1; }
 
   publish:
