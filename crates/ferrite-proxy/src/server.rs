@@ -312,6 +312,57 @@ fn is_internal_host(host: &str) -> bool {
         || h.ends_with(".ferrite.invalid")
 }
 
+/// Engine workaround form (`http://ferrite.<page>/`) of internal pages.
+/// Closed allowlist, mirrored from the protocol roster
+/// (`ferrite_tabs::protocol::INTERNAL_PAGE_NAMES`; a parity test there fails
+/// on any drift). Exact single label, default ports (80/443) only: anything
+/// else keeps today's routing. In particular `ferrite.com` (a real site),
+/// `ferrite.<page>:8080` (explicit port = someone's local server), and
+/// `ferrite.<page>.evil.com` (deeper names) all stay external — a prefix
+/// match here would break or endanger them.
+pub const INTERNAL_WORKAROUND_PAGES: &[&str] = &[
+    "newtab",
+    "crashed",
+    "bootdecision",
+    "security-warning",
+    "settings",
+    "tabsearch",
+    "ctxmenu",
+    "dialog",
+    "passwords",
+    "autofill",
+    "about",
+    "credits",
+    "taskmanager",
+    "certs",
+    "viewsource",
+    "reader",
+    "welcome",
+    "restore",
+    "blocked",
+    "error",
+    "history",
+    "downloads",
+    "bookmarks",
+    "share",
+    "chrome",
+    "assets",
+    "profiles",
+    "site",
+    "pdf",
+];
+
+fn is_internal_workaround(host: &str, port: u16) -> bool {
+    if port != 80 && port != 443 {
+        return false;
+    }
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let Some(page) = h.strip_prefix("ferrite.") else {
+        return false;
+    };
+    !page.is_empty() && !page.contains('.') && INTERNAL_WORKAROUND_PAGES.contains(&page)
+}
+
 fn is_upgradable_host(host: &str) -> bool {
     let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
     if h == "localhost" || h == "127.0.0.1" || h == "::1" {
@@ -523,7 +574,7 @@ async fn handle_connect(
     pool: &ConnPool,
 ) {
     let (host, port) = split_host_port(&head.target, 443);
-    if is_internal_host(&host) {
+    if is_internal_host(&host) || is_internal_workaround(&host, port) {
         let _ = client
             .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .await;
@@ -605,7 +656,7 @@ async fn handle_forward(
     let (host, port) = head.host_of_absolute();
     // Internal pages: only exact ferrite hosts. Never match external URLs
     // that merely contain the substring in path/query.
-    if is_internal_host(&host) {
+    if is_internal_host(&host) || is_internal_workaround(&host, port) {
         let target_lower = head.target.to_ascii_lowercase();
         let body: Vec<u8> = if target_lower.contains("newtab") {
             br#"<!DOCTYPE html><!-- ferrite://newtab --><html><head><meta charset="utf-8"><title>New Tab - Ferrite</title><style>html,body{margin:0;height:100%;background:#0d0a06;color:#f0e7d5;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;flex-direction:column} .wrap{max-width:640px;margin:0 auto;padding:48px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh} .logo{font-size:28px;font-weight:800;letter-spacing:-0.02em;color:#f4b762;margin:0 0 8px}  .search{width:100%;max-width:560px} .search input{width:100%;padding:16px;font-size:15px;border:0.5px solid #201a0f;border-radius:0;background:#120e08;color:#f0e7d5;outline:none;font-family:JetBrains Mono,monospace} .hint{margin-top:8px;color:#8f7c57;font-size:11px;font-family:Geist Pixel Square,monospace} .shortcuts{display:grid;grid-template-columns:repeat(4,80px);gap:16px;margin-top:32px} .tile{width:80px;height:80px;background:#120e08;border:0.5px solid #201a0f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;cursor:pointer} .tile:hover{border-color:#ffc670}</style></head><body><div class="wrap"><p class="logo">Ferrite</p><div class="search"><input type="text" id="q" placeholder="Search with DuckDuckGo or enter URL - press Enter" autocomplete="off" spellcheck="false"><p class="hint">Press Enter to search or navigate. Shortcuts below are instant.</p></div><div class="shortcuts"><div class="tile" onclick="go('https://duckduckgo.com')"><strong>DDG</strong><span>DuckDuckGo</span></div><div class="tile" onclick="go('https://google.com')"><strong>G</strong><span>Google</span></div><div class="tile" onclick="go('https://github.com')"><strong>GH</strong><span>GitHub</span></div><div class="tile" onclick="go('https://news.ycombinator.com')"><strong>HN</strong><span>Hacker News</span></div></div></div><script>const el=document.getElementById('q');function go(u){try{window.ipc.postMessage(JSON.stringify({type:'navigate',url:u}))}catch(e){location.href=u}}el.addEventListener('keydown',e=>{if(e.key==='Enter'){const v=e.target.value.trim();if(v){try{window.ipc.postMessage(JSON.stringify({type:'search',query:v}))}catch(e){location.href='https://duckduckgo.com/?q='+encodeURIComponent(v)}}}});document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();el.focus();el.select()}});</script></body></html>"#.to_vec()
@@ -2019,6 +2070,29 @@ mod tests {
         assert!(!is_internal_host("ferrite.evil.com"));
         assert!(!is_internal_host("notferrite.example"));
         assert!(!is_internal_host("example.com"));
+    }
+
+    #[test]
+    fn workaround_form_matches_roster_only() {
+        // The boot log showed upstream dials for ferrite.chrome:443 — the
+        // engine workaround form must short-circuit, never dial.
+        assert!(is_internal_workaround("ferrite.chrome", 443));
+        assert!(is_internal_workaround("ferrite.welcome", 80));
+        assert!(is_internal_workaround("FERRITE.SETTINGS", 443));
+        assert!(is_internal_workaround("ferrite.assets.", 80));
+        // Real site with the same shape stays external (fail-closed direction
+        // is proxying, never serving local stubs for foreign hosts).
+        assert!(!is_internal_workaround("ferrite.com", 443));
+        assert!(!is_internal_workaround("ferrite.io", 80));
+        // Explicit port = someone's local server, not an internal page.
+        assert!(!is_internal_workaround("ferrite.welcome", 8080));
+        assert!(!is_internal_workaround("ferrite.chrome", 8443));
+        // Deeper names and non-roster labels stay external.
+        assert!(!is_internal_workaround("ferrite.welcome.evil.com", 443));
+        assert!(!is_internal_workaround("ferrite.notapage", 443));
+        assert!(!is_internal_workaround("ferrite.", 443));
+        assert!(!is_internal_workaround("ferrite", 443));
+        assert!(!is_internal_workaround("example.com", 443));
     }
 
     #[test]

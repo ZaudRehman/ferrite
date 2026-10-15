@@ -18643,6 +18643,18 @@ mod chrome_state_tests {
     }
 
     #[test]
+    fn proxy_workaround_roster_mirrors_protocol_pages() {
+        // server.rs keeps its own copy (the proxy crate cannot depend on
+        // tabs): any drift either dials internal pages upstream or serves
+        // local stubs for foreign hosts. This fails on either side's edit.
+        let mut proxy = ferrite_proxy::server::INTERNAL_WORKAROUND_PAGES.to_vec();
+        let mut served = ferrite_tabs::protocol::INTERNAL_PAGE_NAMES.to_vec();
+        proxy.sort_unstable();
+        served.sort_unstable();
+        assert_eq!(proxy, served);
+    }
+
+    #[test]
     fn chrome_telemetry_falls_through_instead_of_rejecting() {
         // Init-script reporters post {type:...} in every webview including
         // chrome (boot logged 8 of these as rejections): they must reach

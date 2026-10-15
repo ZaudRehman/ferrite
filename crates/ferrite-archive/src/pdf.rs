@@ -3,7 +3,7 @@
 
 use crate::error::{ArchiveError, ArchiveResult};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// True when the real pdfium engine is compiled in. The renderer child
 /// reports this so the viewer can explain degraded mode honestly.
@@ -61,7 +61,7 @@ fn pdf_boot_report_for_dirs(
         "env"
     } else if exe_dir
         .as_ref()
-        .map(|d| d.join(PDFIUM_LIB_NAME).is_file())
+        .map(|d| dir_has_pdfium(d))
         .unwrap_or(false)
     {
         "sibling"
@@ -71,11 +71,19 @@ fn pdf_boot_report_for_dirs(
     (renderer, pdfium)
 }
 
+/// The shipped library file sits in this directory. Shared by the report
+/// above and the bind path below so the two can never disagree on what
+/// "shipped" means.
+fn dir_has_pdfium(dir: &Path) -> bool {
+    dir.join(PDFIUM_LIB_NAME).is_file()
+}
+
 /// Sibling pdfium directory when the shipped library file is present.
 /// Pure shape (no bind): the bind itself stays in `PdfEngine::new`.
+/// Feature-gated with its only caller (the engine bind path).
+#[cfg(feature = "pdfium-render")]
 fn sibling_pdfium_dir() -> Option<PathBuf> {
-    let dir = exe_sibling_dir()?;
-    dir.join(PDFIUM_LIB_NAME).is_file().then_some(dir)
+    exe_sibling_dir().filter(|d| dir_has_pdfium(d))
 }
 
 #[derive(Debug, Clone)]
