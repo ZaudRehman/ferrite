@@ -19,8 +19,9 @@ web-page links respond to clicks.
 **Description:** Determine whether the unchanged old tab was a website (correct
 behavior — sites keep their styling) or a Ferrite page (live-push failure).
 **Acceptance criteria:**
-- [ ] Tab kind recorded
-- [ ] If Ferrite page: becomes a Phase-1 fix task; if website: closed as correct
+- [x] Tab kind recorded — ANSWER: a Ferrite page (not a website). Live-push
+  failure is real; folded into Task 3 scope.
+- [ ] If Ferrite page: becomes a Phase-1 fix task
 **Verification:**
 - [ ] Matches `apply_pack_live` routing logic either way
 **Dependencies:** None (needs the human)
@@ -32,9 +33,12 @@ behavior — sites keep their styling) or a Ferrite page (live-push failure).
 
 ## Phase 1: P0 — dead toolbar
 
-### Task 3: Fix per Phase-0 evidence
+### Task 3: Fix per Phase-0 evidence (toolbar input + theme live-push)
 **Description:** Implement the fix the evidence points at (delivery path or
-refusal path), not both, not a guess.
+refusal path for the toolbar), plus the confirmed theme live-push failure on
+existing Ferrite pages (new tabs already work via the factory block, so the
+gap is strictly the live `evaluate_script` pushes to open pages and chrome).
+Not both toolbar theories, not a guess.
 **Acceptance criteria:**
 - [ ] Toolbar buttons and dropdowns respond on the user's real install
 - [ ] No regression in content-page input or keyboard paths
