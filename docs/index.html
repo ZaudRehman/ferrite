@@ -220,12 +220,12 @@ footer{padding-top:48px;overflow:hidden}
 </section>
 <section class="w sec" id="install" aria-labelledby="ih">
 <div class="ins">
-<div class="r"><p class="kk">Install</p><h2 id="ih">One command. <em>Done.</em></h2><p style="margin:0;color:var(--i2);font-size:17px">Signed (Authenticode, Apple notarization) and reproducible: build from source with <code>cargo build --locked</code> and compare. Flatpak, Homebrew, winget, and AUR are all first-class.</p></div>
+<div class="r"><p class="kk">Install</p><h2 id="ih">One download. <em>Done.</em></h2><p style="margin:0;color:var(--i2);font-size:17px">Reproducible: build from source with <code>cargo build --locked</code> and compare. Downloads are unsigned while signing is unfunded, so your OS asks once — what to expect is below.</p></div>
 <div class="cm r" style="--d:.1s">
-<div><small>Flatpak</small><code>flatpak install flathub com.ferrite.Browser</code><button data-c="flatpak install flathub com.ferrite.Browser">copy</button></div>
-<div><small>Homebrew</small><code>brew install --cask ferrite</code><button data-c="brew install --cask ferrite">copy</button></div>
-<div><small>winget</small><code>winget install Ferrite.Browser</code><button data-c="winget install Ferrite.Browser">copy</button></div>
-<div><small>Arch</small><code>yay -S ferrite-browser</code><button data-c="yay -S ferrite-browser">copy</button></div>
+<div><small>Windows</small><code>SmartScreen warning &rarr; &ldquo;More info&rdquo; &rarr; &ldquo;Run anyway&rdquo; (unsigned build)</code></div>
+<div><small>macOS</small><code>Gatekeeper block &rarr; right-click the app &rarr; Open (unsigned build)</code></div>
+<div><small>Verify</small><code>Match the file hash against the SHA256SUMS file on the release page</code></div>
+<div><small>Stores</small><code>Homebrew, winget, Flathub, AUR: manifests ready, listings in progress</code></div>
 </div>
 </div>
 </section>
@@ -236,7 +236,7 @@ footer{padding-top:48px;overflow:hidden}
 <div><h3>Archive</h3>zstd, FTS5 full-text search, 2GB LRU, pinned items kept eager.</div>
 <div><h3>Privacy</h3>adblock trie, hourly threat-list updates, k-anonymous lookups over the local proxy, GPC, cookie stripping, De-AMP, canvas/WebGL/audio fingerprint spoofing.</div>
 <div><h3>Vault</h3>AES-256 (SQLCipher), Argon2id key + BIP39 recovery phrase.</div>
-<div><h3>Builds</h3>signed (Windows Authenticode, Apple notarization) and reproducible.</div>
+<div><h3>Builds</h3>reproducible and checksum-verified; unsigned until signing is funded.</div>
 </div>
 </section>
 <section class="w sec" aria-label="Requirements and source"><div class="two">
