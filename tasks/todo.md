@@ -209,9 +209,14 @@ working DBs to temp dirs, never the crate dir.
 **Files likely touched:** `crates/ferrite-privacy` test helpers
 **Estimated scope:** S–M
 
-### Task 15: Spellcheck dictionaries gap
-**Description:** Boot reports `dicts=0` while docs promise bundled `.bdic`:
-bundle them or correct the docs; test asserts whichever is promised.
+### Task 15: Spellcheck dictionaries gap — RECON DONE
+**Finding:** `assets/dicts/` holds only the README; the intended pipeline step
+("fetch once at build/provision time, verify, then ship") was never built, so
+no installer seeds the runtime dir and the proxy block kills the fallback
+fetch. User strings promising "bundled" describe intent, not reality.
+**Fix shape:** provision en-US.bdic (pinned hash), ship in all installers, seed
+runtime dir on first boot, test asserts boot `dicts>0`. Language set default:
+en-US only unless asked otherwise.
 **Acceptance criteria:**
 - [ ] Dictionaries present at boot, or docs no longer promise them
 - [ ] Standing assertion matches the promise
@@ -221,9 +226,13 @@ bundle them or correct the docs; test asserts whichever is promised.
 **Files likely touched:** bundling config or `docs/ENGINE.md`
 **Estimated scope:** S
 
-### Task 16: First-run device-key failure
-**Description:** `session autosave failed: no device key` on a fresh install —
-determine whether sessions ever persist; fix or document.
+### Task 16: First-run device-key failure — RECON DONE, needs user data
+**Finding:** `resolve_master_key` (load → generate → store) degrades honestly
+to non-durable, and the app notifies. Prime suspect on stock Windows: UAC
+elevation split (per-machine install run as admin vs user credential store),
+or a genuine first-run store failure. Cannot distinguish without the full boot
+log (need the `keyring store failed` / generate lines around the autosave
+error). Fix follows the evidence.
 **Acceptance criteria:**
 - [ ] Severity answered (cosmetic warning vs sessions never saved)
 - [ ] Fix or documented limitation
