@@ -23,3 +23,7 @@ ferrite-shell = { path = "../ferrite-shell" }
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+# Windows-only exe icon (build.rs no-ops on other targets).
+[build-dependencies]
+winres = "0.1"

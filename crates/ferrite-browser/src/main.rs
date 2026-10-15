@@ -1,5 +1,13 @@
 //! Binary entry. Init tracing and panic hook, then run `ferrite-shell`.
 
+// Release builds on Windows are GUI-subsystem: no console window pops
+// up beside the browser. Debug/test builds keep the console for logs
+// (debug_assertions are on there, so this never silences a test run).
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use anyhow::Context;
 use ferrite_shell::{ShellConfig, run};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};

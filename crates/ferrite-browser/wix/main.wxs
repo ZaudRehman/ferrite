@@ -131,6 +131,9 @@
                     </Directory>
                 </Directory>
             </Directory>
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ProgramMenuDir' Name='Ferrite'/>
+            </Directory>
         </Directory>
 
         <Feature
@@ -150,6 +153,7 @@
             <!--<ComponentRef Id='License'/>-->
 
             <ComponentRef Id='binary0'/>
+            <ComponentRef Id='StartMenuShortcut'/>
 
             <Feature
                 Id='Environment'
@@ -161,17 +165,23 @@
             </Feature>
         </Feature>
 
+        <DirectoryRef Id='ProgramMenuDir'>
+            <!-- Start Menu entry: without this the app installs silently
+                 and users cannot find it. Non-advertised like the rest;
+                 the registry value is the required KeyPath. -->
+            <Component Id='StartMenuShortcut' Guid='*'>
+                <Shortcut Id='FerriteStartMenu' Name='Ferrite' Description='Privacy-first desktop browser' Target='[#exe0]' WorkingDirectory='Bin' Icon='ProductICO'/>
+                <RemoveFolder Id='ProgramMenuDir' On='uninstall'/>
+                <RegistryValue Root='HKLM' Key='SOFTWARE\Ferrite' Name='StartMenuShortcut' Type='integer' Value='1' KeyPath='yes'/>
+            </Component>
+        </DirectoryRef>
+
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
-        
-        <!--
-          Uncomment the following `Icon` and `Property` tags to change the product icon.
-
-          The product icon is the graphic that appears in the Add/Remove
-          Programs control panel for the application.
-        -->
-        <!--<Icon Id='ProductICO' SourceFile='wix\Product.ico'/>-->
-        <!--<Property Id='ARPPRODUCTICON' Value='ProductICO' />-->
+        <!-- Product icon (Add/Remove Programs, shortcut): brand/ferrite.ico,
+             rendered from brand/icon_on_light.svg. -->
+        <Icon Id='ProductICO' SourceFile='..\..\..\brand\ferrite.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='ProductICO' />
 
         
         <!--
