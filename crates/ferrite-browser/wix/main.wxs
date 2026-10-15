@@ -127,6 +127,21 @@
                                 DiskId='1'
                                 Source='$(var.CargoTargetBinDir)\ferrite.exe'
                                 KeyPath='yes'/>
+                            <!-- PDF stack, same directory by contract: the shell
+                                 spawns the renderer as an exe sibling and binds
+                                 the pdfium beside it (see pdf_boot_report).
+                                 Staged into the bin dir by the release
+                                 workflow before `cargo wix` runs. -->
+                            <File
+                                Id='exe1'
+                                Name='ferrite-pdf-renderer.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\ferrite-pdf-renderer.exe'/>
+                            <File
+                                Id='pdfiumlib'
+                                Name='pdfium.dll'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\pdfium.dll'/>
                         </Component>
                     </Directory>
                 </Directory>

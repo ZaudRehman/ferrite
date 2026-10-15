@@ -13,6 +13,10 @@ path = "src/main.rs"
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-ferrite-archive.workspace = true
+# The child owns the single pdfium engine instance: it must bind the real
+# library, so it declares the engine feature itself instead of inheriting
+# whatever the final binary enables. Without this the child builds as a
+# metadata-only fallback and every PDF feature silently degrades.
+ferrite-archive = { workspace = true, features = ["pdfium-render"] }
 serde_json.workspace = true
 zeroize = { version = "1.7", features = ["zeroize_derive"] }

@@ -3,6 +3,7 @@
 
 use crate::error::{ArchiveError, ArchiveResult};
 use serde::Serialize;
+use std::path::PathBuf;
 
 /// True when the real pdfium engine is compiled in. The renderer child
 /// reports this so the viewer can explain degraded mode honestly.
@@ -10,6 +11,72 @@ use serde::Serialize;
 pub const HAS_ENGINE: bool = true;
 #[cfg(not(feature = "pdfium-render"))]
 pub const HAS_ENGINE: bool = false;
+
+/// Platform pdfium library file name, matching the pinned builds the
+/// release workflow ships beside the binaries.
+#[cfg(windows)]
+pub const PDFIUM_LIB_NAME: &str = "pdfium.dll";
+#[cfg(target_os = "macos")]
+pub const PDFIUM_LIB_NAME: &str = "libpdfium.dylib";
+#[cfg(all(not(windows), not(target_os = "macos")))]
+pub const PDFIUM_LIB_NAME: &str = "libpdfium.so";
+
+/// Renderer child binary name. Spawned as a sibling of the main exe (never
+/// via PATH or CWD: blocks binary planting via download), so installers
+/// must place it there.
+#[cfg(windows)]
+pub const RENDERER_EXE_NAME: &str = "ferrite-pdf-renderer.exe";
+#[cfg(not(windows))]
+pub const RENDERER_EXE_NAME: &str = "ferrite-pdf-renderer";
+
+/// Directory holding the running exe. None when undeterminable (tests,
+/// exotic hosts): callers treat that as "nothing shipped".
+pub fn exe_sibling_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+}
+
+/// Boot-time PDF capability report. Filesystem only: binding here would init
+/// the lib in-process, but the renderer child owns the single engine
+/// instance by design. Returns (renderer_shipped, pdfium_source) with source
+/// one of "env" | "sibling" | "system-or-missing" — system lookup is only
+/// knowable by binding, so the label stays honest instead of claiming more.
+pub fn pdf_boot_report() -> (bool, &'static str) {
+    pdf_boot_report_for_dirs(
+        exe_sibling_dir(),
+        std::env::var("FERRITE_PDFIUM_PATH").ok().map(PathBuf::from),
+    )
+}
+
+fn pdf_boot_report_for_dirs(
+    exe_dir: Option<PathBuf>,
+    env_dir: Option<PathBuf>,
+) -> (bool, &'static str) {
+    let renderer = exe_dir
+        .as_ref()
+        .map(|d| d.join(RENDERER_EXE_NAME).is_file())
+        .unwrap_or(false);
+    let pdfium = if env_dir.is_some() {
+        "env"
+    } else if exe_dir
+        .as_ref()
+        .map(|d| d.join(PDFIUM_LIB_NAME).is_file())
+        .unwrap_or(false)
+    {
+        "sibling"
+    } else {
+        "system-or-missing"
+    };
+    (renderer, pdfium)
+}
+
+/// Sibling pdfium directory when the shipped library file is present.
+/// Pure shape (no bind): the bind itself stays in `PdfEngine::new`.
+fn sibling_pdfium_dir() -> Option<PathBuf> {
+    let dir = exe_sibling_dir()?;
+    dir.join(PDFIUM_LIB_NAME).is_file().then_some(dir)
+}
 
 #[derive(Debug, Clone)]
 pub struct PdfInfo {
@@ -122,6 +189,12 @@ mod inner {
         /// after that), so production holds a single engine per process:
         /// the renderer child owns its instance, and the shell talks to
         /// the child instead of binding in-process.
+        ///
+        /// Resolution order: explicit `FERRITE_PDFIUM_PATH` first (operator
+        /// intent: failure here errors out, never silently degrades), then
+        /// the shipped sibling library beside the exe (present-but-unbindable
+        /// warns and falls through to system), then the system library.
+        /// CWD is never searched. Blocks DLL planting via download.
         pub fn new() -> ArchiveResult<Self> {
             // CWD is never searched. Blocks DLL planting via download.
             let lib = if let Ok(path) = std::env::var("FERRITE_PDFIUM_PATH") {
@@ -129,6 +202,20 @@ mod inner {
                     Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&path))
                         .map_err(|e| ArchiveError::Pdf(e.to_string()))?,
                 )
+            } else if let Some(dir) = super::sibling_pdfium_dir() {
+                match Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir)) {
+                    Ok(bindings) => Pdfium::new(bindings),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "bundled pdfium beside the exe failed to bind; trying system library"
+                        );
+                        Pdfium::new(
+                            Pdfium::bind_to_system_library()
+                                .map_err(|e| ArchiveError::Pdf(e.to_string()))?,
+                        )
+                    }
+                }
             } else {
                 Pdfium::new(
                     Pdfium::bind_to_system_library()
@@ -1090,14 +1177,12 @@ impl IsolatedPdfRenderer {
         if self.is_alive() {
             return Ok(());
         }
-        #[cfg(windows)]
-        const EXE: &str = "ferrite-pdf-renderer.exe";
-        #[cfg(not(windows))]
-        const EXE: &str = "ferrite-pdf-renderer";
+        // Single source of truth with the boot report and the installers:
+        // the child lives beside the main exe under one shared name.
         let path = std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join(EXE)))
-            .unwrap_or_else(|| EXE.into());
+            .and_then(|p| p.parent().map(|d| d.join(RENDERER_EXE_NAME)))
+            .unwrap_or_else(|| RENDERER_EXE_NAME.into());
         let child = tokio::process::Command::new(&path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -1576,5 +1661,88 @@ mod tests {
         let fields = doc2.form_fields();
         assert_eq!(fields.len(), 1, "field survives the round trip");
         assert_eq!(fields[0].value.as_deref(), Some("hello"));
+    }
+}
+
+#[cfg(test)]
+mod sibling_layout_tests {
+    use super::*;
+
+    /// Scratch dir under the OS temp root (std only, no new dev-deps).
+    /// Unique per test via process id + name so parallel runs never share.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ferrite-pdf-layout-{}-{}",
+            std::process::id(),
+            name
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    #[test]
+    fn shipped_layout_reports_ready() {
+        let dir = scratch("ready");
+        std::fs::write(dir.join(RENDERER_EXE_NAME), b"x").expect("renderer stub");
+        std::fs::write(dir.join(PDFIUM_LIB_NAME), b"x").expect("pdfium stub");
+        let (renderer, pdfium) = pdf_boot_report_for_dirs(Some(dir.clone()), None);
+        assert!(renderer, "renderer sibling detected");
+        assert_eq!(pdfium, "sibling");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn env_override_wins_over_sibling() {
+        let dir = scratch("env");
+        std::fs::write(dir.join(RENDERER_EXE_NAME), b"x").expect("renderer stub");
+        std::fs::write(dir.join(PDFIUM_LIB_NAME), b"x").expect("pdfium stub");
+        let env = scratch("envdir");
+        let (renderer, pdfium) = pdf_boot_report_for_dirs(Some(dir.clone()), Some(env.clone()));
+        assert!(renderer);
+        assert_eq!(pdfium, "env", "explicit operator config always wins");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&env);
+    }
+
+    #[test]
+    fn bare_install_reports_degraded_honestly() {
+        // v0.1.0 layout: neither file beside the exe, no env override.
+        let dir = scratch("bare");
+        let (renderer, pdfium) = pdf_boot_report_for_dirs(Some(dir.clone()), None);
+        assert!(!renderer, "no renderer sibling");
+        assert_eq!(
+            pdfium, "system-or-missing",
+            "never claims more than it knows"
+        );
+        // Undeterminable exe dir degrades the same way, never panics.
+        let (r2, p2) = pdf_boot_report_for_dirs(None, None);
+        assert!(!r2);
+        assert_eq!(p2, "system-or-missing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sibling_names_match_the_pinned_builds() {
+        // The release workflow ships exactly these file names (bblanchon
+        // 7881 layouts); a rename on either side breaks the lookup.
+        assert_eq!(
+            RENDERER_EXE_NAME,
+            if cfg!(windows) {
+                "ferrite-pdf-renderer.exe"
+            } else {
+                "ferrite-pdf-renderer"
+            }
+        );
+        assert_eq!(
+            PDFIUM_LIB_NAME,
+            if cfg!(windows) {
+                "pdfium.dll"
+            } else if cfg!(target_os = "macos") {
+                "libpdfium.dylib"
+            } else {
+                "libpdfium.so"
+            }
+        );
     }
 }

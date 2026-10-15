@@ -1166,6 +1166,24 @@ impl ShellApp {
         // user chose direct). Only a failed spawn or probe lands the error page.
         let proxy_down = privacy_engine.settings().proxy_enabled && proxy.is_none();
         let proxy_port = proxy.as_ref().map(|p| p.port);
+        // PDF stack capability, said once at boot: the renderer child plus
+        // the pdfium library ship beside the binary. Absent files mean dead
+        // viewer/search/fill, reported here instead of per-document warnings.
+        {
+            let (renderer_present, pdfium_source) = ferrite_archive::pdf::pdf_boot_report();
+            if renderer_present && pdfium_source != "system-or-missing" {
+                info!(
+                    pdfium_source = pdfium_source,
+                    "pdf stack ready: renderer shipped, engine resolvable"
+                );
+            } else {
+                warn!(
+                    renderer_present = renderer_present,
+                    pdfium_source = pdfium_source,
+                    "pdf degraded: viewer/search/fill unavailable until the pdf stack ships beside the binary"
+                );
+            }
+        }
         // Process session identity: one enum owns user-vs-incognito for the
         // whole process (proxy partition key, path owner, chrome signal).
         // Created here so the private proxy + factory below derive from it.
