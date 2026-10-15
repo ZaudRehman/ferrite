@@ -10875,19 +10875,29 @@ impl ShellApp {
             // path below, where it is ignored.
             if msg.tab_id == self.chrome_id {
                 match ChromeCommand::parse(&msg.payload) {
-                    Ok(cmd) => self.handle_chrome_command(cmd),
-                    // Length plus the `cmd` discriminant: oversize posts and
-                    // unknown shapes need different fixes (truncate at the
-                    // poster vs allowlist the command), and the error alone
-                    // cannot tell them apart.
-                    Err(e) => debug!(
-                        error = %e,
-                        bytes = msg.payload.len(),
-                        cmd = ChromeCommand::envelope_cmd(&msg.payload),
-                        "chrome envelope rejected"
-                    ),
+                    Ok(cmd) => {
+                        self.handle_chrome_command(cmd);
+                        continue;
+                    }
+                    // Init-script telemetry ({type:...}) runs in every
+                    // webview including chrome: not a command, not hostile.
+                    // Fall through to the shared path when it carries a
+                    // `type` field so it is counted, not dropped. The shared
+                    // path keys privilege off tab lookup (chrome_id is not a
+                    // tab), so only allowlisted telemetry lands there.
+                    // Anything else is still rejected below.
+                    Err(e) => {
+                        if !chrome_payload_is_telemetry(&msg.payload) {
+                            debug!(
+                                error = %e,
+                                bytes = msg.payload.len(),
+                                cmd = ChromeCommand::envelope_cmd(&msg.payload),
+                                "chrome envelope rejected"
+                            );
+                            continue;
+                        }
+                    }
                 }
-                continue;
             }
             debug!(tab_id = %msg.tab_id, payload_len = msg.payload.len(), "ipc");
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&msg.payload) else {
@@ -15348,6 +15358,18 @@ impl ApplicationHandler<ShellWake> for ShellApp {
     }
 }
 
+/// Chrome-webview payload classifier for the drain: init-script telemetry
+/// (`{type:...}`, posted by scripts that run in every webview including
+/// chrome) is not a command and must fall through to the shared path, not
+/// be rejected. Anything without a string `type` field stays rejected.
+/// Pure so the routing decision is unit-testable without a Shell.
+fn chrome_payload_is_telemetry(payload: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|v| v.get("type")?.as_str().map(|_| ()))
+        .is_some()
+}
+
 /// Missing-engine guidance (Windows): no WebView2 Runtime means no webview
 /// can render. Native dialog, shown once before exit, plain text with the
 /// Evergreen installer address spelled out.
@@ -18600,6 +18622,37 @@ mod chrome_state_tests {
         // Session contract: single source of truth for the badge.
         assert!(script.contains("\"session_kind\":\"user\""));
         assert!(script.contains("\"incognito\":false"));
+    }
+
+    #[test]
+    fn chrome_telemetry_falls_through_instead_of_rejecting() {
+        // Init-script reporters post {type:...} in every webview including
+        // chrome (boot logged 8 of these as rejections): they must reach
+        // the shared path, not die in the strict command parser.
+        assert!(chrome_payload_is_telemetry(
+            r#"{"type":"lang","lang":"en-US"}"#
+        ));
+        assert!(chrome_payload_is_telemetry(r#"{"type":"console_error"}"#));
+        assert!(chrome_payload_is_telemetry(
+            r#"{"type":"audio","playing":false}"#
+        ));
+        assert!(chrome_payload_is_telemetry(
+            r#"{"type":"scroll","x":0,"y":0}"#
+        ));
+        assert!(chrome_payload_is_telemetry(
+            r#"{"type":"favicon","url":"https://x/y.ico"}"#
+        ));
+        // Commands stay on the command path even when they also parse as
+        // JSON: `cmd` without `type` is not telemetry.
+        assert!(!chrome_payload_is_telemetry(r#"{"cmd":"reload"}"#));
+        assert!(!chrome_payload_is_telemetry(
+            r#"{"cmd":"menu_item","id":"settings"}"#
+        ));
+        // Garbage stays rejected: non-JSON, empty, and type-less shapes.
+        assert!(!chrome_payload_is_telemetry("not json"));
+        assert!(!chrome_payload_is_telemetry(""));
+        assert!(!chrome_payload_is_telemetry(r#"{"foo":1}"#));
+        assert!(!chrome_payload_is_telemetry(r#"{"type":42}"#));
     }
 
     #[test]
