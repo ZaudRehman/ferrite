@@ -278,6 +278,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+      - name: Assert unique release asset names
+        # Release assets share one flat namespace: two files with the same
+        # basename race (delete/re-upload 404s, last-writer-wins). This cost
+        # two failed releases (SBOMs, then DMGs). Fail here, before upload.
+        # Pattern list mirrors the GitHub Release files list below: keep the
+        # two in sync or this gate guards the wrong set.
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          files=(**/ferrite-*.tar.gz **/*.dmg **/*.msi **/*.deb **/SHA256SUMS-*.txt **/SHA256-tarball-*.txt **/*.cdx.json)
+          ((${#files[@]})) || { echo "no release assets matched"; exit 1; }
+          seen=""; dups=0
+          for f in "${files[@]}"; do
+            b="$(basename "$f")"
+            case "|$seen|" in *"|$b|"*) echo "DUPLICATE asset name: $b ($f)"; dups=1;; esac
+            seen="$seen|$b"
+          done
+          echo "release assets: ${#files[@]} files checked"
+          if test "$dups" -eq 0; then echo "all basenames unique"; else echo "duplicate release asset basenames"; exit 1; fi
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:
