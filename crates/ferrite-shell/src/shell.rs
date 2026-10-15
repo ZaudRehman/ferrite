@@ -961,9 +961,9 @@ impl ShellApp {
             .and_then(|v| v.parse::<u16>().ok());
         let privacy_engine = {
             // Threat cache lives in the data root (public hashes only, see
-            // the storage contract). A CWD fallback is impossible here by
-            // construction: `new_file` targets the data root, and any open
-            // failure degrades to the in-memory DB, never to another path.
+            // the storage contract). Any open failure degrades to the
+            // in-memory DB, never to another path: `PrivacyEngine::new`
+            // touches no files by construction.
             let engine =
                 ferrite_privacy::threat::ThreatDb::new_file(crate::profiles::threat_db_path())
                     .map_err(|e| {
@@ -972,7 +972,7 @@ impl ShellApp {
                     })
                     .and_then(|db| {
                         ferrite_privacy::PrivacyEngine::with_threat_db(db).map_err(|e| {
-                            error!(error = %e, "privacy engine init failed, CWD-legacy fallback");
+                            error!(error = %e, "privacy engine init failed, in-memory fallback");
                             e.to_string()
                         })
                     })

@@ -59,11 +59,7 @@ fn pdf_boot_report_for_dirs(
         .unwrap_or(false);
     let pdfium = if env_dir.is_some() {
         "env"
-    } else if exe_dir
-        .as_ref()
-        .map(|d| dir_has_pdfium(d))
-        .unwrap_or(false)
-    {
+    } else if exe_dir.as_ref().map(|d| dir_has_pdfium(d)).unwrap_or(false) {
         "sibling"
     } else {
         "system-or-missing"

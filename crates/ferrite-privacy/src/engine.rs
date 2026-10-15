@@ -271,10 +271,14 @@ impl Default for TrackerSet {
 }
 
 impl PrivacyEngine {
+    /// Safe default: every store in memory, zero filesystem touch. In
+    /// particular this NEVER creates `ferrite-threat.db` in the current
+    /// directory (a past version did, littering launch dirs and the repo).
+    /// Durable threat caching is explicit via `with_threat_db` with a
+    /// data-root path owned by the caller.
     pub fn new() -> PrivacyResult<Self> {
-        let threat = ThreatDb::new_file("ferrite-threat.db")
-            .or_else(|_| ThreatDb::new_in_memory())
-            .map_err(|e| PrivacyError::ThreatDb(e.to_string()))?;
+        let threat =
+            ThreatDb::new_in_memory().map_err(|e| PrivacyError::ThreatDb(e.to_string()))?;
         Ok(Self {
             filters: Arc::new(RwLock::new(FilterEngine::new()?)),
             threat_db: Arc::new(RwLock::new(threat)),
@@ -1027,6 +1031,33 @@ mod tests {
         }])
         .unwrap();
         e
+    }
+
+    /// Working-directory file names belonging to the threat cache (main db
+    /// plus SQLite sidecars). `new()` must never create any of these: a past
+    /// version wrote them to CWD, littering launch dirs and the repo itself.
+    fn cwd_threat_files() -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(".")
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.file_name())
+                    .filter(|n| n.to_string_lossy().starts_with("ferrite-threat.db"))
+                    .map(std::path::PathBuf::from)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn new_never_writes_threat_db_to_cwd() {
+        let before = cwd_threat_files();
+        let _a = PrivacyEngine::new().expect("in-memory default");
+        let _b = PrivacyEngine::new().expect("second instance");
+        assert_eq!(
+            cwd_threat_files(),
+            before,
+            "PrivacyEngine::new() must not litter the working directory"
+        );
     }
 
     #[test]
