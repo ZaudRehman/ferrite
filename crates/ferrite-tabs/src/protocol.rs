@@ -431,11 +431,14 @@ pub const CONTEXT_HTML: &str = r#"<!DOCTYPE html><!-- ferrite://ctxmenu -->
 <style>
 /*__FERRITE_THEME__*/
 html,body{margin:0;padding:0;background:transparent;font-family:var(--f-font-ui);overflow:hidden}
-#m{background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:var(--pk-card-radius,8px);padding:4px;animation:drop .12s ease-out}
+#m{background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:var(--pk-card-radius,8px);padding:4px;animation:drop .12s ease-out;max-height:100vh;overflow-y:auto;box-sizing:border-box}
 @keyframes drop{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:none;}}
-#m .mi{display:flex;padding:7px 10px;border-radius:var(--pk-card-radius,8px);cursor:pointer;font-size:13px;color:var(--f-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#m .mi{display:flex;align-items:center;padding:7px 10px;border-radius:var(--pk-card-radius,8px);cursor:pointer;font-size:13px;color:var(--f-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #m .mi:hover,#m .mi:focus,#m .mi.hl{background:var(--f-surface-2);outline:none}
+#m .mi .k{margin-left:auto;color:var(--f-faint);font-size:12px;padding-left:12px;flex:none}
+#m .mi .ck{width:14px;flex:none;color:var(--f-accent)}
 #m hr{border:none;border-top:1px solid var(--f-border);margin:4px 0}
+#m .v{padding:6px 10px 2px;color:var(--f-faint);font-size:11px;text-align:right}
 @media (prefers-reduced-motion:reduce){#m{animation:none}}
 </style></head>
 <body><div id="m" role="menu" aria-label="Context menu"></div>
@@ -444,19 +447,38 @@ html,body{margin:0;padding:0;background:transparent;font-family:var(--f-font-ui)
   function post(o){ try{ window.ipc.postMessage(JSON.stringify(o)); }catch(e){} }
   function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   window.__ferriteCtxMenu=function(items,hl){
+    menuMode=false;
+    renderRows(items,hl);
+    // Focus-first only for the classic menu call (no hl): the focus
+    // dropdown passes hl and keeps field focus, highlighting visually.
+    if(hl===undefined){ var fm=document.getElementById('m'); var first=fm.querySelector('[data-id]'); if(first) first.focus(); }
+  };
+  // Main application menu: same rows plus optional hint/checked/footer,
+  // same overlay window (it sits above content in z-order, which chrome
+  // DOM cannot). Mode switches the post types so the shell can tell menu
+  // traffic from context-menu traffic on the shared channel.
+  var menuMode=false;
+  window.__ferriteMenu=function(items){
+    menuMode=true;
+    renderRows(items);
+    var first=document.querySelector('#m [data-id]'); if(first) first.focus();
+  };
+  function renderRows(items,hl){
     var h='';
     (items||[]).forEach(function(it,i){
       if(it.sep){ h+='<hr>'; return; }
-      h+='<div class="mi'+(i===hl?' hl':'')+'" role="menuitem" tabindex="-1" data-id="'+esc(it.id)+'">'+esc(it.label)+'</div>';
+      if(it.id===undefined||it.id===null){ h+='<div class="v">'+esc(it.label||'')+'</div>'; return; }
+      h+='<div class="mi'+(i===hl?' hl':'')+'" role="menuitem"'+(it.checked!==undefined?' role="menuitemcheckbox" aria-checked="'+(!!it.checked)+'"':'')+' tabindex="-1" data-id="'+esc(it.id)+'">'
+        +'<span class="ck">'+(it.checked?'✓':'')+'</span>'
+        +'<span>'+esc(it.label||'')+'</span>'
+        +(it.hint?'<span class="k">'+esc(it.hint)+'</span>':'')
+        +'</div>';
     });
     var m=document.getElementById('m'); m.innerHTML=h;
-    // Focus-first only for the classic menu call (no hl): the focus
-    // dropdown passes hl and keeps field focus, highlighting visually.
-    if(hl===undefined){ var first=m.querySelector('[data-id]'); if(first) first.focus(); }
-  };
+  }
   document.getElementById('m').addEventListener('click',function(e){
     var r=e.target.closest('[data-id]'); if(!r) return;
-    post({type:'ctx_activate',id:r.getAttribute('data-id')});
+    post({type:(menuMode?'menu_activate':'ctx_activate'),id:r.getAttribute('data-id')});
   });
   document.getElementById('m').addEventListener('keydown',function(e){
     var rows=Array.prototype.slice.call(document.querySelectorAll('#m [data-id]'));
@@ -464,9 +486,9 @@ html,body{margin:0;padding:0;background:transparent;font-family:var(--f-font-ui)
     var idx=rows.indexOf(document.activeElement);
     if(e.key==='ArrowDown'||e.key==='ArrowUp'){ e.preventDefault(); rows[e.key==='ArrowDown'?(idx+1)%rows.length:(idx-1+rows.length)%rows.length].focus(); }
     else if(e.key==='Enter'||e.key===' '){ var r=e.target.closest?e.target.closest('[data-id]'):null; if(r){ e.preventDefault(); r.click(); } }
-    else if(e.key==='Escape'){ e.preventDefault(); post({type:'ctx_dismiss'}); }
+    else if(e.key==='Escape'){ e.preventDefault(); post({type:(menuMode?'menu_dismiss':'ctx_dismiss')}); }
   });
-  document.addEventListener('keydown',function(e){ if(e.key==='Escape') post({type:'ctx_dismiss'}); });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') post({type:(menuMode?'menu_dismiss':'ctx_dismiss')}); });
 })();
 </script></body></html>
 "#;

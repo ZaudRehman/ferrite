@@ -646,6 +646,11 @@ pub(crate) struct ShellApp {
     /// backdrop.
     overlay: Option<Rc<dyn WebViewHandle>>,
     overlay_open: bool,
+    /// Main-menu state on the shared ctx overlay webview. The menu reuses
+    /// the context-menu window (topmost layer, above content in z-order,
+    /// which chrome DOM can never be). Opening either dismisses the other;
+    /// hide_ctx_menu clears this flag too since it hides the shared view.
+    menu_open: bool,
     modifiers: winit::keyboard::ModifiersState,
     window: Option<Arc<Window>>,
     app: AppContext,
@@ -1780,6 +1785,7 @@ impl ShellApp {
             chrome_sig: String::new(),
             overlay: None,
             overlay_open: false,
+            menu_open: false,
             modifiers: winit::keyboard::ModifiersState::default(),
             window: None,
             app,
@@ -4636,6 +4642,218 @@ impl ShellApp {
         {
             debug!(error = %e, "ctx hide failed");
         }
+        // Shared view: hiding it hides any menu too, so the toggle flag
+        // must not survive (next menu click would close-then-require-reopen).
+        self.menu_open = false;
+    }
+
+    /// Main-menu rows for the overlay: the same table the chrome popup used
+    /// (ids feed the existing `menu_action` arms unchanged), plus theme rows
+    /// with live current flags, bar/panel toggles, and a version footer.
+    /// Footer carries no id and renders as plain text.
+    /// Pure pieces are associated functions (no `self`) so tests pin the
+    /// contract without a Shell instance; `menu_rows` only reads live state.
+    /// One menu row / separator. Free of captures by design: two `&mut
+    /// rows` closures alive together do not compile under NLL, and these
+    /// carry no state worth capturing.
+    fn menu_row(id: &str, label: &str, hint: &str) -> serde_json::Value {
+        serde_json::json!({"id": id, "label": label, "hint": hint})
+    }
+
+    fn menu_sep() -> serde_json::Value {
+        serde_json::json!({"sep": true})
+    }
+
+    fn menu_static_rows() -> Vec<serde_json::Value> {
+        vec![
+            Self::menu_row("new-tab", "New Tab", "Ctrl+T"),
+            Self::menu_row("new-incognito", "New Incognito Window", ""),
+            Self::menu_sep(),
+            Self::menu_row("history", "History", ""),
+            Self::menu_row("downloads", "Downloads", ""),
+            Self::menu_row("bookmarks", "Bookmarks", ""),
+            Self::menu_row("bookmark-page", "Bookmark This Page", "Ctrl+D"),
+            Self::menu_row("bookmark-all", "Bookmark All Tabs", ""),
+            Self::menu_row("find", "Find in page", "Ctrl+F"),
+            Self::menu_row("share", "Share…", ""),
+            Self::menu_row("qr-code", "Show QR Code", ""),
+            Self::menu_row("palette", "Command Palette", "Ctrl+K"),
+            Self::menu_sep(),
+            Self::menu_row("zoom-in", "Zoom in", "Ctrl++"),
+            Self::menu_row("zoom-out", "Zoom out", "Ctrl+-"),
+            Self::menu_row("zoom-reset", "Reset zoom", "Ctrl+0"),
+            Self::menu_sep(),
+            Self::menu_row("settings", "Settings", ""),
+            Self::menu_row("passwords", "Password Manager", ""),
+            Self::menu_row("archive", "Archive Search", ""),
+            Self::menu_row("task-manager", "Task Manager", "Shift+Esc"),
+            Self::menu_row("print", "Print", "Ctrl+P"),
+            Self::menu_sep(),
+            Self::menu_row("status", "Status Bar", ""),
+            Self::menu_sep(),
+        ]
+    }
+
+    fn menu_dynamic_rows(
+        theme_pack: &ThemePack,
+        bar_mode: &str,
+        panel_open: bool,
+        tabs_vertical: bool,
+    ) -> Vec<serde_json::Value> {
+        let mut rows = Vec::new();
+        for p in &ThemePack::ALL {
+            rows.push(serde_json::json!({
+                "id": format!("theme:{}", p.name()),
+                "label": p.display_name(),
+                "hint": "F4",
+                "checked": p == theme_pack,
+            }));
+        }
+        rows.push(serde_json::json!({"sep": true}));
+        let bar_label = match bar_mode {
+            "always" => "Bookmarks bar: always",
+            "ntp" => "Bookmarks bar: new tab",
+            _ => "Bookmarks bar: never",
+        };
+        rows.push(serde_json::json!({"id": "bookmarks-bar", "label": bar_label, "checked": bar_mode == "always"}));
+        rows.push(serde_json::json!({"id": "side-panel", "label": format!("Side panel: {}", if panel_open { "on" } else { "off" }), "checked": panel_open}));
+        rows.push(serde_json::json!({"id": "vertical-tabs", "label": format!("Vertical tabs: {}", if tabs_vertical { "on" } else { "off" }), "checked": tabs_vertical}));
+        rows.push(serde_json::json!({"label": format!("Ferrite {}", env!("CARGO_PKG_VERSION"))}));
+        rows
+    }
+
+    fn menu_rows(&self) -> Vec<serde_json::Value> {
+        let mut rows = Self::menu_static_rows();
+        rows.extend(Self::menu_dynamic_rows(
+            &self.theme_pack,
+            &self.bar_mode,
+            self.panel_open,
+            self.tabs_vertical,
+        ));
+        rows
+    }
+
+    /// Window-relative overlay geometry for the menu (toolbar anchor):
+    /// unlike the slot-relative ctx rect, no content offset applies. Height
+    /// clamps to the window; the page scrolls internally past that.
+    /// Pure: window/scale conversion stays in the `&self` wrapper below.
+    fn menu_overlay_geom(
+        x_right: f64,
+        y_bottom: f64,
+        w: f64,
+        h: f64,
+        win_w: f64,
+        win_h: f64,
+    ) -> Option<(f64, f64, f64, f64)> {
+        if !x_right.is_finite() || !y_bottom.is_finite() {
+            return None;
+        }
+        let h = h.min((win_h - 8.0).max(0.0));
+        let cx = (x_right - w).clamp(0.0, (win_w - w).max(0.0));
+        let cy = (y_bottom + 4.0).clamp(0.0, (win_h - h).max(0.0));
+        Some((cx, cy, w, h))
+    }
+
+    fn menu_overlay_rect(&self, x_right: f64, y_bottom: f64, w: f64, h: f64) -> Option<wry::Rect> {
+        let window = self.window.as_ref()?;
+        let scale = window.scale_factor();
+        let (win_w, win_h) = self.window_logical()?;
+        let (cx, cy, w, h) = Self::menu_overlay_geom(x_right, y_bottom, w, h, win_w, win_h)?;
+        ferrite_tabs::logical_to_wry_rect(LogicalRect::new(cx, cy, w, h), scale)
+    }
+
+    /// Open the main menu in the shared overlay window (topmost layer).
+    /// Toggle: an open menu closes. A context menu is dismissed first (one
+    /// overlay at a time). Row height mirrors the ctx menu (31px, 13px
+    /// separators + 16px padding) so the rect fits the content.
+    fn show_menu_overlay(&mut self, x_right: f64, y_bottom: f64) {
+        if self.menu_open {
+            self.hide_menu_overlay();
+            return;
+        }
+        self.hide_ctx_menu();
+        let items = self.menu_rows();
+        let mut h = 16.0;
+        for it in &items {
+            h += if it.get("sep").and_then(|s| s.as_bool()).unwrap_or(false) {
+                13.0
+            } else {
+                31.0
+            };
+        }
+        let w = 260.0;
+        let window = self.window.clone();
+        let bounds = self.menu_overlay_rect(x_right, y_bottom, w, h);
+        let (Some(window), Some(bounds)) = (window.as_ref(), bounds) else {
+            return;
+        };
+        if self.ctx_overlay.is_none() {
+            match self
+                .app
+                .tabs
+                .factory()
+                .create(window, "ferrite://ctxmenu", Some(bounds))
+            {
+                Ok(handle) => self.ctx_overlay = Some(handle),
+                Err(e) => {
+                    debug!(error = %e, "menu overlay creation failed");
+                    return;
+                }
+            }
+        }
+        // Recomputed (not reused): `wry::Rect` is not `Copy`.
+        let bounds = self.menu_overlay_rect(x_right, y_bottom, w, h);
+        let ov = self.ctx_overlay.clone();
+        if let (Some(ov), Some(bounds)) = (ov.as_ref(), bounds) {
+            if let Err(e) = ov.set_bounds(bounds) {
+                debug!(error = %e, "menu bounds failed");
+            }
+            if let Err(e) = ov.set_visible(true) {
+                debug!(error = %e, "menu show failed");
+            }
+            if let Err(e) = ov.focus() {
+                debug!(error = %e, "menu focus failed");
+            }
+            let json = serde_json::to_string(&items)
+                .unwrap_or_else(|_| "[]".to_owned())
+                .replace("</", "<\\/");
+            if let Err(e) = ov.evaluate_script(&format!("__ferriteMenu({json})")) {
+                debug!(error = %e, "menu push failed");
+            }
+        }
+        self.menu_open = true;
+    }
+
+    /// Hide the menu and return focus to the chrome webview (no select:
+    /// must not disturb whatever the user was typing).
+    fn hide_menu_overlay(&mut self) {
+        self.menu_open = false;
+        if let Some(ov) = self.ctx_overlay.as_ref()
+            && let Err(e) = ov.set_visible(false)
+        {
+            debug!(error = %e, "menu hide failed");
+        }
+        if let Some(chrome) = self.chrome.as_ref()
+            && let Err(e) = chrome.focus()
+        {
+            debug!(error = %e, "menu hide refocus failed");
+        }
+    }
+
+    /// Re-push fresh rows into the open menu (toggle rows stay open for
+    /// trial: theme picks, bar/panel switches). No-op unless open.
+    fn refresh_menu_rows(&mut self) {
+        if !self.menu_open {
+            return;
+        }
+        let json = serde_json::to_string(&self.menu_rows())
+            .unwrap_or_else(|_| "[]".to_owned())
+            .replace("</", "<\\/");
+        if let Some(ov) = self.ctx_overlay.as_ref()
+            && let Err(e) = ov.evaluate_script(&format!("__ferriteMenu({json})"))
+        {
+            debug!(error = %e, "menu refresh failed");
+        }
     }
 
     // ── Script dialogs (intercepted page alert/confirm/prompt/beforeunload) ──
@@ -5463,6 +5681,9 @@ impl ShellApp {
     /// the window, push rows into the lazily-created overlay (tabsearch
     /// precedent, chrome DOM cannot overlay content in z-order).
     fn show_ctx_menu(&mut self, p: CtxPayload) {
+        // Shared overlay window: a context menu replaces any open main
+        // menu (its rows replace the menu rows below; flag cleared here).
+        self.menu_open = false;
         let mut items = self.fill_rows(&p);
         items.extend(self.ctx_items(&p));
         if items.is_empty() {
@@ -9566,6 +9787,14 @@ impl ShellApp {
             debug!("chrome command ignored: boot gate blocked");
             return;
         }
+        // Acting elsewhere dismisses the menu (standard menu behavior:
+        // omnibox typing, navigation, any toolbar gesture). MenuOpen itself
+        // is excluded: it toggles through show_menu_overlay. Plain content
+        // clicks without navigation share the ctx menu's residual wart
+        // (no dismiss) — one follow-up for both, not this slice.
+        if !matches!(cmd, ChromeCommand::MenuOpen { .. }) && self.menu_open {
+            self.hide_menu_overlay();
+        }
         match cmd {
             ChromeCommand::RequestState => {
                 // Fresh consumer (chrome reloaded): favicon cache on both
@@ -9789,6 +10018,7 @@ impl ShellApp {
                 }
             }
             ChromeCommand::MenuItem { id } => self.menu_action(&id),
+            ChromeCommand::MenuOpen { x, y } => self.show_menu_overlay(x as f64, y as f64),
             ChromeCommand::Reload => self.reload_or_stop_active(),
             ChromeCommand::GoBack { steps } => {
                 if let Some(tab) = self.app.tabs.active_tab_mut() {
@@ -13621,6 +13851,22 @@ impl ShellApp {
                     self.activate_ctx(id);
                 }
                 "ctx_dismiss" => self.hide_ctx_menu(),
+                // Main-menu traffic on the shared overlay window. Ids run
+                // the same `menu_action` arms as every other sender (unknown
+                // ids ignored there). Toggle rows stay open for trial and
+                // re-push fresh checks; everything else closes the menu.
+                "menu_activate" => {
+                    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                    let keep = id.starts_with("theme:")
+                        || matches!(id, "bookmarks-bar" | "side-panel" | "vertical-tabs");
+                    self.menu_action(id);
+                    if keep {
+                        self.refresh_menu_rows();
+                    } else {
+                        self.hide_menu_overlay();
+                    }
+                }
+                "menu_dismiss" => self.hide_menu_overlay(),
                 "dialog_respond" => {
                     // Script-dialog overlay answer. Applies only to the
                     // shown frame. Stale or forged seqs die in
@@ -17125,6 +17371,8 @@ fn content_page_allowed(msg_type: &str) -> bool {
             | "palette"
             | "ctx_activate"
             | "ctx_dismiss"
+            | "menu_activate"
+            | "menu_dismiss"
             // Form/autofill flows: focus opens the vault-gated dropdown,
             // af_* only steer an open dropdown, dismiss closes menus.
             | "autofill_focus"
@@ -18648,6 +18896,109 @@ mod chrome_state_tests {
         // Session contract: single source of truth for the badge.
         assert!(script.contains("\"session_kind\":\"user\""));
         assert!(script.contains("\"incognito\":false"));
+    }
+
+    #[test]
+    fn menu_static_rows_cover_every_action() {
+        // Every id here must have a `menu_action` arm: an id without one
+        // opens a menu whose row silently does nothing.
+        let rows = ShellApp::menu_static_rows();
+        let ids: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| r.get("id").and_then(|i| i.as_str()))
+            .collect();
+        for want in [
+            "new-tab",
+            "new-incognito",
+            "history",
+            "downloads",
+            "bookmarks",
+            "bookmark-page",
+            "bookmark-all",
+            "find",
+            "share",
+            "qr-code",
+            "palette",
+            "zoom-in",
+            "zoom-out",
+            "zoom-reset",
+            "settings",
+            "passwords",
+            "archive",
+            "task-manager",
+            "print",
+            "status",
+        ] {
+            assert!(ids.contains(&want), "menu row missing: {want}");
+        }
+        assert!(
+            rows.iter()
+                .any(|r| r.get("sep").and_then(|s| s.as_bool()).unwrap_or(false)),
+            "separators structure the menu"
+        );
+    }
+
+    #[test]
+    fn menu_dynamic_rows_flag_live_state() {
+        let pack = &ThemePack::ALL[0];
+        let rows = ShellApp::menu_dynamic_rows(pack, "ntp", true, false);
+        let theme_ids: Vec<String> = rows
+            .iter()
+            .filter_map(|r| r.get("id").and_then(|i| i.as_str()).map(str::to_owned))
+            .filter(|i| i.starts_with("theme:"))
+            .collect();
+        assert_eq!(theme_ids.len(), ThemePack::ALL.len(), "one row per pack");
+        for r in &rows {
+            if let Some(id) = r.get("id").and_then(|i| i.as_str()) {
+                if id == format!("theme:{}", pack.name()) {
+                    assert_eq!(r.get("checked"), Some(&serde_json::Value::Bool(true)));
+                } else if id.starts_with("theme:") {
+                    assert_eq!(r.get("checked"), Some(&serde_json::Value::Bool(false)));
+                }
+            }
+        }
+        let bar = rows
+            .iter()
+            .find(|r| r.get("id").and_then(|i| i.as_str()) == Some("bookmarks-bar"))
+            .expect("bar toggle row");
+        assert!(
+            bar.get("label")
+                .and_then(|l| l.as_str())
+                .unwrap_or("")
+                .contains("new tab")
+        );
+        assert!(
+            rows.iter().any(|r| {
+                r.get("id").is_none()
+                    && r.get("label")
+                        .and_then(|l| l.as_str())
+                        .unwrap_or("")
+                        .starts_with("Ferrite ")
+            }),
+            "version footer without id renders as plain text"
+        );
+    }
+
+    #[test]
+    fn menu_overlay_geom_anchors_and_clamps() {
+        // Button right edge at 1250 on a 1280 window: menu hangs left.
+        let (cx, cy, w, h) =
+            ShellApp::menu_overlay_geom(1250.0, 80.0, 260.0, 400.0, 1280.0, 800.0).unwrap();
+        assert_eq!((cx, cy, w, h), (990.0, 84.0, 260.0, 400.0));
+        // Narrow window: menu pins to the left edge instead of underflowing.
+        let (cx, _, _, _) =
+            ShellApp::menu_overlay_geom(300.0, 80.0, 260.0, 400.0, 200.0, 800.0).unwrap();
+        assert_eq!(cx, 0.0);
+        // Short window: height clamps, page scrolls internally.
+        let (_, _, _, h) =
+            ShellApp::menu_overlay_geom(1250.0, 80.0, 260.0, 2000.0, 1280.0, 800.0).unwrap();
+        assert_eq!(h, 792.0);
+        // Garbage coordinates never produce a rect (no panic, no off-screen).
+        assert!(ShellApp::menu_overlay_geom(f64::NAN, 80.0, 260.0, 400.0, 1280.0, 800.0).is_none());
+        assert!(
+            ShellApp::menu_overlay_geom(1250.0, f64::INFINITY, 260.0, 400.0, 1280.0, 800.0)
+                .is_none()
+        );
     }
 
     #[test]

@@ -66,7 +66,7 @@
   body.vtab #tablist,body.vtab #newtab{margin-top:4px;width:100%;}
   body.vtab #tablist{margin-top:auto;}
   body.vtab #omnibar,body.vtab #bookbar{margin-left:232px;}
-  body.vtab #shieldpop,body.vtab #menupop,body.vtab #histpop,body.vtab #navpop,body.vtab #permpop,body.vtab #zoompop{top:48px;}
+  body.vtab #shieldpop,body.vtab #histpop,body.vtab #navpop,body.vtab #permpop,body.vtab #zoompop{top:48px;}
   /* Group headers: inline chips where membership changes, color-coded by
      the pushed group color. Members of a collapsed group stay in the DOM
      (drag indices address `data-idx`, never visible position) but hide. */
@@ -224,7 +224,7 @@
   .cbtn{border:none;background:transparent;color:var(--f-faint);font-size:15px;border-radius:var(--pk-tab-radius,2px);padding:5px 7px;cursor:pointer;position:relative;}
   .cbtn:hover,.cbtn.on{color:var(--f-fg);background:var(--f-surface-2);}
   .cbtn.accent{color:var(--f-accent);}
-    #shieldpop,#menupop,#histpop,#navpop,#permpop,#zoompop{position:absolute;top:88px;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:var(--pk-pop-radius,4px);backdrop-filter:blur(var(--pk-pop-blur,0px));z-index:20;display:none;min-width:230px;padding:10px 12px;color:var(--f-fg);animation:drop .15s ease-out;}
+    #shieldpop,#histpop,#navpop,#permpop,#zoompop{position:absolute;top:88px;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:var(--pk-pop-radius,4px);backdrop-filter:blur(var(--pk-pop-blur,0px));z-index:20;display:none;min-width:230px;padding:10px 12px;color:var(--f-fg);animation:drop .15s ease-out;}
   #zoompop{top:40px;left:48px;min-width:0;padding:6px;}
   #zoompop .zrow{display:flex;gap:6px;align-items:center;}
   #zoompop .zrow button{border:1px solid var(--f-border);background:transparent;color:var(--f-fg);border-radius:var(--pk-tab-radius,2px);padding:4px 12px;cursor:pointer;font:inherit;font-size:13px;min-width:34px;}
@@ -249,12 +249,9 @@
   #navpop .m span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;}
   @media (max-width:760px){#pin,#devtools,#eng{display:none;}}
   #shieldpop{right:120px;}
-  #menupop{right:8px;min-width:200px;padding:4px;}
-  #menupop .m,#ctxpop .m{display:flex;justify-content:space-between;gap:12px;padding:7px 10px;border-radius:var(--pk-tab-radius,2px);cursor:pointer;align-items:center;}
-  #menupop .m:hover,#ctxpop .m:hover{background:var(--f-surface-2);}
-  #menupop .m .k{color:var(--f-faint);font-size:12px;}
-  #menupop .m svg.ic{width:14px;height:14px;flex:none;}
-  #menupop .v{padding:6px 10px 2px;color:var(--f-faint);font-size:11px;text-align:right;}
+  #ctxpop{right:8px;min-width:200px;padding:4px;}
+  #ctxpop .m{display:flex;justify-content:space-between;gap:12px;padding:7px 10px;border-radius:var(--pk-tab-radius,2px);cursor:pointer;align-items:center;}
+  #ctxpop .m:hover{background:var(--f-surface-2);}
   #histpop{right:120px;min-width:300px;max-width:420px;}
   #histpop .m{display:flex;gap:8px;padding:6px 8px;border-radius:var(--pk-tab-radius,2px);cursor:pointer;align-items:baseline;}
   #histpop .m:hover{background:var(--f-surface-2);}
@@ -263,7 +260,7 @@
   #histpop .all,#shieldpop .all{display:block;text-align:center;padding:8px 4px 2px;color:var(--f-accent);cursor:pointer;font-size:12px;}
   #histpop .hsec{font-size:11px;font-weight:700;color:var(--f-muted);padding:8px 8px 2px;letter-spacing:.04em;text-transform:uppercase;}
   #histpop .m.restore span.t{color:var(--f-accent);}
-  #menupop hr,#ctxpop hr{border:none;border-top:1px solid var(--f-border);margin:4px 0;}
+  #ctxpop hr{border:none;border-top:1px solid var(--f-border);margin:4px 0;}
   /* Context popup (tab strip, bookmarks bar): same row language as the
      main menu, positioned at the cursor and clamped into the window. */
   #ctxpop{position:absolute;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:var(--pk-pop-radius,4px);z-index:30;display:none;min-width:200px;max-width:300px;padding:4px;animation:drop .12s ease-out;}
@@ -314,7 +311,7 @@
   #ferrite-tip .mm svg.ic{width:12px;height:12px;}
   #ferrite-tip .frow{display:flex;gap:8px;align-items:center;}
   #ferrite-tip .ftav{width:28px;height:28px;border-radius:6px;flex:none;}
-  @media (prefers-reduced-motion:reduce){.tab .spin,#loadbar i{animation:none!important;}#loadbar i{width:100%;left:0;transform:none;}#loadbar{transition:none;}.tab.fresh,.tab.closing,.tab.settle,#sugs,#shieldpop,#menupop,#histpop,#navpop,.shbtn .bdg.bump,#star.bump,#dl.bump,.tab.dragging{animation:none!important;transition:none!important;transform:none!important;}#findbar{animation:none!important;}#infobar{transition:none!important;}#permpop,#perm.attn{animation:none!important;}#zoompop{animation:none!important;}.tab.closing{display:none;}}
+  @media (prefers-reduced-motion:reduce){.tab .spin,#loadbar i{animation:none!important;}#loadbar i{width:100%;left:0;transform:none;}#loadbar{transition:none;}.tab.fresh,.tab.closing,.tab.settle,#sugs,#shieldpop,#histpop,#navpop,.shbtn .bdg.bump,#star.bump,#dl.bump,.tab.dragging{animation:none!important;transition:none!important;transform:none!important;}#findbar{animation:none!important;}#infobar{transition:none!important;}#permpop,#perm.attn{animation:none!important;}#zoompop{animation:none!important;}.tab.closing{display:none;}}
   #content-note{padding:40px;text-align:center;color:var(--f-border);}
   /* Side panel: toolbar toggle, drag rail, three sections. Mono avatars
      carry over from tabs/bar; row .act buttons are text, not icons. */
@@ -395,7 +392,6 @@
   <div id="shieldpop"></div>
   <div id="histpop"></div>
   <div id="navpop"></div>
-  <div id="menupop" role="menu" aria-label="Application menu"></div>
   <div id="ctxpop" role="menu" aria-label="Context menu"></div>
   <div id="gedit" role="dialog" aria-label="Tab group editor">
     <p class="gt" id="getitle">New group</p>
@@ -468,7 +464,7 @@
       shb=document.getElementById('shb'), shd=document.getElementById('shd'),
       dl=document.getElementById('dl'),
       status=document.getElementById('status'),
-      shieldpop=document.getElementById('shieldpop'), menupop=document.getElementById('menupop'),
+      shieldpop=document.getElementById('shieldpop'),
       histpop=document.getElementById('histpop'),
       bookbar=document.getElementById('bookbar'), baritems=document.getElementById('baritems'),
       barover=document.getElementById('barover'), starpop=document.getElementById('starpop'),
@@ -892,10 +888,6 @@
     else if(privActive){ ibtn.classList.remove('on'); ibtn.classList.add('priv'); ibtn.title='Private tab active: nothing from this tab is saved'; }
     else { ibtn.classList.remove('on'); ibtn.classList.remove('priv'); ibtn.title='New Incognito window'; }
     renderPanel();
-    // Open menu re-renders in place (toggle rows update checkmarks without
-    // closing); trigger exposes open state to assistive tech.
-    if(menupop.style.display==='block') renderMenu();
-    menuBtn.setAttribute('aria-expanded',menupop.style.display==='block'?'true':'false');
   // Find-in-page overlay: anchored top-right of the *content* viewport,
   // so it clears the open side panel instead of hiding under it.
   var fb=document.getElementById('findbar'), fq=document.getElementById('findq');
@@ -1590,7 +1582,7 @@
     });
   }
   holdToList(backBtn,'back'); holdToList(fwdBtn,'fwd');
-  function hidePops(){ ['shieldpop','menupop','histpop','navpop','starpop','barmenu','barsub','ctxpop','permpop','zoompop','gedit','wspop','profpop','dlpop'].forEach(function(id){ var el=document.getElementById(id); if(el) el.style.display='none'; }); }
+  function hidePops(){ ['shieldpop','histpop','navpop','starpop','barmenu','barsub','ctxpop','permpop','zoompop','gedit','wspop','profpop','dlpop'].forEach(function(id){ var el=document.getElementById(id); if(el) el.style.display='none'; }); }
   // ---- Bookmarks bar: curated shortlist, not all bookmarks ----
   function renderBar(){
     if(S.bar_visible) bookbar.classList.add('open'); else bookbar.classList.remove('open');
@@ -1744,46 +1736,14 @@
     } else if((e.key==='Enter'||e.key===' ')&&idx>=0){ e.preventDefault(); items[idx].click(); }
     else if(e.key==='Escape'){ barsub.style.display='none'; }
   });
+  // Main menu lives in the overlay window (topmost layer): chrome-DOM
+  // popups render below the content webview in window stacking and are
+  // invisible there. The button posts its rect; the shell anchors the
+  // overlay, builds rows from live state, and returns focus on dismiss.
   var menuBtn=document.getElementById('menu');
-  var items=[['new-tab','New Tab','Ctrl+T'],['new-incognito','New Incognito Window',''],['x',''],['history','History',''],['downloads','Downloads',''],['bookmarks','Bookmarks',''],['bookmark-page','Bookmark This Page','Ctrl+D'],['bookmark-all','Bookmark All Tabs',''],['find','Find in page','Ctrl+F'],['share','Share…',''],['qr-code','Show QR Code',''],['palette','Command Palette','Ctrl+K'],['x',''],['zoom-in','Zoom in','Ctrl++'],['zoom-out','Zoom out','Ctrl+-'],['zoom-reset','Reset zoom','Ctrl+0'],['x',''],['settings','Settings',''],['passwords','Password Manager',''],['archive','Archive Search',''],['task-manager','Task Manager','Shift+Esc'],['print','Print','Ctrl+P'],['x',''],['status','Status Bar','']];
-  // Row types drive dismissal: nav/action rows close the menu, toggle rows
-  // (data-keep) stay open and re-render in place, theme trialing must not
-  // reopen the menu per click. renderMenu refocuses by data-menu so arrow
-  // navigation survives the rebuild.
-  function renderMenu(){
-    var focusId=null, ae=document.activeElement;
-    if(ae&&ae.getAttribute) focusId=ae.getAttribute('data-menu');
-    var h='';
-    items.forEach(function(it){
-      if(it[0]==='x'){ h+='<hr>'; return; }
-      h+='<div class="m" role="menuitem" tabindex="-1" data-menu="'+it[0]+'"><span>'+it[1]+'</span><span class="k">'+it[2]+'</span></div>';
-    });
-    h+='<hr>';
-    S.themes.forEach(function(t){
-      h+='<div class="m" role="menuitemcheckbox" aria-checked="'+(t.current?'true':'false')+'" tabindex="-1" data-menu="theme:'+esc(t.id)+'" data-keep="1"><span style="display:flex;gap:6px;align-items:center;">'+(t.current?icon('check'):'<span style="display:inline-block;width:14px;"></span>')+esc(t.name)+'</span><span class="k">F4</span></div>';
-    });
-    h+='<hr>';
-    var barChecked=S.bar_mode==='always'?'true':(S.bar_mode==='ntp'?'mixed':'false');
-    h+='<div class="m" role="menuitemcheckbox" aria-checked="'+barChecked+'" tabindex="-1" data-menu="bookmarks-bar" data-keep="1"><span>Bookmarks bar: '+esc(S.bar_mode||'never')+'</span><span class="k">Ctrl+Shift+B</span></div>';
-    h+='<div class="m" role="menuitemcheckbox" aria-checked="'+((S&&S.panel_open)?'true':'false')+'" tabindex="-1" data-menu="side-panel" data-keep="1"><span>Side panel: '+((S&&S.panel_open)?'on':'off')+'</span><span class="k">Ctrl+B</span></div>';
-    h+='<div class="m" role="menuitemcheckbox" aria-checked="'+((S&&S.tabs_vertical)?'true':'false')+'" tabindex="-1" data-menu="vertical-tabs" data-keep="1"><span>Vertical tabs: '+((S&&S.tabs_vertical)?'on':'off')+'</span><span class="k"></span></div>';
-    h+='<hr><div class="v">Ferrite '+esc((S&&S.version)||'')+'</div>';
-    menupop.innerHTML=h;
-    if(focusId){
-      var f=menupop.querySelector('[data-menu="'+focusId+'"]');
-      if(f) f.focus();
-    }
-  }
   menuBtn.addEventListener('click',function(){
-    if(menupop.style.display==='block'){ menupop.style.display='none'; return; }
-    hidePops();
-    renderMenu();
-    menupop.style.display='block';
-  });
-  menupop.addEventListener('click',function(e){
-    var m=e.target.closest('[data-menu]'); if(!m) return;
-    post({cmd:'menu_item',id:m.getAttribute('data-menu')});
-    if(!m.hasAttribute('data-keep')) menupop.style.display='none';
+    var r=menuBtn.getBoundingClientRect();
+    post({cmd:'menu_open',x:Math.round(r.right),y:Math.round(r.bottom)});
   });
   // Shared menu keyboard: arrows move, Home/End jump, typeahead, Enter.
   // Two consumers (main menu, context popup), one implementation.
@@ -1810,7 +1770,6 @@
       }
     });
   }
-  menuKeys(menupop,'[data-menu]');
   // Context popup for chrome-surface right-clicks (tab strip, bookmarks
   // bar). Content-surface menus live in the overlay window instead,
   // chrome DOM sits below content in z-order.
@@ -2230,7 +2189,6 @@
   });
   document.addEventListener('click',function(e){
     if(!e.target.closest('#shieldpop')&&!e.target.closest('#sh')) shieldpop.style.display='none';
-    if(!e.target.closest('#menupop')&&!e.target.closest('#menu')) menupop.style.display='none';
     if(!e.target.closest('#histpop')&&!e.target.closest('#hist')) histpop.style.display='none';
     if(!e.target.closest('#navpop')&&!e.target.closest('#back')&&!e.target.closest('#fwd')) document.getElementById('navpop').style.display='none';
     if(!e.target.closest('#starpop')&&!e.target.closest('#star')) starpop.style.display='none';

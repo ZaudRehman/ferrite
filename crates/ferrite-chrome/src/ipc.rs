@@ -327,6 +327,15 @@ pub enum ChromeCommand {
     ChromeError {
         message: String,
     },
+    /// Open the main menu in the overlay window (topmost layer, above
+    /// content in z-order — chrome DOM popups are invisible there).
+    /// x/y are the button's window-relative right/bottom edges in whole
+    /// CSS pixels (integers keep the command `Eq`; sub-pixel anchoring
+    /// is meaningless for a menu). The shell clamps and validates.
+    MenuOpen {
+        x: i32,
+        y: i32,
+    },
 }
 
 impl ChromeCommand {
@@ -381,6 +390,14 @@ mod tests {
         let cmd = ChromeCommand::ChromeError {
             message: "TypeError: x is null @ ferrite://chrome:1766".into(),
         };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(ChromeCommand::parse(&json).unwrap(), cmd);
+    }
+
+    #[test]
+    fn menu_open_round_trips() {
+        // Overlay menu anchor: window-relative button edges, whole pixels.
+        let cmd = ChromeCommand::MenuOpen { x: 1250, y: 80 };
         let json = serde_json::to_string(&cmd).unwrap();
         assert_eq!(ChromeCommand::parse(&json).unwrap(), cmd);
     }
