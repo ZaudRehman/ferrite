@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/turn/v2 v2.1.6
-	golang.org/x/crypto v0.57.0
+	golang.org/x/crypto v0.58.0
 )
 
 require (
@@ -17,6 +17,6 @@ require (
 	github.com/pion/transport/v3 v3.0.2 // indirect
 	github.com/stretchr/testify v1.9.0 // indirect
 	github.com/wlynxg/anet v0.0.3 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 )
