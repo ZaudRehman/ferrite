@@ -9573,6 +9573,14 @@ impl ShellApp {
                 self.favicon_sent.clear();
                 self.push_chrome(true)
             }
+            ChromeCommand::ChromeError { message } => {
+                // In-page UI errors are display-only diagnostics: surface
+                // them at warn so they appear in default logs, never act.
+                // Length-capped here too (defense in depth with the client
+                // cap + throttle): a hostile or looping page cannot flood.
+                let short: String = message.chars().take(400).collect();
+                warn!(chrome_error = %short, "chrome page javascript error");
+            }
             ChromeCommand::ToastAction { seq } => self.toast_action(seq),
             ChromeCommand::ToastDismiss { seq } => {
                 if self.toasts.dismiss(seq, Instant::now()) {

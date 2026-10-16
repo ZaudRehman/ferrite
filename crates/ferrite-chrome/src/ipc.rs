@@ -320,6 +320,13 @@ pub enum ChromeCommand {
     ToastDismiss {
         seq: u64,
     },
+    /// In-page JS error report from the chrome UI (window.onerror).
+    /// Display-only diagnostics: the shell logs it, never acts on it.
+    /// Length-capped so a throwing loop cannot flood the log through its
+    /// own reporter (plus client-side dedupe in chrome.html).
+    ChromeError {
+        message: String,
+    },
 }
 
 impl ChromeCommand {
@@ -362,6 +369,17 @@ mod tests {
     fn navigate_round_trips() {
         let cmd = ChromeCommand::Navigate {
             url: "https://example.com".into(),
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(ChromeCommand::parse(&json).unwrap(), cmd);
+    }
+
+    #[test]
+    fn chrome_error_round_trips() {
+        // The in-page reporter must survive the strict parser: a rejected
+        // reporter is silent UI death all over again.
+        let cmd = ChromeCommand::ChromeError {
+            message: "TypeError: x is null @ ferrite://chrome:1766".into(),
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert_eq!(ChromeCommand::parse(&json).unwrap(), cmd);

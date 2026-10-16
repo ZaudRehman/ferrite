@@ -477,6 +477,21 @@
       relBtn=document.getElementById('rel'),
       ghost=document.getElementById('ghost');
   function post(o){ try{ window.ipc.postMessage(JSON.stringify(o)); }catch(e){} }
+  // In-page error reporter: silent UI death becomes a shell log line.
+  // Registered before everything else so init-time throws are caught too.
+  // Capped, throttle-guarded, itself try-wrapped: a throwing reporter
+  // would loop. Server side logs and never acts on these.
+  var lastErr='', lastErrAt=0;
+  window.addEventListener('error',function(e){
+    try{
+      var now=Date.now();
+      var msg=String((e&&e.message)||'unknown')+' @ '+String((e&&e.filename)||'chrome')+':'+((e&&e.lineno)||0);
+      msg=msg.slice(0,400);
+      if(msg===lastErr&&now-lastErrAt<5000) return;
+      lastErr=msg; lastErrAt=now;
+      post({cmd:'chrome_error',message:msg});
+    }catch(_){}
+  });
   function avatarOf(text){
     var m=String(text||'').match(/[A-Za-z0-9]/);
     return m?m[0].toUpperCase():'•';
