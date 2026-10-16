@@ -635,6 +635,18 @@ mod tests {
     }
 
     #[test]
+    fn load_completion_clears_the_spinner() {
+        // Regression: nothing ever called set_loaded, so every tab spun
+        // forever. navigate() raises the flag, the page_loaded drain arm
+        // lowers it via set_loaded; both halves pinned here.
+        let mut tab = mock_tab("https://example.com");
+        tab.navigate("https://other.test".to_owned());
+        assert!(tab.is_loading, "navigation starts loading");
+        tab.set_loaded();
+        assert!(!tab.is_loading, "completion settles the spinner");
+    }
+
+    #[test]
     fn nav_timestamp_stamps_starts_not_discards() {
         let tab = mock_tab("https://example.com");
         assert!(tab.last_nav_at_ms > 0, "creation is a nav start");

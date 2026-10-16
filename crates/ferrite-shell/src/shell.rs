@@ -11187,7 +11187,10 @@ impl ShellApp {
             if let Some(block) = self.boot_block.as_ref() {
                 let is_decision = Some(msg.tab_id) == block.tab;
                 let allowed = is_decision
-                    && matches!(msg_type, "bootdecision" | "bootdecision_data" | "title");
+                    && matches!(
+                        msg_type,
+                        "bootdecision" | "bootdecision_data" | "title" | "page_loaded"
+                    );
                 if !allowed {
                     debug!(msg_type, tab_id = %msg.tab_id, "ipc: boot gate blocked");
                     continue;
@@ -11253,6 +11256,14 @@ impl ShellApp {
                             tab.set_page_lang(next);
                             self.push_chrome(true);
                         }
+                    }
+                }
+                "page_loaded" => {
+                    // Engine document finished (all subresources): the tab
+                    // spinner and the reload-as-stop affordance settle here.
+                    // Without this arm nothing ever cleared `is_loading`.
+                    if let Some(tab) = self.app.tabs.get_tab_mut(msg.tab_id) {
+                        tab.set_loaded();
                     }
                 }
                 "pip" => {
@@ -17402,6 +17413,7 @@ fn content_page_allowed(msg_type: &str) -> bool {
             // clamped numbers, stored on the tab, never executed.
             | "lang"
             | "scroll"
+            | "page_loaded"
             // Icon-link reporter: absolute icon URL only (validated,
             // fetched Rust-side, applied with staleness checks).
             | "favicon"
@@ -18412,6 +18424,7 @@ mod import_tests {
             "media_drm_blocked",
             "lang",
             "scroll",
+            "page_loaded",
             "favicon",
             "bootdecision_data",
             "bootdecision",

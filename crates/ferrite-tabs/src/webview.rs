@@ -399,6 +399,26 @@ pub fn lang_reporter_js() -> &'static str {
 })();"#
 }
 
+/// Load-done reporter: posts `{type:'page_loaded'}` when the main-frame
+/// document fires `load` (all subresources done). The shell clears the
+/// tab's loading flag there; without it the tab spinner (and the
+/// reload-as-stop affordance) never settles. Main frame only,
+/// install-guarded. Documents already past loading when this runs (cached
+/// or instant custom-protocol pages) report at once instead of waiting
+/// for an event that already fired.
+pub fn load_done_js() -> &'static str {
+    r#"(function(){
+  if (window.__ferriteLoadInstalled) return;
+  window.__ferriteLoadInstalled = true;
+  if (window.self !== window.top) return;
+  function report() {
+    try { window.ipc.postMessage(JSON.stringify({type:'page_loaded'})); } catch(e) {}
+  }
+  if (document.readyState === 'complete') report();
+  else window.addEventListener('load', report, false);
+})();"#
+}
+
 /// Scroll reporter: posts `{type:'scroll', x, y}` with the live offset
 /// so session restore re-lands where you were. Throttled (2s, movement
 /// only) plus pagehide/hidden flushes; per-scroll posts would be a hot
@@ -898,6 +918,7 @@ fn init_scripts() -> Vec<(String, bool)> {
         (audio_listener_js().to_owned(), true),
         (scroll_reporter_js().to_owned(), true),
         (lang_reporter_js().to_owned(), true),
+        (load_done_js().to_owned(), true),
         (lifecycle_reporter_js().to_owned(), true),
         (nav_commit_js().to_owned(), true),
         (crate::pip::pip_report_js().to_owned(), true),
@@ -1718,8 +1739,8 @@ mod tests {
     #[test]
     fn init_scripts_scanner_alone_runs_subframe() {
         let scripts = init_scripts();
-        // 21 scripts, each non-empty, each registered exactly once.
-        assert_eq!(scripts.len(), 21);
+        // 22 scripts, each non-empty, each registered exactly once.
+        assert_eq!(scripts.len(), 22);
         assert!(scripts.iter().all(|(js, _)| !js.is_empty()));
         let subframes: Vec<&String> = scripts
             .iter()
@@ -1930,6 +1951,19 @@ mod tests {
         // fast traversal cannot flood the 10/s per-tab budget.
         assert!(js.contains("hoverLast"), "repeat dedup");
         assert!(js.contains("hoverTrailing"), "trailing edge");
+    }
+
+    #[test]
+    fn load_done_reporter_settles_the_spinner() {
+        let js = load_done_js();
+        // Main frame only: subframe loads must never clear the tab flag.
+        assert!(js.contains("window.self !== window.top"), "main-frame gate");
+        assert!(js.contains("page_loaded"), "loaded type");
+        assert!(js.contains("__ferriteLoadInstalled"), "install guard");
+        // Cached/instant documents are already past loading when this runs:
+        // waiting for `load` would hang the spinner exactly as before.
+        assert!(js.contains("readyState"), "already-loaded path");
+        assert!(js.contains("addEventListener('load'"), "load listener");
     }
 
     #[test]
