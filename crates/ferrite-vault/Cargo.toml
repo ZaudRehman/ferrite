@@ -17,7 +17,6 @@ keyring = "3.6"
 bip39 = { version = "2.1", features = ["rand"] }
 argon2 = "0.5"
 rand = "0.8"
-getrandom = "0.2"
 aes-gcm = "0.11"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 regex.workspace = true

@@ -1,6 +1,7 @@
 //! OS keychain integration.
 
 use keyring::Entry;
+use rand::RngCore;
 
 use crate::error::{VaultError, VaultResult};
 
@@ -92,9 +93,11 @@ pub fn delete_next_key() -> VaultResult<()> {
 }
 
 pub fn generate_master_key() -> VaultResult<Vec<u8>> {
+    // Same CSPRNG pattern as the recovery phrase (recovery.rs): the OS RNG
+    // via rand, no direct getrandom dep (0.4 removed the free function, and
+    // a second RNG API for one call site is pure surface).
     let mut key = vec![0u8; 32];
-    getrandom::getrandom(&mut key)
-        .map_err(|e| VaultError::Crypto(format!("CSPRNG unavailable: {e}")))?;
+    rand::thread_rng().fill_bytes(&mut key);
     Ok(key)
 }
 

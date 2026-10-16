@@ -1454,7 +1454,6 @@ dependencies = [
  "bip39",
  "crossbeam-channel",
  "dashmap",
- "getrandom 0.2.17",
  "keyring",
  "rand 0.8.8",
  "regex",
