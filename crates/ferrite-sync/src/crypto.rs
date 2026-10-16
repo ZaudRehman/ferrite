@@ -1,7 +1,7 @@
 //! Device identity: Ed25519 keypair plus self signed wrapping.
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use rand::rngs::OsRng;
+use rand::RngCore;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -27,8 +27,12 @@ pub struct DeviceIdentity {
 
 impl DeviceIdentity {
     pub fn generate() -> CryptoResult<Self> {
-        let mut rng = OsRng;
-        let signing_key = SigningKey::generate(&mut rng);
+        // dalek 3.x's generate() wants its own rand_core OsRng; raw bytes
+        // plus from_bytes keeps one RNG pattern (same as the vault) and no
+        // version-coupled trait bound.
+        let mut seed = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut seed);
+        let signing_key = SigningKey::from_bytes(&seed);
         let verifying_key = signing_key_verifying(&signing_key);
         Ok(Self {
             device_id: uuid::Uuid::new_v4(),
@@ -38,8 +42,9 @@ impl DeviceIdentity {
     }
 
     pub fn generate_with_id(device_id: uuid::Uuid) -> CryptoResult<Self> {
-        let mut rng = OsRng;
-        let signing_key = SigningKey::generate(&mut rng);
+        let mut seed = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut seed);
+        let signing_key = SigningKey::from_bytes(&seed);
         let verifying_key = signing_key_verifying(&signing_key);
         Ok(Self {
             device_id,

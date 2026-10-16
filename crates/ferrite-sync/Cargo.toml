@@ -21,7 +21,7 @@ tokio-rustls.workspace = true
 quinn = { version = "0.11", features = ["rustls"] }
 mdns-sd = "0.13"
 rcgen.workspace = true
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0", features = ["rand_core"] }
 bincode = { version = "2", features = ["serde"] }
 base64 = "0.23"
 sha2.workspace = true
