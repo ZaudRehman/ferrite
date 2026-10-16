@@ -28,17 +28,41 @@ behavior — sites keep their styling) or a Ferrite page (live-push failure).
 **Files likely touched:** none (or shell.rs live-push path)
 **Estimated scope:** XS
 
-## Checkpoint: Diagnosis
-- [ ] Both answers recorded; button cause narrowed to delivery vs refusal
+## Checkpoint: Diagnosis — CLOSED 2026-10-15 by live observation (supersedes logs)
+- User saw dropdowns open BEHIND the page + reload button provably acts.
+- Mechanism proven: input delivery works end to end; toolbar popups render in
+  chrome DOM below the content webview in OS stacking, so anything extending
+  past the bar is invisible. Theme-reset-on-reload root-caused separately
+  (creation-time snapshot; fixed). No further user data needed for Task 3.
 
 ## Phase 1: P0 — dead toolbar
 
-### Task 3: Fix per Phase-0 evidence (toolbar input + theme live-push)
-**Description:** Implement the fix the evidence points at (delivery path or
-refusal path for the toolbar), plus the confirmed theme live-push failure on
-existing Ferrite pages (new tabs already work via the factory block, so the
-gap is strictly the live `evaluate_script` pushes to open pages and chrome).
-Not both toolbar theories, not a guess.
+### Task 3: Toolbar popups render above content (overlay migration)
+**Mechanism (proven):** toolbar buttons work — clicks arrive, parse, execute
+(reload acts). Their dropdowns open invisibly: popups live in chrome DOM,
+which sits below the content webview in OS window stacking, so anything
+extending past the bar is covered. CSS z-index cannot fix cross-webview
+stacking. The existing overlay (topmost) window already hosts palette/ctx
+menus on this exact pattern — toolbar popups migrate to it.
+**Slice 3a (first):** overlay-anchored popup infrastructure + migrate ONE popup
+(menupop) end to end: state flow, button-anchored positioning, Esc/click-away,
+keyboard nav, focus return.
+**Acceptance criteria:**
+- [ ] Menu opens visibly above page content, anchored at the menu button
+- [ ] Esc, click-away, and item selection all close it correctly
+- [ ] Arrow-key navigation + typeahead keep working
+- [ ] No content interaction possible while open (overlay semantics hold)
+**Verification:**
+- [ ] Screenshot-verified on Windows (the failing platform) by the user
+- [ ] `cargo test -p ferrite-shell`, clippy clean
+**Dependencies:** none (evidence complete)
+**Files likely touched:** `crates/ferrite-chrome/assets/chrome.html` (popup
+markup/handlers), overlay protocol + shell overlay wiring
+**Estimated scope:** M (slice 3a alone)
+**Slices 3b+ (follow-ups, one popup group each):** shield/history/nav/star/perm/
+zoom/download/context/bookmark popups; then remove dead chrome-DOM popup code.
+Each slice carries the same four acceptance checks. No slice lands without its
+own user screenshot verification on Windows.
 **Acceptance criteria:**
 - [ ] Toolbar buttons and dropdowns respond on the user's real install
 - [ ] No regression in content-page input or keyboard paths
