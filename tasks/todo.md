@@ -267,9 +267,14 @@ without credentials.
 **Files likely touched:** `.github/workflows/release.yml` sign step
 **Estimated scope:** S
 
-### Task 19: Dependabot backlog (8 PRs)
-**Description:** Merge the 8 pending bumps; breaking majors first with compat
-proof (getrandom 0.2→0.4, ed25519-dalek 3.0), each with tests + credits regen.
+### Task 19: Dependabot backlog (8 PRs) — DONE 2026-10-15
+**Resolutions:** uuid 1.27 + quinn 0.11.12 + zstd 0.14 + base64 0.23 (shipped
+together, suites green, credits regenerated); windows 0.62 REVERTED with
+in-manifest rationale (0.62 string-newtype churn breaks our FFI sites and
+splits types across the wry 0.61 boundary — revisit with wry); getrandom
+direct dep ELIMINATED in favor of the existing rand pattern (better than the
+0.4 migration); ed25519-dalek 3.0 with raw-bytes keygen (98 sync tests green
+as wire-compat proof); x/crypto 0.57 in relay (vet+fmt+tests green).
 **Acceptance criteria:**
 - [ ] All 8 merged, CI green throughout
 - [ ] Credits projection regenerated + scrubbed per lockfile change
