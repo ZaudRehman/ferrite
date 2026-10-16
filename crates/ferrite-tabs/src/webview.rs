@@ -837,6 +837,18 @@ pub trait WebViewFactory: std::fmt::Debug {
     fn set_theme_css(&self, _css: String) {}
 }
 
+/// Read the shared theme block for one serve (poison-tolerant). The custom
+/// protocol closure calls this per request so pack switches reach reloads
+/// and future navigations in already-open webviews; snapshotting once at
+/// webview creation pinned every page to its birth pack (a reload reverted
+/// to the default theme). Pure read, no bind, no side effects.
+fn current_shared_css(shared: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
+    shared
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_else(|e| e.into_inner().clone())
+}
+
 /// Script that swaps the live theme on an already-loaded privileged page
 /// without reload: upserts `<style id="ferrite-theme-live">` as the last
 /// head child so it wins the cascade over the serve-time block, preserving
@@ -1241,7 +1253,11 @@ impl WryFactory {
         let pdf_intercept = self.pdf_intercept.clone();
 
         let assets = self.assets.clone();
-        let theme_css = self.theme_css_snapshot();
+        // Live handle, not a snapshot: the serve path reads the current
+        // block per request, so a pack switch re-themes reloads and future
+        // navigations in already-open webviews (a frozen creation-time copy
+        // is exactly how a reload reverted to the default pack).
+        let theme_css_live = std::sync::Arc::clone(&self.theme_css);
         let archive = self.archive.clone();
         // Profile selection, fixed for the webview's lifetime (same class
         // of constraint as the proxy port: set at creation, no live move
@@ -1302,7 +1318,7 @@ impl WryFactory {
                                         // stored scripts cannot reach `window.ipc`.
                                         // The banner uses theme vars; the style block
                                         // defines them (body content keeps its own).
-                                        let banner = format!("<style>{}</style><div style=\"background:var(--f-surface-2);color:var(--f-fg);padding:8px;text-align:center;font-family:var(--f-font-ui)\">Archive snapshot from {}</div>", crate::protocol::apply_theme_css(crate::protocol::THEME_MARKER, &theme_css), snap.timestamp);
+                                        let banner = format!("<style>{}</style><div style=\"background:var(--f-surface-2);color:var(--f-fg);padding:8px;text-align:center;font-family:var(--f-font-ui)\">Archive snapshot from {}</div>", crate::protocol::apply_theme_css(crate::protocol::THEME_MARKER, &current_shared_css(&theme_css_live)), snap.timestamp);
                                         let body = format!("{}{}", banner, snap.html);
                                         return http::Response::builder()
                                             .status(200)
@@ -1357,7 +1373,10 @@ impl WryFactory {
                         }
                     }
                     crate::protocol::ferrite_protocol_handler_with_assets(
-                        id, req, &assets, &theme_css
+                        id,
+                        req,
+                        &assets,
+                        &current_shared_css(&theme_css_live),
                     )
                 },
             );
@@ -1929,6 +1948,25 @@ mod tests {
         assert_eq!(f.theme_css_snapshot(), ":root{a:3}");
         // Mocks ignore theming without failing the switch.
         MockFactory.set_theme_css(":root{}".to_owned());
+    }
+
+    #[test]
+    fn serve_path_reads_current_pack_not_creation_snapshot() {
+        // Regression: the serve closure captured theme_css_snapshot() at
+        // webview creation, so a reload after a pack switch reverted to the
+        // birth pack. The closure now reads per request through this helper:
+        // a pre-switch snapshot must stay stale while the helper sees new.
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let bridge = crate::ipc::IpcBridge::new();
+        let f = WryFactory::new(tx, bridge.limiter()).with_theme_css(":root{a:1}");
+        let stale = f.theme_css_snapshot();
+        f.set_theme_css(":root{a:2}".to_owned());
+        assert_eq!(stale, ":root{a:1}", "old snapshot stays stale");
+        assert_eq!(
+            current_shared_css(&f.theme_css),
+            ":root{a:2}",
+            "serve must see the switched pack"
+        );
     }
 
     #[test]
