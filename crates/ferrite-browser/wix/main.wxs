@@ -194,7 +194,7 @@
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
         <!-- Product icon (Add/Remove Programs, shortcut): brand/ferrite.ico,
-             rendered from brand/icon_on_light.svg. -->
+             rendered from brand/light_icon.svg. -->
         <Icon Id='ProductICO' SourceFile='..\..\..\brand\ferrite.ico'/>
         <Property Id='ARPPRODUCTICON' Value='ProductICO' />
 
