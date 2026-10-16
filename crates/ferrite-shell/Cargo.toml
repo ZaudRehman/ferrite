@@ -42,6 +42,10 @@ raw-window-handle = "0.6"
 url.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+# Pinned with wry (0.56 pins windows 0.61): 0.62 reworks the string newtypes
+# (HSTRING/PCWSTR/PWSTR/Error no longer convert implicitly), which breaks our
+# native dialog/share call sites AND splits types across the wry boundary.
+# Revisit when wry moves; do not bump alone.
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Com",

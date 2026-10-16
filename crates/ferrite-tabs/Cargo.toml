@@ -32,4 +32,6 @@ gtk = ["dep:gtk"]
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
 webview2-com-sys = "0.38"
+# Same pin rationale as ferrite-shell: wry 0.56 holds 0.61, and 0.62's
+# string-newtype rework breaks dialog_win/engine call sites. Revisit with wry.
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Printing"] }
