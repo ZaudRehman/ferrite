@@ -351,13 +351,11 @@ mod tests {
         assert!(html.contains("__ferriteFolderList"), "folder dropdown");
         assert!(html.contains("bookmark_all_tabs"), "bookmark-all");
         assert!(html.contains("bar_reorder"), "bar reorder");
-        // Main menu rows mirror shell-handled actions (menu_item ids must
-        // exist in menu_action): zoom trio, bookmark page/all.
-        assert!(html.contains("['zoom-in'"), "menu zoom in");
-        assert!(html.contains("['zoom-out'"), "menu zoom out");
-        assert!(html.contains("['zoom-reset'"), "menu zoom reset");
-        assert!(html.contains("['bookmark-page'"), "menu bookmark page");
-        assert!(html.contains("['bookmark-all'"), "menu bookmark all");
+        // Main menu rows live server-side now (shell `menu_static_rows`,
+        // pinned by its own test): the chrome button only posts its rect.
+        // What the template must still carry is the opener wiring.
+        assert!(html.contains("menu_open"), "menu opener post");
+        assert!(html.contains("getBoundingClientRect"), "menu anchor rect");
         // History dropdowns anchor under their button and open on touch
         // long-press as well as right-click; reload disables with no tab.
         assert!(html.contains("r.left"), "navpop anchor");
