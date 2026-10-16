@@ -46,7 +46,11 @@ stacking. The existing overlay (topmost) window already hosts palette/ctx
 menus on this exact pattern — toolbar popups migrate to it.
 **Slice 3a (first):** overlay-anchored popup infrastructure + migrate ONE popup
 (menupop) end to end: state flow, button-anchored positioning, Esc/click-away,
-keyboard nav, focus return.
+keyboard nav, focus return. — SHIPPED 2026-10-15 (commits 405d467+d425c0d):
+reuses the ctx overlay window/page/channel with menu_* post types, server-built
+rows, toggle rows stay open with refresh, shared-view hide funnels updated.
+Unit-proven (rows, geometry, ipc); visual proof pending user screenshot on
+Windows (needs v0.1.1 build — user runs v0.1.0).
 **Acceptance criteria:**
 - [ ] Menu opens visibly above page content, anchored at the menu button
 - [ ] Esc, click-away, and item selection all close it correctly
