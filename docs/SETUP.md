@@ -62,9 +62,11 @@ portable installs): `ferrite.db` (vault), `ferrite-archive.db`,
 `ferrite-settings.enc`, `ferrite-session.enc`, `ferrite-threat.db`,
 `ferrite-crash.log`, `ferrite-session.lock`, `ferrite.lock`,
 `ferrite-crash-count`, `ferrite-profile/` (engine data), `ferrite-profiles/`
- (non-default profiles). Pre-data-root launch-directory files migrate once at
- boot (byte-verified copy, originals renamed to `*.migrated-<millis>`, never
- deleted).
+ (non-default profiles). Debug builds only, and only when no console is
+ available (launched from Explorer rather than a terminal), also write
+ `ferrite-debug.log` (capped at 512KB); shipped builds never create it.
+ Pre-data-root launch-directory files migrate once at boot (byte-verified
+ copy, originals renamed to `*.migrated-<millis>`, never deleted).
 
 ## Managed installs (master preferences)
 

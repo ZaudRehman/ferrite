@@ -202,6 +202,25 @@ impl Default for IpcBridge {
     }
 }
 
+/// Enqueue one message from a webview, whether it came from the top document
+/// or a child frame. Both carriers use this exact path so the queue bound,
+/// payload cap, per-tab rate limit and shell wake-up cannot drift apart.
+pub(crate) fn deliver_webview_message(
+    sender: &Sender<IpcMessage>,
+    limits: &SharedLimitsHandle,
+    waker: Option<&std::sync::Arc<dyn Fn() + Send + Sync>>,
+    msg: IpcMessage,
+    tab_hint: &str,
+) {
+    if IpcBridge::try_send_via(sender, limits, msg) {
+        if let Some(wake) = waker {
+            wake();
+        }
+    } else {
+        warn!(%tab_hint, "ipc message dropped (bound)");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +325,31 @@ mod tests {
         }
         assert_eq!(ok, IPC_PER_TAB_PER_SEC);
         assert!(bridge.dropped_rate() > 0);
+    }
+
+    #[test]
+    fn webview_delivery_enqueues_and_wakes() {
+        let mut bridge = IpcBridge::new();
+        let sender = bridge.sender.clone();
+        let limits = bridge.limiter();
+        let woke = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&woke);
+        let waker: std::sync::Arc<dyn Fn() + Send + Sync> =
+            std::sync::Arc::new(move || flag.store(true, std::sync::atomic::Ordering::SeqCst));
+        let id = Uuid::new_v4();
+        deliver_webview_message(
+            &sender,
+            &limits,
+            Some(&waker),
+            IpcMessage {
+                tab_id: id,
+                payload: r#"{"type":"shortcut"}"#.to_string(),
+            },
+            "https://example.test/",
+        );
+        assert!(woke.load(std::sync::atomic::Ordering::SeqCst));
+        let drained = bridge.drain();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].tab_id, id);
     }
 }

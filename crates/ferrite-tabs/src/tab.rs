@@ -572,6 +572,19 @@ impl TabState {
         Ok(())
     }
 
+    /// Reload without the HTTP cache (Chrome's Ctrl+F5 / Ctrl+Shift+R).
+    /// Unlike F5 this never turns into a stop: the caller asked for a fresh
+    /// document.
+    pub fn hard_reload(&mut self) -> TabResult<()> {
+        self.is_loading = true;
+        self.is_crashed = false;
+        self.last_nav_at_ms = now_millis();
+        if let Some(handle) = self.webview.as_ref() {
+            handle.hard_reload()?;
+        }
+        Ok(())
+    }
+
     pub fn stop(&mut self) -> TabResult<()> {
         if let Some(handle) = self.webview.as_ref() {
             // Best-effort: a gone renderer must not fail the stop.
@@ -609,6 +622,29 @@ mod tests {
         assert_eq!(tab.lifecycle, TabLifecycle::Active);
         assert!(tab.webview.is_some());
         assert!(!tab.is_discarded());
+    }
+
+    #[test]
+    fn hard_reload_bypasses_cache_and_marks_loading() {
+        let handle = Rc::new(MockHandle::default());
+        let mut tab = TabState::new(
+            Uuid::new_v4(),
+            "https://example.com".to_owned(),
+            handle.clone() as Rc<dyn WebViewHandle>,
+        );
+        tab.set_loaded();
+        tab.is_crashed = true;
+        tab.hard_reload().expect("mock hard reload");
+        assert!(tab.is_loading, "hard reload starts a fresh load");
+        assert!(!tab.is_crashed, "hard reload clears the crash flag");
+        assert_eq!(handle.hard_reload_count(), 1);
+        assert!(
+            handle
+                .scripts()
+                .iter()
+                .any(|s| s == "Page.reload ignoreCache"),
+            "the handle must receive the cache-bypassing reload, not a plain one"
+        );
     }
 
     #[test]

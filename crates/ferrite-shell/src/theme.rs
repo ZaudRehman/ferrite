@@ -124,7 +124,17 @@ impl ThemeConfig {
     pub fn theme_css(&self) -> String {
         let p = &self.palette;
         format!(
-            ":root{{--f-bg:{};--f-surface-1:{};--f-surface-2:{};--f-fg:{};--f-muted:{};--f-faint:{};--f-accent:{};--f-accent-primary:{};--f-danger:{};--f-warning:{};--f-archive:{};--f-border:{};--f-font-ui:{};--f-font-pixel:{};--f-font-mono:{}}}@font-face{{font-family:\"Geist Pixel Square\";src:url(\"http://ferrite.assets/geist-pixel-square.ttf\") format(\"truetype\");font-display:swap}}@font-face{{font-family:\"JetBrains Mono\";src:url(\"http://ferrite.assets/jetbrains-mono-regular.ttf\") format(\"truetype\");font-display:swap}}",
+            ":root{{--f-bg:{};--f-surface-1:{};--f-surface-2:{};--f-fg:{};--f-muted:{};--f-faint:{};--f-accent:{};--f-accent-primary:{};--f-danger:{};--f-warning:{};--f-archive:{};--f-border:{};--f-font-ui:{};--f-font-pixel:{};--f-font-mono:{}}}@font-face{{font-family:\"Geist Pixel Square\";src:url(\"http://ferrite.assets/geist-pixel-square.ttf\") format(\"truetype\");font-display:swap}}@font-face{{font-family:\"JetBrains Mono\";src:url(\"http://ferrite.assets/jetbrains-mono-regular.ttf\") format(\"truetype\");font-display:swap}}\
+             /* WebView2 paints classic Windows scrollbars (light track, arrows)\
+                on `color-scheme:dark` documents, so a themed surface that\
+                scrolls gets a white bar. Style the scroller from the same\
+                tokens as everything else: a slim inset thumb on a transparent\
+                track, no arrow buttons, no light strip. 3px transparent border\
+                insets the thumb to 4px inside a 10px bar. */\
+             ::-webkit-scrollbar{{width:10px;height:10px}}\
+             ::-webkit-scrollbar-track,::-webkit-scrollbar-corner{{background:transparent}}\
+             ::-webkit-scrollbar-thumb{{background-color:var(--f-faint);border:3px solid transparent;border-radius:10px;background-clip:content-box}}\
+             ::-webkit-scrollbar-thumb:hover{{background-color:var(--f-muted)}}",
             p.substrate,
             p.surface_1,
             p.surface_2,
@@ -197,6 +207,21 @@ mod tests {
         assert!(css.contains("@font-face"), "faces {css}");
         assert!(css.contains("geist-pixel-square.ttf"), "pixel {css}");
         assert!(css.contains("jetbrains-mono-regular.ttf"), "mono {css}");
+        // Scrollbars are part of the theme: WebView2 otherwise paints a light
+        // classic bar on a dark surface, and the thumb must come from tokens
+        // so every pack (and every live switch) recolours it.
+        assert!(
+            css.contains("::-webkit-scrollbar-thumb{background-color:var(--f-faint)"),
+            "themed scrollbar thumb {css}"
+        );
+        assert!(
+            css.contains("::-webkit-scrollbar-thumb:hover{background-color:var(--f-muted)}"),
+            "scrollbar hover {css}"
+        );
+        assert!(
+            css.contains("::-webkit-scrollbar-track,::-webkit-scrollbar-corner"),
+            "no light track {css}"
+        );
         // Archive accent context moves the interactive accent.
         let cfg = ThemeConfig {
             accent_context: AccentContext::Archive,

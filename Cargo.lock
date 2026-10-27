@@ -1247,6 +1247,7 @@ dependencies = [
  "ferrite-shell",
  "tracing",
  "tracing-subscriber",
+ "windows",
  "winres",
 ]
 

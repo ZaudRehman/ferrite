@@ -262,6 +262,10 @@ pub fn sweep_stale_partials(dir: &Path, max_age: Duration) -> usize {
                 .and_then(|t| now.duration_since(t).ok())
                 .is_some_and(|age| age >= max_age);
             if old_enough && std::fs::remove_file(&path).is_ok() {
+                // The sidecar is only meaningful while its partial exists.
+                // Remove the pair together; never sweep arbitrary `.meta`
+                // files, which could be user downloads.
+                let _ = std::fs::remove_file(partial_meta_path_for(&path));
                 removed += 1;
             }
         }
@@ -466,10 +470,20 @@ pub fn verify_zone_identifier(path: &std::path::Path) -> bool {
 
 /// Manual-fetch staging: bytes stream to `dest.partial`, promoted by atomic
 /// rename on success. A crash never leaves a complete-looking file at the
-/// final name; a `.partial` leftover resumes via `Range` on retry.
+/// final name. A `.partial` leftover is resumable only when its sidecar
+/// validates the URL, length, validator, and total; otherwise it is discarded.
 pub fn partial_path_for(dest: &Path) -> PathBuf {
     let mut s = dest.as_os_str().to_owned();
     s.push(".partial");
+    PathBuf::from(s)
+}
+
+/// Validator/length sidecar for a resumable `.partial`. Kept beside the
+/// partial and removed with it; the suffix is deliberately not `.meta` so
+/// the stale sweep never mistakes a user file for housekeeping.
+pub fn partial_meta_path_for(partial: &Path) -> PathBuf {
+    let mut s = partial.as_os_str().to_owned();
+    s.push(".ferrite-resume");
     PathBuf::from(s)
 }
 
@@ -599,6 +613,10 @@ mod tests {
         let dest = dir.join("a.bin");
         let partial = partial_path_for(&dest);
         assert!(partial.extension().is_some());
+        assert_eq!(
+            partial_meta_path_for(&partial),
+            dir.join("a.bin.partial.ferrite-resume")
+        );
         std::fs::write(&partial, b"data").unwrap();
         promote_partial(&partial, &dest).unwrap();
         assert!(dest.exists());
@@ -612,13 +630,20 @@ mod tests {
     fn stale_partial_sweep_keeps_fresh_and_non_partial() {
         let dir = std::env::temp_dir().join(format!("ferrite_dl_sweep_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("old.partial"), b"x").unwrap();
+        let old_partial = dir.join("old.partial");
+        let old_meta = partial_meta_path_for(&old_partial);
+        std::fs::write(&old_partial, b"x").unwrap();
+        std::fs::write(&old_meta, b"{}").unwrap();
         std::fs::write(dir.join("keep.bin"), b"y").unwrap();
+        // A user file whose name merely ends in `.meta` is not housekeeping.
+        std::fs::write(dir.join("report.partial.meta"), b"z").unwrap();
         // Zero age sweeps everything partial (fresh files included);
         // real calls pass 24h so live transfers are never touched.
         assert_eq!(sweep_stale_partials(&dir, Duration::from_secs(0)), 1);
-        assert!(!dir.join("old.partial").exists());
+        assert!(!old_partial.exists());
+        assert!(!old_meta.exists());
         assert!(dir.join("keep.bin").exists());
+        assert!(dir.join("report.partial.meta").exists());
         assert_eq!(
             sweep_stale_partials(&dir.join("missing"), Duration::from_secs(0)),
             0

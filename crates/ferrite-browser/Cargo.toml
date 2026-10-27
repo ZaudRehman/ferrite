@@ -24,6 +24,14 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# Console re-attach for the debug log path (see `src/main.rs`). Pinned with
+# wry/ferrite-shell (0.61); do not bump alone, the string newtypes churn.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }
+
 # Windows-only exe icon (build.rs no-ops on other targets).
 [build-dependencies]
 winres = "0.1"

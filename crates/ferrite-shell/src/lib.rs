@@ -30,6 +30,8 @@ mod favicon;
 mod filedlg;
 mod fonts;
 pub(crate) mod forward;
+#[cfg(test)]
+mod js_syntax;
 pub(crate) mod pdf;
 pub mod profiles;
 mod recovery;

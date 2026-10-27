@@ -16,7 +16,7 @@
   html,body{margin:0;padding:0;height:100%;overflow:hidden;}
   body{background:var(--f-bg);color:var(--f-fg);font-family:var(--f-font-ui);font-size:13px;}
   #tabbar{display:flex;align-items:center;gap:2px;height:40px;padding:0 8px;background:var(--f-bg);border-bottom:1px solid var(--f-border);user-select:none;}
-  #tabs{display:flex;gap:2px;flex:1;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;}
+  #tabs{display:flex;gap:2px;flex:1;overflow-x:auto;overflow-y:hidden;}
   .tab{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:76px;max-width:190px;padding:5px 6px 5px 10px;background:transparent;border:1px solid transparent;border-radius:var(--pk-tab-radius,2px);cursor:pointer;white-space:nowrap;color:var(--f-fg);transition:transform .18s cubic-bezier(.2,.9,.25,1.15),opacity .15s ease-out,background .12s ease-out;}
   .tab:hover{background:var(--f-surface-2);}
   .tab.active{background:var(--f-surface-1);border-color:var(--f-border);box-shadow:inset 0 2px 0 var(--f-accent);}
@@ -66,7 +66,6 @@
   body.vtab #tablist,body.vtab #newtab{margin-top:4px;width:100%;}
   body.vtab #tablist{margin-top:auto;}
   body.vtab #omnibar,body.vtab #bookbar{margin-left:232px;}
-  body.vtab #shieldpop,body.vtab #histpop,body.vtab #navpop,body.vtab #permpop,body.vtab #zoompop{top:48px;}
   /* Group headers: inline chips where membership changes, color-coded by
      the pushed group color. Members of a collapsed group stay in the DOM
      (drag indices address `data-idx`, never visible position) but hide. */
@@ -80,69 +79,19 @@
   .tab.ghide{display:none;}
   .tab.ingroup{box-shadow:inset 2px 0 0 var(--gg,#9AA0A6);}
   .tab.ingroup.active{box-shadow:inset 0 2px 0 var(--f-accent),inset 2px 0 0 var(--gg,#9AA0A6);}
-  /* Group editor popover: name + color + actions, anchored to the header.
-     Same overlay discipline as ctxpop (hidePops, Esc, click-away). */
-  #gedit{position:absolute;display:none;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.45);padding:12px;width:250px;z-index:60;}
-  #gedit .gt{font-size:12px;font-weight:700;margin:0 0 8px;}
-  #gedit input[type=text]{width:100%;box-sizing:border-box;background:var(--f-surface-2);border:1px solid var(--f-border);color:var(--f-fg);border-radius:6px;padding:7px 9px;font-size:13px;font-family:inherit;}
-  #gedit .sws{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap;}
-  #gedit .sw{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;}
-  #gedit .sw.on{border-color:var(--f-fg);}
-  #gedit .grow{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;}
-  #gedit button{border:1px solid var(--f-border);background:var(--f-surface-2);color:var(--f-fg);border-radius:6px;padding:7px 12px;cursor:pointer;font-size:12px;font-family:inherit;}
-  #gedit button:hover{border-color:var(--f-accent);}
-  #gedit button.primary{background:var(--f-accent);border-color:var(--f-accent);color:var(--f-bg);font-weight:700;}
-  #gedit button.danger:hover{border-color:var(--f-danger);color:var(--f-danger);}
-  #gedit label.crow{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--f-muted);margin-top:10px;cursor:pointer;}
-  /* Workspace switcher: tabbar button + popover. Same overlay discipline
-     as the other pops (hidePops, Esc via input, click-away). */
+  /* Workspace switcher: tabbar button. Rows and forms are shell-hosted
+     on the overlay (3c-6); the button carries only its label. */
   #wsbtn{border:1px solid transparent;background:transparent;color:var(--f-muted);border-radius:var(--pk-tab-radius,2px);padding:2px 7px;cursor:pointer;flex:none;font-size:12px;font-weight:700;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   #wsbtn:hover{color:var(--f-fg);border-color:var(--f-border);}
   #wsbtn.on{color:var(--f-accent);border-color:var(--f-border);}
-  /* Profile avatar: initial in a circle + popover. Same overlay
-     discipline as the workspace switcher. */
+  /* Profile avatar: initial in a circle. */
   #profbtn{border:1px solid var(--f-border);background:var(--f-surface-2);color:var(--f-fg);border-radius:50%;width:26px;height:26px;cursor:pointer;flex:none;font-size:12px;font-weight:700;font-family:inherit;display:inline-flex;align-items:center;justify-content:center;}
   #profbtn:hover{border-color:var(--f-accent);color:var(--f-accent);}
-  #profpop{position:absolute;display:none;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.45);padding:4px;min-width:230px;max-width:300px;z-index:60;}
-  #profpop .m{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;font-size:13px;}
-  #profpop .m:hover{background:var(--f-surface-2);}
-  #profpop .m.cur{font-weight:700;}
-  #profpop .av{width:20px;height:20px;border-radius:50%;background:var(--f-surface-2);color:var(--f-muted);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;}
-  #profpop .m .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  #profpop .m .ic{border:none;background:transparent;color:var(--f-faint);cursor:pointer;font-size:12px;padding:2px 4px;border-radius:4px;flex:none;}
-  #profpop .m .ic:hover{color:var(--f-danger);background:var(--f-surface-2);}
-  #profpop .newrow{display:flex;gap:6px;padding:8px 6px 4px;}
-  #profpop .newrow input{flex:1;background:var(--f-surface-2);border:1px solid var(--f-border);color:var(--f-fg);border-radius:6px;padding:6px 8px;font-size:12px;font-family:inherit;min-width:0;}
-  #profpop .newrow button{border:1px solid var(--f-accent);background:var(--f-accent);color:var(--f-bg);border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;flex:none;}
-  #profpop .note{font-size:11px;color:var(--f-faint);padding:6px 10px 4px;}
-  /* Downloads bubble: recent items with open/reveal, no page leave.
-     Same overlay discipline as the other pops. */
-  #dlpop{position:absolute;display:none;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.45);padding:4px;min-width:300px;max-width:420px;z-index:60;}
-  #dlpop .m{padding:7px 10px;border-radius:6px;font-size:13px;}
-  #dlpop .m:hover{background:var(--f-surface-2);}
-  #dlpop .m .fn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;}
-  #dlpop .m .meta{font-size:11px;color:var(--f-faint);margin-top:2px;}
-  #dlpop .m .acts{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;}
-  #dlpop .m .acts button{border:1px solid var(--f-border);background:transparent;color:var(--f-fg);border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px;font-family:inherit;}
-  #dlpop .m .acts button:hover{background:var(--f-surface-2);}
-  #dlpop .all{display:block;text-align:center;padding:8px 4px 2px;color:var(--f-accent);cursor:pointer;font-size:12px;}
-  #dlpop .empty{padding:12px;color:var(--f-faint);font-size:13px;text-align:center;}
   /* Scope chip: shows while `@tabs`/`@bookmarks`/`@history` filters the
      dropdown (server-driven, never inferred). Click focuses the bar;
-     deleting the prefix exits the scope. */
-  #scopechip{display:none;flex:none;font-size:11px;font-weight:700;color:var(--f-accent);border:1px solid var(--f-accent);border-radius:20px;padding:2px 8px;cursor:pointer;white-space:nowrap;}
-  #wspop{position:absolute;display:none;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.45);padding:4px;min-width:230px;max-width:300px;z-index:60;}
-  #wspop .m{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;font-size:13px;}
-  #wspop .m:hover{background:var(--f-surface-2);}
-  #wspop .m.cur{font-weight:700;}
-  #wspop .m .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  #wspop .m .ct{font-size:11px;color:var(--f-faint);flex:none;}
-  #wspop .m .ic{border:none;background:transparent;color:var(--f-faint);cursor:pointer;font-size:12px;padding:2px 4px;border-radius:4px;flex:none;}
-  #wspop .m .ic:hover{color:var(--f-danger);background:var(--f-surface-2);}
-  #wspop .m .ic.rn:hover{color:var(--f-accent);}
-  #wspop .newrow{display:flex;gap:6px;padding:8px 6px 4px;}
-  #wspop .newrow input{flex:1;background:var(--f-surface-2);border:1px solid var(--f-border);color:var(--f-fg);border-radius:6px;padding:6px 8px;font-size:12px;font-family:inherit;min-width:0;}
-  #wspop .newrow button{border:1px solid var(--f-accent);background:var(--f-accent);color:var(--f-bg);border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;flex:none;}
+     deleting the prefix exits the scope. Hidden through its inline style
+     like every other toolbar toggle (see the note above #star). */
+  #scopechip{flex:none;font-size:11px;font-weight:700;color:var(--f-accent);border:1px solid var(--f-accent);border-radius:20px;padding:2px 8px;cursor:pointer;white-space:nowrap;}
   #newtab{border:1px solid var(--f-border);background:transparent;color:var(--f-fg);border-radius:var(--pk-tab-radius,2px);font-size:15px;padding:2px 9px;cursor:pointer;flex:none;}
   #newtab:hover{border-color:var(--f-accent);color:var(--f-accent);}
   #tablist{border:1px solid transparent;background:transparent;color:var(--f-faint);border-radius:var(--pk-tab-radius,2px);padding:2px 7px;cursor:pointer;flex:none;}
@@ -156,16 +105,8 @@
   .bitem .t{overflow:hidden;text-overflow:ellipsis;}
   .bitem .av{width:16px;height:16px;border-radius:50%;background:var(--f-surface-2);color:var(--f-muted);font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;}
   .bitem svg.ic{width:14px;height:14px;flex:none;}
-  #barover{border:1px solid transparent;background:transparent;color:var(--f-faint);border-radius:var(--pk-tab-radius,2px);padding:0 7px;cursor:pointer;flex:none;font-size:13px;display:none;}
+  #barover{border:1px solid transparent;background:transparent;color:var(--f-faint);border-radius:var(--pk-tab-radius,2px);padding:0 7px;cursor:pointer;flex:none;font-size:13px;}
   #barover:hover{color:var(--f-fg);border-color:var(--f-border);}
-  #starpop,#barmenu,#barsub{position:absolute;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:var(--pk-pop-radius,4px);backdrop-filter:blur(var(--pk-pop-blur,0px));z-index:20;display:none;min-width:230px;padding:10px 12px;color:var(--f-fg);animation:drop .15s ease-out;}
-  #starpop input,#starpop select{width:100%;box-sizing:border-box;background:var(--f-surface-2);border:1px solid var(--f-border);color:var(--f-fg);border-radius:var(--pk-tab-radius,2px);padding:6px 8px;margin:4px 0;font-size:13px;font-family:inherit;}
-  #starpop .row{display:flex;gap:8px;margin-top:8px;}
-  #starpop button{flex:1;background:var(--f-surface-2);border:1px solid var(--f-border);color:var(--f-fg);border-radius:var(--pk-tab-radius,2px);padding:6px;cursor:pointer;}
-  #starpop button.primary{background:var(--f-accent);border-color:transparent;color:var(--f-bg);font-weight:700;}
-  #barmenu .m,#barsub .m{display:flex;justify-content:space-between;gap:12px;padding:7px 10px;border-radius:var(--pk-tab-radius,2px);cursor:pointer;font-size:13px;align-items:center;}
-  #barmenu .m:hover,#barsub .m:hover{background:var(--f-surface-2);}
-  #barmenu hr{border:none;border-top:1px solid var(--f-border);margin:4px 0;}
   #omnibar{display:flex;align-items:center;gap:6px;height:48px;padding:0 10px;background:var(--f-surface-1);border-bottom:1px solid var(--f-border);}
   .nbtn{border:none;background:transparent;color:var(--f-muted);font-size:15px;border-radius:var(--pk-tab-radius,2px);padding:5px 8px;cursor:pointer;}
   .nbtn:hover:not(:disabled){background:var(--f-surface-2);color:var(--f-fg);}
@@ -182,18 +123,26 @@
   @keyframes bump{0%{transform:scale(1);}40%{transform:scale(1.4);}100%{transform:scale(1);}}
   .shbtn .dot{position:absolute;bottom:0;right:0;width:7px;height:7px;border-radius:50%;background:#3ddc84;border:1px solid var(--f-bg);}
   .shbtn .dot.down{background:var(--f-danger);}
-  #star{border:none;background:transparent;color:var(--f-faint);cursor:pointer;display:none;padding:3px;border-radius:var(--pk-tab-radius,2px);}
-  #star.show{display:block;}
+  /* Controls whose visibility the script owns are hidden through the inline
+     `display:none` in the served markup, never through a stylesheet rule: the
+     script shows them by clearing that inline declaration, and a cleared
+     inline falls back to the rule — so a `display:none` here makes the
+     control permanently unreachable. That is exactly what happened to #star,
+     #readbtn, #transbtn, #clr, #scopechip, #barover and #psearch. `none`
+     stays the only hidden value because the roving-arrow filter reads
+     `style.display`. `clear_to_show_controls_are_never_stylesheet_hidden` in
+     tokens.rs derives the rule from the script itself and guards every target. */
+  #star{border:none;background:transparent;color:var(--f-faint);cursor:pointer;padding:3px;border-radius:var(--pk-tab-radius,2px);}
   #star.on{color:var(--f-accent);}
   #star svg.ic{width:15px;height:15px;}
   #star.bump{animation:bump .25s ease-out;}
-  #readbtn{border:none;background:transparent;color:var(--f-faint);cursor:pointer;display:none;padding:3px;border-radius:var(--pk-tab-radius,2px);}
+  #readbtn{border:none;background:transparent;color:var(--f-faint);cursor:pointer;padding:3px;border-radius:var(--pk-tab-radius,2px);}
   #readbtn:hover{color:var(--f-fg);background:var(--f-surface-2);}
   #readbtn svg.ic{width:15px;height:15px;}
   /* Translate offer: text chip (no icon in the kit; zoom sets the text
      precedent). Shows only when the pushed offer says the page language
      differs from the target. */
-  #transbtn{border:none;background:transparent;color:var(--f-faint);cursor:pointer;display:none;padding:3px 6px;font-size:12px;font-weight:700;font-family:inherit;border-radius:var(--pk-tab-radius,2px);}
+  #transbtn{border:none;background:transparent;color:var(--f-faint);cursor:pointer;padding:3px 6px;font-size:12px;font-weight:700;font-family:inherit;border-radius:var(--pk-tab-radius,2px);}
   #transbtn:hover{color:var(--f-accent);background:var(--f-surface-2);}
   #omni{flex:1;background:transparent;border:none;outline:none;color:var(--f-fg);font:inherit;min-width:0;}
   #omni::placeholder{color:var(--f-faint);}
@@ -201,7 +150,7 @@
   #disp .sch,#disp .sub,#disp .pth{color:var(--f-faint);}
   #disp .dom{color:var(--f-fg);font-weight:600;}
   #disp .ph{color:var(--f-faint);}
-  #clr{border:none;background:transparent;color:var(--f-faint);cursor:pointer;font-size:14px;border-radius:var(--pk-tab-radius,2px);padding:0 6px;display:none;}
+  #clr{border:none;background:transparent;color:var(--f-faint);cursor:pointer;font-size:14px;border-radius:var(--pk-tab-radius,2px);padding:0 6px;}
   #clr:hover{color:var(--f-fg);background:var(--f-surface-2);}
   button{touch-action:manipulation;}
   .nbtn,.cbtn{min-width:32px;min-height:32px;}
@@ -224,53 +173,23 @@
   .cbtn{border:none;background:transparent;color:var(--f-faint);font-size:15px;border-radius:var(--pk-tab-radius,2px);padding:5px 7px;cursor:pointer;position:relative;}
   .cbtn:hover,.cbtn.on{color:var(--f-fg);background:var(--f-surface-2);}
   .cbtn.accent{color:var(--f-accent);}
-    #shieldpop,#histpop,#navpop,#permpop,#zoompop{position:absolute;top:88px;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:var(--pk-pop-radius,4px);backdrop-filter:blur(var(--pk-pop-blur,0px));z-index:20;display:none;min-width:230px;padding:10px 12px;color:var(--f-fg);animation:drop .15s ease-out;}
-  #zoompop{top:40px;left:48px;min-width:0;padding:6px;}
-  #zoompop .zrow{display:flex;gap:6px;align-items:center;}
-  #zoompop .zrow button{border:1px solid var(--f-border);background:transparent;color:var(--f-fg);border-radius:var(--pk-tab-radius,2px);padding:4px 12px;cursor:pointer;font:inherit;font-size:13px;min-width:34px;}
-  #zoompop .zrow button:hover{background:var(--f-surface-2);}
-  #zoompop .zrow button.zpct{min-width:64px;font-weight:700;}
-  #zoompop .zrow button:disabled{opacity:.4;cursor:default;}
   #zoom{font-size:12px;font-weight:700;}
-  #permpop{top:40px;left:48px;max-width:400px;}
-  #permpop .prow{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:6px 0;border-bottom:1px solid var(--f-border);}
-  #permpop .prow svg.ic{width:14px;height:14px;flex:none;vertical-align:-2px;margin-right:6px;}
-  #permpop .prow .po{color:var(--f-faint);font-size:12px;overflow-wrap:anywhere;}
-  #permpop .pbtns{display:flex;gap:6px;flex:none;}
-  #permpop .pbtns button,#permpop #permnotnow{border:1px solid var(--f-border);background:transparent;color:var(--f-fg);border-radius:var(--pk-tab-radius,2px);padding:4px 10px;cursor:pointer;font:inherit;font-size:12px;}
-  #permpop .pbtns button:hover,#permpop #permnotnow:hover{background:var(--f-surface-2);}
-  #permpop .pbtns button:disabled,#permpop #permnotnow:disabled{opacity:.4;cursor:default;}
-  #permpop .pnote{color:var(--f-faint);font-size:11px;margin:8px 0;}
-  #permpop #permnotnow{margin-top:8px;width:100%;}
   #perm.attn{animation:bump .25s ease-out;}
-  #navpop{max-width:420px;}
-  #navpop .m{display:flex;padding:6px 8px;border-radius:var(--pk-tab-radius,2px);cursor:pointer;}
-  #navpop .m:hover{background:var(--f-surface-2);}
-  #navpop .m span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;}
   @media (max-width:760px){#pin,#devtools,#eng{display:none;}}
-  #shieldpop{right:120px;}
-  #ctxpop{right:8px;min-width:200px;padding:4px;}
-  #ctxpop .m{display:flex;justify-content:space-between;gap:12px;padding:7px 10px;border-radius:var(--pk-tab-radius,2px);cursor:pointer;align-items:center;}
-  #ctxpop .m:hover{background:var(--f-surface-2);}
-  #histpop{right:120px;min-width:300px;max-width:420px;}
-  #histpop .m{display:flex;gap:8px;padding:6px 8px;border-radius:var(--pk-tab-radius,2px);cursor:pointer;align-items:baseline;}
-  #histpop .m:hover{background:var(--f-surface-2);}
-  #histpop .m .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  #histpop .m .u{color:var(--f-faint);font-size:11px;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:none;}
-  #histpop .all,#shieldpop .all{display:block;text-align:center;padding:8px 4px 2px;color:var(--f-accent);cursor:pointer;font-size:12px;}
-  #histpop .hsec{font-size:11px;font-weight:700;color:var(--f-muted);padding:8px 8px 2px;letter-spacing:.04em;text-transform:uppercase;}
-  #histpop .m.restore span.t{color:var(--f-accent);}
-  #ctxpop hr{border:none;border-top:1px solid var(--f-border);margin:4px 0;}
-  /* Context popup (tab strip, bookmarks bar): same row language as the
-     main menu, positioned at the cursor and clamped into the window. */
-  #ctxpop{position:absolute;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:var(--pk-pop-radius,4px);z-index:30;display:none;min-width:200px;max-width:300px;padding:4px;animation:drop .12s ease-out;}
-  #status{display:flex;gap:14px;align-items:center;height:26px;padding:0 12px;background:var(--f-bg);border-top:1px solid var(--f-border);font-size:12px;color:var(--f-faint);position:fixed;bottom:0;left:0;right:0;}
+  /* Status strip: the last 26px of the window, inside the content inset the
+     shell reserves (STATUS_H_PX). border-box so the 1px rule and 26px height
+     agree with the shell's arithmetic instead of adding to it. */
+  #status{box-sizing:border-box;display:flex;gap:14px;align-items:center;height:26px;padding:0 12px;background:var(--f-bg);border-top:1px solid var(--f-border);font-size:12px;color:var(--f-faint);position:fixed;bottom:0;left:0;right:0;}
   #status .num{font-family:var(--f-font-mono);font-variant-numeric:tabular-nums;}
   #status .hover{flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0;}
   #status .hover .sch,#status .hover .sub,#status .hover .pth{color:var(--f-faint);}
   #status .hover .dom{color:var(--f-fg);font-weight:600;}
   #status .bad{color:var(--f-danger);}
-  #loadbar{height:2px;background:transparent;position:relative;overflow:hidden;opacity:0;transition:opacity .2s;}
+  /* Load bar: pinned to the last 2px of the chrome band (the content inset
+     starts right below it), never in flow, so opening the infobar slides it
+     down instead of leaving the bar under a covered strip. top is set from
+     #infobar's measured bottom in positionLoadbar(). */
+  #loadbar{position:fixed;left:0;right:0;height:2px;background:transparent;overflow:hidden;opacity:0;transition:opacity .2s;pointer-events:none;z-index:30;}
   #loadbar.on{opacity:1;}
   #loadbar i{position:absolute;top:0;bottom:0;left:0;width:30%;background:var(--f-accent);animation:ld 1.1s ease-in-out infinite;}
   @keyframes ld{0%{transform:translateX(-100%);}100%{transform:translateX(340%);}}
@@ -289,15 +208,6 @@
   #dl .flash{color:var(--f-accent);}
   #dl.bump{animation:bump .25s ease-out;}
   #dl.err{color:var(--f-danger);}
-  #toast{position:fixed;right:12px;bottom:36px;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:var(--pk-pop-radius,4px);padding:8px 10px 8px 12px;font-size:12px;z-index:40;display:none;align-items:center;gap:8px;animation:drop .15s ease-out;max-width:360px;color:var(--f-fg);}
-  #toast.show{display:flex;}
-  #toast .tic{display:flex;color:var(--f-muted);flex:none;}
-  #toast .tic svg.ic{width:14px;height:14px;}
-  #toast .ttx{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
-  #toast .tact{border:1px solid var(--f-accent);background:transparent;color:var(--f-accent);border-radius:var(--pk-tab-radius,2px);padding:3px 10px;cursor:pointer;font:inherit;font-size:12px;font-weight:700;flex:none;}
-  #toast .tact:hover{background:var(--f-surface-2);}
-  #toast .tx{border:none;background:transparent;color:var(--f-faint);font-size:14px;line-height:1;border-radius:var(--pk-ctl-radius,6px);padding:2px 6px;cursor:pointer;flex:none;}
-  #toast .tx:hover{color:var(--f-fg);background:var(--f-surface-2);}
   /* Tooltip primitive: one shared #ferrite-tip for every chrome surface
      (toolbar, tab strip, bookmarks bar). Simple text by default; .rich is
      the tab hover preview card (full title + URL). Single hairline border,
@@ -311,7 +221,7 @@
   #ferrite-tip .mm svg.ic{width:12px;height:12px;}
   #ferrite-tip .frow{display:flex;gap:8px;align-items:center;}
   #ferrite-tip .ftav{width:28px;height:28px;border-radius:6px;flex:none;}
-  @media (prefers-reduced-motion:reduce){.tab .spin,#loadbar i{animation:none!important;}#loadbar i{width:100%;left:0;transform:none;}#loadbar{transition:none;}.tab.fresh,.tab.closing,.tab.settle,#sugs,#shieldpop,#histpop,#navpop,.shbtn .bdg.bump,#star.bump,#dl.bump,.tab.dragging{animation:none!important;transition:none!important;transform:none!important;}#findbar{animation:none!important;}#infobar{transition:none!important;}#permpop,#perm.attn{animation:none!important;}#zoompop{animation:none!important;}.tab.closing{display:none;}}
+  @media (prefers-reduced-motion:reduce){.tab .spin,#loadbar i{animation:none!important;}#loadbar i{width:100%;left:0;transform:none;}#loadbar{transition:none;}.tab.fresh,.tab.closing,.tab.settle,#sugs,.shbtn .bdg.bump,#star.bump,#dl.bump,.tab.dragging{animation:none!important;transition:none!important;transform:none!important;}#infobar{transition:none!important;}#perm.attn{animation:none!important;}.tab.closing{display:none;}}
   #content-note{padding:40px;text-align:center;color:var(--f-border);}
   /* Side panel: toolbar toggle, drag rail, three sections. Mono avatars
      carry over from tabs/bar; row .act buttons are text, not icons. */
@@ -332,7 +242,7 @@
   #phead button{border:none;background:transparent;color:var(--f-faint);border-radius:var(--pk-tab-radius,2px);padding:4px;cursor:pointer;}
   #phead button:hover{color:var(--f-fg);background:var(--f-surface-2);}
   #phead button svg.ic{width:14px;height:14px;}
-  #psearch{padding:0 12px 8px;display:none;}
+  #psearch{padding:0 12px 8px;}
   #psearch input{width:100%;box-sizing:border-box;background:var(--f-surface-2);border:1px solid var(--f-border);color:var(--f-fg);border-radius:var(--pk-tab-radius,2px);padding:6px 8px;font:inherit;font-size:12px;}
   #plist{flex:1;overflow-y:auto;padding:0 6px 12px;}
   .prow{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:var(--pk-tab-radius,2px);cursor:pointer;}
@@ -346,18 +256,6 @@
   .prow .act:hover{color:var(--f-fg);background:var(--f-surface-1);}
   .prow .act.done{color:var(--f-accent);}
   .pempty{padding:24px 12px;text-align:center;color:var(--f-faint);font-size:12px;}
-  /* Find-in-page: floating overlay top-right of the content viewport (never
-     a dock, it must not resize the page). Up chevron reuses the caret path
-     rotated 180°. Counter is aria-live: discrete keystrokes, not motion. */
-  #findbar{position:fixed;display:none;align-items:center;gap:4px;background:var(--f-surface-1);border:1px solid var(--f-border);border-radius:var(--pk-pop-radius,4px);padding:5px 6px 5px 9px;z-index:25;box-shadow:0 4px 16px rgba(0,0,0,.35);animation:drop .15s ease-out;}
-  #findbar svg.ic{width:15px;height:15px;color:var(--f-faint);flex:none;}
-  #findq{background:transparent;border:none;outline:none;color:var(--f-fg);font:inherit;font-size:12px;width:170px;}
-  #findcount{font-size:11px;color:var(--f-faint);min-width:64px;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
-  #findbar button{border:none;background:transparent;color:var(--f-faint);border-radius:var(--pk-tab-radius,2px);padding:4px;cursor:pointer;display:flex;}
-  #findbar button:hover{color:var(--f-fg);background:var(--f-surface-2);}
-  #findbar button.on{color:var(--f-accent);background:var(--f-surface-2);}
-  #findbar button svg.ic{width:14px;height:14px;}
-  #findbar button.up svg.ic{transform:rotate(180deg);}
   /* Crash infobar: one-shot window bar under the toolbar. Neutral surface,
      accent reserved for the Restore button; role=status never steals focus. */
   #infobar{display:flex;align-items:center;max-height:0;overflow:hidden;background:var(--f-surface-1);border-bottom:1px solid transparent;transition:max-height .18s ease-out;font-size:12px;}
@@ -372,13 +270,12 @@
 </head>
 <body>
   <div id="tabbar"><span style="font-size:12px;font-weight:700;letter-spacing:.1em;color:var(--f-accent);padding-right:6px;">FERRITE</span><button id="wsbtn" title="Workspaces: switch tab sets"></button><div id="tabs" role="tablist" aria-label="Open tabs" style="display:flex;gap:2px;flex:1;overflow:hidden;"></div><button id="tablist" title="List all tabs (Ctrl+Shift+A)"></button><button id="newtab" title="New Tab (Ctrl+T)"></button></div>
-  <div id="wspop" role="menu" aria-label="Workspaces"></div>
   <div id="omnibar" role="toolbar" aria-label="Browser toolbar">
     <button class="nbtn" id="back" title="Back (Alt+Left)"></button>
     <button class="nbtn" id="fwd" title="Forward (Alt+Right)"></button>
     <button class="nbtn" id="rel" title="Reload (Ctrl+R)"></button>
     <button class="nbtn" id="home" title="Home"></button>
-    <div id="pill"><button class="shbtn" id="sh" title="Privacy status"><span id="shi"></span><span class="bdg zero" id="shb">0</span><span class="dot" id="shd"></span></button><span id="scopechip" title="Scoped search: delete the @ prefix to exit"></span><input id="omni" role="combobox" aria-expanded="false" aria-autocomplete="both" aria-label="Address and search" type="text" placeholder="Search or enter address  (Ctrl+L)" spellcheck="false" autocomplete="off"><span id="ghost" aria-hidden="true"></span><div id="disp" title="Click to edit"></div><button id="clr" title="Clear"></button><button id="star" title="Bookmark this tab (Ctrl+D)"></button><button id="readbtn" title="Reader view"></button><button id="transbtn" title="Translate this page"></button><button id="pipbtn" title="Enter Picture-in-Picture" style="display:none"></button><button id="sharebtn" title="Share this page"></button><select id="eng" title="Search engine"></select><button class="shbtn" id="zoom" title="Page zoom" style="display:none"></button><div id="zoompop" role="dialog" aria-label="Page zoom"></div><span id="permwrap" role="status"><button class="shbtn" id="perm" title="Permission request" style="display:none"><span id="permi"></span><span class="bdg" id="permb">0</span></button></span><div id="permpop" role="alert"></div><div id="sugs" role="listbox"></div></div>
+    <div id="pill"><button class="shbtn" id="sh" title="Privacy status"><span id="shi"></span><span class="bdg zero" id="shb">0</span><span class="dot" id="shd"></span></button><span id="scopechip" title="Scoped search: delete the @ prefix to exit" style="display:none"></span><input id="omni" role="combobox" aria-expanded="false" aria-autocomplete="both" aria-label="Address and search" type="text" placeholder="Search or enter address  (Ctrl+L)" spellcheck="false" autocomplete="off"><span id="ghost" aria-hidden="true"></span><div id="disp" title="Click to edit"></div><button id="clr" title="Clear" style="display:none"></button><button id="star" title="Bookmark this tab (Ctrl+D)" style="display:none"></button><button id="readbtn" title="Reader view" style="display:none"></button><button id="transbtn" title="Translate this page" style="display:none"></button><button id="pipbtn" title="Enter Picture-in-Picture" style="display:none"></button><button id="sharebtn" title="Share this page" style="display:none"></button><select id="eng" title="Search engine"></select><button class="shbtn" id="zoom" title="Page zoom" style="display:none"></button><span role="status"><button class="shbtn" id="perm" title="Permission request" style="display:none"><span id="permi"></span><span class="bdg" id="permb">0</span></button></span><div id="sugs" role="listbox"></div></div>
     <button class="cbtn" id="hist" title="History"></button>
     <button class="cbtn" id="dl" title="Downloads"></button>
     <button class="cbtn" id="pin" title="Pin this tab"></button>
@@ -388,26 +285,7 @@
     <button id="profbtn" title="Profiles"></button>
     <button class="cbtn" id="menu" title="Menu"></button>
   </div>
-  <div id="profpop" role="menu" aria-label="Profiles"></div>
-  <div id="shieldpop"></div>
-  <div id="histpop"></div>
-  <div id="navpop"></div>
-  <div id="ctxpop" role="menu" aria-label="Context menu"></div>
-  <div id="gedit" role="dialog" aria-label="Tab group editor">
-    <p class="gt" id="getitle">New group</p>
-    <input type="text" id="gename" maxlength="64" placeholder="Group name" aria-label="Group name">
-    <div class="sws" id="gesws" role="radiogroup" aria-label="Group color"></div>
-    <label class="crow"><input type="checkbox" id="gecoll"> Collapsed</label>
-    <div class="grow">
-      <button class="primary" id="gesave">Save</button>
-      <button class="danger" id="gedel" style="display:none">Ungroup</button>
-      <button class="danger" id="geclose" style="display:none">Close tabs</button>
-    </div>
-  </div>
-  <div id="bookbar" role="menubar" aria-label="Bookmarks bar"><div id="baritems"></div><button id="barover" title="More bookmarks">»</button></div>
-  <div id="starpop" role="dialog" aria-label="Bookmark this page"></div>
-  <div id="barmenu" role="menu"></div>
-  <div id="barsub" role="menu"></div>
+  <div id="bookbar" role="menubar" aria-label="Bookmarks bar"><div id="baritems"></div><button id="barover" title="More bookmarks" style="display:none">»</button></div>
   <div id="sidewrap">
     <div id="pgrip" title="Drag to resize"></div>
     <div id="rail" role="tablist" aria-label="Side panel sections">
@@ -417,38 +295,27 @@
     </div>
     <div id="panel">
       <div id="phead"><span id="ptitle">Bookmarks</span><span class="sp"></span><button id="padd" title="Save this page to the reading list"></button><button id="pclose" title="Close panel (Ctrl+B)"></button></div>
-      <div id="psearch"><input id="pq" type="text" placeholder="Filter history" aria-label="Filter history" spellcheck="false" autocomplete="off"></div>
+      <div id="psearch" style="display:none"><input id="pq" type="text" placeholder="Filter history" aria-label="Filter history" spellcheck="false" autocomplete="off"></div>
       <div id="plist" role="list"></div>
     </div>
   </div>
-  <div id="findbar" role="search" aria-label="Find in page">
-    <span id="findglass"></span>
-    <input id="findq" type="text" placeholder="Find in page" aria-label="Find in page" spellcheck="false" autocomplete="off">
-    <span id="findcount" aria-live="polite"></span>
-    <button id="findprev" class="up" title="Previous match (Shift+Enter)"></button>
-    <button id="findnext" title="Next match (Enter)"></button>
-    <button id="findcase" title="Match case"></button>
-    <button id="findx" title="Close (Escape)"></button>
-  </div>
   <div id="infobar" role="status"><div class="in"><span id="infobar-ic"></span><span class="msg" id="infobar-msg"></span><button id="infrestore" class="primary">Restore</button><button id="infexcept" title="Restore everything except the tab that was active (likely culprit, undoable)">Except active tab</button><button id="infdismiss">Dismiss</button></div></div>
-  <div id="toast" role="status" aria-live="polite" hidden></div>
   <div id="ferrite-tip" role="tooltip" hidden></div>
   <div id="loadbar"><i></i></div>
   <div id="status" style="display:none;"></div>
 <script>
 (function(){
   var S=null, hl=-1, deb=null, booted=false, dragId=null, entryText='', provId=null, provName='';
+  // Toolbar popover mirror state: whether the overlay is open and the last
+  // highlight / clipboard snippet pushed, so only changes cross the IPC.
+  var popOpen=false, popHl=null, popClip=null;
   // Favicon cache (server sends on change only): tab id → data URL.
   var favCache={};
   // Multi-select state: ordered ids + range anchor. Client-only; every
   // push prunes ids that no longer exist (see paintSel, called by render).
   var sel=[], selAnchor=null;
   var ghostFull=null, suppressClick=false;
-  var knownTabs={}, prevBlocked=-1, prevStarred=null, prevPerm=null, permOpenedAt=0;
-  // Identity of the tab+URL the snapshot pops were opened for. render()
-  // hides per-tab snapshot pops when it changes (they render once on open
-  // and never follow pushes, unlike menu/ws/prof which re-render live).
-  var lastSnapKey=null;
+  var knownTabs={}, prevBlocked=-1, prevStarred=null, prevPerm=null;
   var tabsEl=document.getElementById('tabs'), omni=document.getElementById('omni'),
       disp=document.getElementById('disp'), clr=document.getElementById('clr'),
       star=document.getElementById('star'),
@@ -458,21 +325,34 @@
       sharebtn=document.getElementById('sharebtn'),
       sugs=document.getElementById('sugs'), eng=document.getElementById('eng'),
       perm=document.getElementById('perm'), permi=document.getElementById('permi'),
-      permb=document.getElementById('permb'), permpop=document.getElementById('permpop'),
-      zoom=document.getElementById('zoom'), zoompop=document.getElementById('zoompop'),
+      permb=document.getElementById('permb'),
+      zoom=document.getElementById('zoom'),
       sh=document.getElementById('sh'), shi=document.getElementById('shi'),
       shb=document.getElementById('shb'), shd=document.getElementById('shd'),
       dl=document.getElementById('dl'),
       status=document.getElementById('status'),
-      shieldpop=document.getElementById('shieldpop'),
-      histpop=document.getElementById('histpop'),
       bookbar=document.getElementById('bookbar'), baritems=document.getElementById('baritems'),
-      barover=document.getElementById('barover'), starpop=document.getElementById('starpop'),
-      barmenu=document.getElementById('barmenu'), barsub=document.getElementById('barsub'),
+      barover=document.getElementById('barover'),
       backBtn=document.getElementById('back'), fwdBtn=document.getElementById('fwd'),
       relBtn=document.getElementById('rel'),
       ghost=document.getElementById('ghost');
   function post(o){ try{ window.ipc.postMessage(JSON.stringify(o)); }catch(e){} }
+  // 3c-6: chrome owns geometry and ids only. The shell resolves every target
+  // against live state, builds the rows/forms, and hosts them on the shared
+  // overlay. `el` anchors below the owner; `point` anchors at (x,y).
+  function rectOf(el){ var r=el.getBoundingClientRect();
+    return {x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)}; }
+  // The chrome element that opened the current overlay surface, if any. A
+  // press inside it is that surface's own toggle, never an outside press
+  // (ARCH-15): the overflow chevron must survive the click that opened it.
+  var surfOwner=null;
+  function postSurface(surface,el,extra){
+    var e=extra||{}, r=el?rectOf(el):{x:e.x||0,y:e.y||0,w:0,h:0};
+    surfOwner=el||null;
+    post({cmd:'chrome_surface_open',surface:surface,id:e.id||'',ids:e.ids||[],
+      items:e.items||[],parent:(e.parent===undefined?null:e.parent),point:!!e.point,
+      x:r.x,y:r.y,w:r.w,h:r.h});
+  }
   // In-page error reporter: silent UI death becomes a shell log line.
   // Registered before everything else so init-time throws are caught too.
   // Capped, throttle-guarded, itself try-wrapped: a throwing reporter
@@ -519,11 +399,77 @@
     ghost.innerHTML='<span class="g-in">'+esc(typed)+'</span><span class="g-out">'+esc(cand.slice(typed.length))+'</span>';
     ghost.style.display='flex';
   }
+  // The bar row has two layouts: the blurred one (rich URL display plus the
+  // page actions star, reader, translate, share, pip) and the editing one
+  // (raw input plus clear-×). Which one is on screen is a function of
+  // activeElement and the pushed state, so it has exactly one owner: this.
+  // render() calls it on every push and focusOmnibox() calls it when focus
+  // moves with no push behind it, so the row can never sit in the stale
+  // layout (page actions left over next to an active omnibox).
+  function paintBarRow(){
+    var editing=document.activeElement===omni;
+    // omnibox: rich domain display when blurred, raw input while editing.
+    if(editing){ omni.style.display=''; disp.style.display='none'; }
+    else {
+      omni.style.display='none'; disp.style.display='flex';
+      disp.innerHTML=renderDisp();
+    }
+    if(!editing && omni.value!==S.omnibox_text) omni.value=S.omnibox_text;
+    syncClr();
+    var at=activeTab();
+    // star: real pages only (privileged ferrite:// documents are app chrome,
+    // not bookmarkable). Icon, label and bump are render()'s.
+    star.style.display=(!editing&&at&&at.url&&at.url.indexOf('ferrite://')!==0)?'':'none';
+    // reader: same visibility rule as the star. Scheme-split (not a literal
+    // match): the template bans remote-URL literals, and this comparison is
+    // not a fetch.
+    var scheme=at&&at.url?at.url.split(':')[0].toLowerCase():'';
+    var showRead=!editing&&(scheme==='http'||scheme==='https');
+    readbtn.style.display=showRead?'':'none';
+    // translate offer: the same real-page rule plus the pushed offer (page
+    // language differs from the target).
+    transbtn.style.display=(showRead&&S.translate_offer)?'':'none';
+    // share: same real-page rule (privileged pages are app chrome, not
+    // shareable content). Every http(s) document has a shareable URL by
+    // construction, so eligibility needs no page signal.
+    sharebtn.style.display=showRead?'':'none';
+    // pip: same contextual rule as the reader (appears only when relevant),
+    // eligibility from the page reporter via Rust state, real pages only,
+    // since privileged pages carry no video.
+    pipbtn.style.display=(!editing&&!!S.pip_eligible)?'':'none';
+  }
+  // The address bar is `display:none` whenever it is not the focused element
+  // (paintBarRow's blurred branch paints the rich URL display instead), and a
+  // hidden element cannot take focus. Every path that means "put the caret in
+  // the bar" therefore has to un-hide it first: Ctrl+L, the shell's
+  // focus_omnibox command and new-tab autofocus (all through
+  // __ferriteFocusOmnibox), the #disp click, the scope chip and the clipboard
+  // paste row. The shell's permission "Not now" arrives as that same
+  // focus_omnibox command (the card itself lives on the overlay). This is the
+  // only place that focuses #omni.
+  function focusOmnibox(){
+    if(document.activeElement!==omni){
+      omni.style.display=''; disp.style.display='none';
+      omni.value=S.omnibox_text||S.raw_url||'';
+    }
+    omni.focus();
+    // After the focus lands, never before: the row layout and syncClr both
+    // read activeElement.
+    paintBarRow();
+  }
+  // Clicking the bar selects what it shows (the Ctrl+L reading); the paths
+  // that only hand the caret back (scope chip, the shell's permission "Not
+  // now") keep it without selecting.
+  function selectOmnibox(){ focusOmnibox(); omni.select(); }
+  // Clear-×: only while the bar is being edited (a blurred bar shows the rich
+  // URL display) and only with something to clear. One rule in one place: the
+  // input, composition, ghost, paste and clear paths all call this.
+  function syncClr(){ clr.style.display=(document.activeElement===omni&&omni.value)?'':'none'; }
   function acceptGhost(){
     if(!ghostFull) return false;
-    omni.value=ghostFull; clr.style.display='';
+    omni.value=ghostFull; syncClr();
     post({cmd:'omnibox_input',text:omni.value});
-    hl=-1; updateGhost(); render(); omni.focus();
+    hl=-1; updateGhost(); render(); focusOmnibox();
     return true;
   }
   // Icon kit: Phosphor Icons (MIT License, phosphoricons.com), inlined so
@@ -567,6 +513,10 @@
     read:{r:'<path d="M232,48H160a40,40,0,0,0-32,16A40,40,0,0,0,96,48H24a8,8,0,0,0-8,8V200a8,8,0,0,0,8,8H96a24,24,0,0,1,24,24,8,8,0,0,0,16,0,24,24,0,0,1,24-24h72a8,8,0,0,0,8-8V56A8,8,0,0,0,232,48ZM96,192H32V64H96a24,24,0,0,1,24,24V200A39.81,39.81,0,0,0,96,192Zm128,0H160a39.81,39.81,0,0,0-24,8V88a24,24,0,0,1,24-24h64ZM160,88H96a8,8,0,0,1,0-16h64a8,8,0,0,1,0,16Zm48,32H96a8,8,0,0,1,0-16h112a8,8,0,0,1,0,16Z"/>'},
     pip:{r:'<rect x="32" y="48" width="192" height="144" rx="16" fill="none" stroke="currentColor" stroke-width="16"/><rect x="132" y="116" width="76" height="60" rx="8"/>'},
     share:{r:'<circle cx="64" cy="128" r="24" fill="none" stroke="currentColor" stroke-width="16"/><circle cx="192" cy="64" r="24" fill="none" stroke="currentColor" stroke-width="16"/><circle cx="192" cy="192" r="24" fill="none" stroke="currentColor" stroke-width="16"/><line x1="85" y1="117" x2="171" y2="75" stroke="currentColor" stroke-width="16" stroke-linecap="round"/><line x1="85" y1="139" x2="171" y2="181" stroke="currentColor" stroke-width="16" stroke-linecap="round"/>'},
+    // Shared kit: the bundled mobile template still draws its own find card
+    // from `find`/`aa`, and `mobile_icon_kit_matches_desktop` pins parity, so
+    // the glyphs stay in this table even though desktop's card moved to
+    // ferrite://find (which carries its own copy).
     find:{r:'<path d="M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"/>'},
     aa:{r:'<path d="M87.24,52.59a8,8,0,0,0-14.48,0l-64,136a8,8,0,1,0,14.48,6.81L39.9,160h80.2l16.66,35.4a8,8,0,1,0,14.48-6.81ZM47.43,144,80,74.79,112.57,144ZM200,96c-12.76,0-22.73,3.47-29.63,10.32a8,8,0,0,0,11.26,11.36c3.8-3.77,10-5.68,18.37-5.68,13.23,0,24,9,24,20v3.22A42.76,42.76,0,0,0,200,128c-22.06,0-40,16.15-40,36s17.94,36,40,36a42.73,42.73,0,0,0,24-7.25,8,8,0,0,0,16-.75V132C240,112.15,222.06,96,200,96Zm0,88c-13.23,0-24-9-24-20s10.77-20,24-20,24,9,24,20S213.23,184,200,184Z"/>'},
     // Detective (Phosphor Icons, MIT, phosphoricons.com): incognito
@@ -598,11 +548,6 @@
   })();
   document.getElementById('padd').innerHTML=icon('plus');
   document.getElementById('pclose').innerHTML=icon('x');
-  document.getElementById('findglass').innerHTML=icon('find');
-  document.getElementById('findprev').innerHTML=icon('caret');
-  document.getElementById('findnext').innerHTML=icon('caret');
-  document.getElementById('findcase').innerHTML=icon('aa');
-  document.getElementById('findx').innerHTML=icon('x');
   document.getElementById('infobar-ic').innerHTML=icon('info');
   document.getElementById('menu').setAttribute('aria-haspopup','menu');
   star.innerHTML=icon('star');
@@ -668,15 +613,9 @@
     if(S.tabs_vertical) document.body.classList.add('vtab');
     else document.body.classList.remove('vtab');
     var at=activeTab();
-    // Snapshot pops (per-tab data rendered once on open) must not survive
-    // a tab switch or same-tab navigation: live pops (menu/ws/prof)
-    // re-render on push, these don't. Hide on identity change; the user
-    // reopens fresh. Global pops (downloads, bookmarks, groups) stay put.
-    var snapKey=at?(at.id+'\n'+(at.url||'')):'';
-    if(snapKey!==lastSnapKey){
-      lastSnapKey=snapKey;
-      ['shieldpop','histpop','navpop','zoompop','starpop','permpop','ctxpop'].forEach(function(id){ var el=document.getElementById(id); if(el) el.style.display='none'; });
-    }
+    // Every transient surface is shell-hosted now (3c-6): a tab with its own
+    // snapshot (star, context menus) is closed by the shell on the same
+    // identity change, so chrome keeps no per-tab pop state at all.
     // tabs (draggable for reorder; letter avatars until real favicons land)
     // Group headers render inline where membership changes; collapsed
     // members hide via .ghide but keep data-idx (drag posts manager
@@ -730,10 +669,8 @@
     // Workspace button + open popover follow the push (never while the
     // user is typing in it: re-render would eat the input focus).
     paintWsBtn();
-    if(wspop.style.display==='block'&&!wspop.contains(document.activeElement)) renderWs();
     // Profile avatar follows the push (never while its popover takes input).
     paintProfBtn();
-    if(profpop.style.display==='block'&&!profpop.contains(document.activeElement)) renderProf();
     // Keep the active tab in view when the strip overflows.
     var activeEl=tabsEl.querySelector('.tab.active');
     if(activeEl&&activeEl.scrollIntoView) activeEl.scrollIntoView({block:'nearest',inline:'nearest'});
@@ -744,15 +681,8 @@
     relBtn.innerHTML=icon(loading?'x':'reload');
     relBtn.title=loading?'Stop (Esc)':'Reload (Ctrl+R)';
     relBtn.disabled=!at;
-    // omnibox: rich domain display when blurred, raw input while editing
-    var editing=document.activeElement===omni;
-    if(editing){ omni.style.display=''; disp.style.display='none'; }
-    else {
-      omni.style.display='none'; disp.style.display='flex';
-      disp.innerHTML=renderDisp();
-    }
-    if(!editing && omni.value!==S.omnibox_text) omni.value=S.omnibox_text;
-    clr.style.display=omni.value?'':'none';
+    // omnibox row and page actions: one layout, one owner (paintBarRow).
+    paintBarRow();
     // Scope chip follows the pushed scope (never inferred from text).
     var scopechip=document.getElementById('scopechip');
     var scopename={tabs:'Tabs',bookmarks:'Bookmarks',history:'History'}[S.omni_scope];
@@ -768,9 +698,7 @@
     sh.className='shbtn'+(n>0?' lit':'');
     sh.title=n+' blocked this session'+(S.status.site_paused?' · paused on this site':'')+' · '+(S.sec==='lock'?'secure connection':(S.sec==='info'?'plain connection':'Ferrite page'))+' · click for details';
     shd.className='dot'+(S.status.proxy_alive?'':' down');
-    // star: Regular unsaved, Fill saved.
-    var showStar=!editing && at && at.url && at.url.indexOf('ferrite://')!==0;
-    star.style.display=showStar?'':'none';
+    // star: Regular unsaved, Fill saved (visibility is paintBarRow's).
     star.innerHTML=icon('star',S.starred?'f':'r');
     star.className=S.starred?'on':'';
     star.title=S.starred?'Bookmarked · click to remove (Ctrl+D)':'Bookmark this tab (Ctrl+D)';
@@ -780,7 +708,7 @@
     // replay the attention bump; quiet (backoff) rows just sit there.
     // Popover opens on click only. The icon itself stays role=status.
     var pm=S.perm||[];
-    if(!pm.length){ perm.style.display='none'; permpop.style.display='none'; }
+    if(!pm.length){ perm.style.display='none'; }
     else{
       perm.style.display='';
       permb.textContent=String(pm.length);
@@ -791,39 +719,20 @@
       if(prevPerm===null||pm.length!==prevPerm){ perm.classList.remove('attn'); void perm.offsetWidth; if(loud) perm.classList.add('attn'); }
       prevPerm=pm.length;
       perm.setAttribute('aria-label',pm.length+' permission request'+(pm.length>1?'s':'')+' from '+pm[0].origin);
-      if(permpop.style.display==='block') renderPermPop();
     }
-    // zoom chip: text percentage, visible only off-100%. The popup
-    // mirrors the menu row content (-, %, +) in floating form.
+    // zoom chip: text percentage, visible only off-100%. The popup mirrors
+    // the menu row content (-, %, +) on the shell overlay; the chip only
+    // paints label state here.
     var zp=S.zoom_pct||100;
-    if(zp===100){ zoom.style.display='none'; zoompop.style.display='none'; }
+    if(zp===100){ zoom.style.display='none'; }
     else{
       zoom.style.display='';
       zoom.textContent=zp+'%';
       zoom.setAttribute('aria-label','Page zoom '+zp+' percent. Activate to adjust.');
-      if(zoompop.style.display==='block') renderZoomPop();
     }
-    // reader: same visibility rule as the star (real pages only).
-    // Scheme-split (not a literal match): the template bans remote-URL
-    // literals, and this comparison is not a fetch.
-    var scheme=at&&at.url?at.url.split(':')[0].toLowerCase():'';
-    var showRead=!editing&&(scheme==='http'||scheme==='https');
-    readbtn.style.display=showRead?'':'none';
-    // translate offer: same real-page rule as reader, plus the pushed
-    // offer (page language differs from target). Click runs page
-    // translation through the on-device engine.
-    transbtn.style.display=(showRead&&S.translate_offer)?'':'none';
-    // share: same real-page rule as reader (privileged pages are app
-    // chrome, not shareable content). Eligibility needs no page signal.
-    // Every http(s) document has a shareable URL by construction.
-    sharebtn.style.display=showRead?'':'none';
+    // reader, translate, share and pip visibility are paintBarRow's; only
+    // their labels follow state here.
     sharebtn.setAttribute('aria-label','Share this page');
-    // pip: same contextual rule as reader (appears only when relevant),
-    // but eligibility comes from the page reporter via Rust state, real
-    // pages only, since privileged pages carry no video. Active state
-    // flips the button into its exit affordance with a matching label.
-    var showPip=!editing&&!!S.pip_eligible;
-    pipbtn.style.display=showPip?'':'none';
     if(S.pip_active){ pipbtn.className='on'; pipbtn.title='Exit Picture-in-Picture'; pipbtn.setAttribute('aria-label','Exit Picture-in-Picture'); }
     else { pipbtn.className=''; pipbtn.title='Enter Picture-in-Picture'; pipbtn.setAttribute('aria-label','Enter Picture-in-Picture'); }
     // downloads button: progress ring, completion flash, failed tint
@@ -837,10 +746,6 @@
     else { ring=icon('dl'); dl.className='cbtn'+(dlb.dl_failed?' err':''); }
     dl.innerHTML=ring;
     dl.title=dlb.dl_active?'Downloading…':(dlb.dl_failed?'Last download failed: open downloads':'Downloads');
-    // Toast queue head (shell owns queueing/coalescing/expiry; chrome
-    // only renders the current frame, with hover/focus pause on the
-    // auto-dismiss timer and a manual close that advances the queue).
-    renderToast();
     document.getElementById('pin').className='cbtn'+(S.pinned_view?' accent':'');
     // suggestions: avatar + kind label; open-tab rows switch. Minimum two
     // characters before live results appear; empty-but-focused shows
@@ -867,6 +772,13 @@
       if(hl>=0) omni.setAttribute('aria-activedescendant','sug-'+hl);
       else omni.removeAttribute('aria-activedescendant');
     } else { sugs.style.display='none'; hl=-1; omni.setAttribute('aria-expanded','false'); omni.removeAttribute('aria-activedescendant'); }
+    // The list above is occluded (chrome DOM sits below the content webview
+    // in z-order), so the visible dropdown is painted by the overlay webview.
+    // #sugs stays as the same-document a11y listbox and the action owner; here
+    // we only mirror rows/highlight/anchor into the overlay and relay its
+    // clicks back. Rows are rebuilt shell-side (2048B IPC cap), so only the
+    // anchor, highlight index, and clipboard snippet travel over IPC.
+    syncPopover();
     updateGhost();
     // engines
     var eh='';
@@ -888,21 +800,6 @@
     else if(privActive){ ibtn.classList.remove('on'); ibtn.classList.add('priv'); ibtn.title='Private tab active: nothing from this tab is saved'; }
     else { ibtn.classList.remove('on'); ibtn.classList.remove('priv'); ibtn.title='New Incognito window'; }
     renderPanel();
-  // Find-in-page overlay: anchored top-right of the *content* viewport,
-  // so it clears the open side panel instead of hiding under it.
-  var fb=document.getElementById('findbar'), fq=document.getElementById('findq');
-  var wasOpen=fb.style.display!=='none'&&fb.style.display!=='';
-  if(S.find_open){
-    fb.style.display='flex';
-    fb.style.top=(88+(S.bar_visible?30:0)+8)+'px';
-    fb.style.right=((S.panel_open?(S.panel_w||320):0)+12)+'px';
-    if(document.activeElement!==fq) fq.value=S.find_query||'';
-    if(!wasOpen){ fq.focus(); fq.select(); }
-    var q=(S.find_query||'').trim();
-    document.getElementById('findcount').textContent=!q?'':(S.find_total?(S.find_index+' of '+S.find_total):'No results');
-    var csb=document.getElementById('findcase');
-    if(S.find_case) csb.classList.add('on'); else csb.classList.remove('on');
-  } else fb.style.display='none';
   // Crash infobar: offered once post-crash, never steals focus.
   var ib=document.getElementById('infobar');
   if(S.crash_offer){
@@ -910,6 +807,7 @@
     var n=S.crash_tabs||0;
     document.getElementById('infobar-msg').textContent='Ferrite didn\u2019t shut down cleanly \u2014 restore '+n+' tab'+(n===1?'':'s')+'?';
   } else ib.classList.remove('open');
+    positionLoadbar();
     // load bar follows the active tab
     document.getElementById('loadbar').className=loading?'on':'';
     // status: link preview left (prose font), technical readouts right (mono)
@@ -931,13 +829,61 @@
         + (S.status.console_errors?'<span class="num" id="st-console" style="cursor:pointer;" title="Page-reported JS errors: click to inspect">'+S.status.console_errors+' errors</span>':'')
         + '<span class="num">'+S.status.downloads+' downloads'+(S.status.last_download?' ('+esc(S.status.last_download)+')':'')+'</span>';
       var stb=document.getElementById('st-blocked');
-      if(stb) stb.addEventListener('click',function(){ openShield(); });
+      if(stb) stb.addEventListener('click',function(){
+        var r=stb.getBoundingClientRect();
+        post({cmd:'popover_open',kind:'shield',x:Math.round(r.left),y:Math.round(r.top),
+          w:Math.round(r.width),h:Math.round(r.height)});
+      });
       var stc=document.getElementById('st-console');
       if(stc) stc.addEventListener('click',function(){ post({cmd:'open_devtools'}); });
     } else status.style.display='none';
   }
   window.__ferriteChrome=function(s){ S=s; render(); };
-  window.__ferriteFocusOmnibox=function(){ omni.focus(); omni.select(); };
+  window.__ferriteFocusOmnibox=selectOmnibox;
+  // Mirror the suggestion dropdown into the overlay webview. Open while rows
+  // are shown and the bar is focused; chrome keeps keyboard focus, so closing
+  // is driven by blur/Esc/submit (all already funnel through render()).
+  // PopoverOpen carries the pill's window box; the shell hangs the list below
+  // it and rebuilds the rows from its own suggestion list.
+  function popClipSnippet(){ return (clipText&&!omni.value)?clipText.slice(0,80):null; }
+  function syncPopover(){
+    var shown=!!(S&&S.suggestions.length&&document.activeElement===omni);
+    if(shown){
+      var clip=popClipSnippet();
+      if(!popOpen){
+        var pr=document.getElementById('pill').getBoundingClientRect();
+        popOpen=true; popHl=hl; popClip=clip;
+        post({cmd:'popover_open',kind:'omnibox',x:Math.round(pr.left),y:Math.round(pr.top),w:Math.round(pr.width),h:Math.round(pr.height),hl:hl,clip:clip});
+      } else {
+        if(hl!==popHl){ popHl=hl; post({cmd:'popover_highlight',index:hl}); }
+        if(clip!==popClip){ popClip=clip; post({cmd:'popover_clipboard',clip:clip}); }
+      }
+    } else if(popOpen){
+      popOpen=false; popHl=null; popClip=null;
+      post({cmd:'popover_close',kind:'omnibox'});
+    }
+  }
+  // Overlay-originated suggestion actions. The visible dropdown is painted by
+  // the overlay webview (chrome DOM is occluded below the bar), so a row click
+  // or delete arrives via the shell and replays here, keeping this document the
+  // single owner of suggestion state and of its a11y listbox (#sugs).
+  window.__ferriteSugActivate=function(i){
+    if(!S) return;
+    var n=S.suggestions.length;
+    // Clip row sits last (index == live row count); `clipHeld` covers the
+    // overlay's unavoidable blur of the bar.
+    if(!omni.value&&i===n&&(clipText||clipHeld)){ clipSubmit(); return; }
+    if(i<0||i>=n) return;
+    var g=S.suggestions[i];
+    if(g.tab){ post({cmd:'select_tab',id:g.tab}); omni.blur(); return; }
+    if(g.kind==='tabsearch'&&g.provider){ enterProvider(g); return; }
+    post({cmd:'omnibox_submit',text:submitText(g.url),url:g.url,provider:provId}); exitProvider(); omni.blur();
+  };
+  window.__ferriteSugDelete=function(i){
+    if(!S||i<0||i>=S.suggestions.length) return;
+    var g=S.suggestions[i];
+    if(g&&g.url) post({cmd:'sug_delete',url:g.url});
+  };
   window.__ferriteTheme=function(css){
     try{
       var el=document.getElementById('pk');
@@ -1190,224 +1136,83 @@
   },true);
   tabsEl.addEventListener('dblclick',function(e){ var m=e.target.closest('[data-sel]'); if(m) post({cmd:'toggle_pin',id:m.getAttribute('data-sel')}); });
   document.getElementById('newtab').addEventListener('click',function(){ post({cmd:'new_tab',url:null}); });
-  document.getElementById('scopechip').addEventListener('click',function(){ omni.focus(); });
+  document.getElementById('scopechip').addEventListener('click',function(){ focusOmnibox(); });
   document.getElementById('back').addEventListener('click',function(){ post({cmd:'go_back',steps:1}); });
   document.getElementById('fwd').addEventListener('click',function(){ post({cmd:'go_forward',steps:1}); });
   document.getElementById('rel').addEventListener('click',function(){ post({cmd:'reload'}); });
   document.getElementById('home').addEventListener('click',function(){ post({cmd:'home'}); });
   document.getElementById('devtools').addEventListener('click',function(){ post({cmd:'menu_item',id:'status'}); });
   document.getElementById('pin').addEventListener('click',function(){ post({cmd:'toggle_pin'}); });
-  dl.addEventListener('click',function(){ openDl(); });
-  // Downloads bubble: recent items with open/reveal/retry/remove, no
-  // page leave. Rows arrive on demand (no per-push churn); re-render
-  // skips while the popover takes input focus (same guard as wspop).
-  var dlpop=document.createElement('div');
-  dlpop.id='dlpop'; dlpop.setAttribute('role','menu'); dlpop.setAttribute('aria-label','Recent downloads');
-  document.body.appendChild(dlpop);
-  function fmtDlSize(n){ if(n==null) return ''; if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; if(n<1073741824) return (n/1048576).toFixed(1)+' MB'; return (n/1073741824).toFixed(2)+' GB'; }
-  function openDl(){
-    if(dlpop.style.display==='block'){ dlpop.style.display='none'; return; }
-    hidePops();
-    dlpop.innerHTML='<div class="empty">Loading…</div>';
-    dlpop.style.display='block';
+  // Downloads and shield open as shell-hosted overlay pops (tasks/
+  // toolbar-overlay-3c.md 3c-3): chrome posts only the owner rect, the shell
+  // renders the rows from its own stores. The chrome-DOM bubbles, their
+  // data hooks and their per-row command vocabulary are deleted with this.
+  dl.addEventListener('click',function(){
     var r=dl.getBoundingClientRect();
-    dlpop.style.left=Math.max(4,Math.min(r.right-320,window.innerWidth-430))+'px';
-    dlpop.style.top=Math.max(44,r.bottom+4)+'px';
-    post({cmd:'downloads_recent'});
-  }
-  window.__ferriteDownloadsRecent=function(items){
-    var h='';
-    (items||[]).forEach(function(it){      var id=esc(it.id||'');
-      h+='<div class="m"><div class="fn">'+esc(it.filename||it.url||'download')+'</div>'
-        +'<div class="meta">'+esc(it.state||'')+(it.size!=null?' · '+fmtDlSize(it.size):'')+'</div>'
-        +'<div class="acts">'
-        +'<button data-dlopen="'+id+'">Open</button>'
-        +'<button data-dlfolder="'+id+'">Show in folder</button>'
-        +((it.state==='Failed'||it.state==='Cancelled')?'<button data-dlretry="'+id+'">Retry</button>':'')
-        +'<button data-dlremove="'+id+'">Remove</button>'
-        +'</div></div>';
-    });
-    if(!(items||[]).length) h+='<div class="empty">No downloads yet</div>';
-    h+='<span class="all" data-dlall="1">See all downloads</span>';
-    var wasOpen=dlpop.style.display==='block';
-    dlpop.innerHTML=h;
-    // Fill-only when already open: closing during load means "go away";
-    // the data arrival must not pop it back open. Next open re-posts.
-    if(!wasOpen) return;
-    dlpop.style.display='block';
-  };
-  dlpop.addEventListener('click',function(e){
-    var all=e.target.closest('[data-dlall]');
-    if(all){ dlpop.style.display='none'; post({cmd:'navigate',url:'ferrite://downloads'}); return; }
-    var o=e.target.closest('[data-dlopen]');
-    if(o){ post({cmd:'dl_bubble_open',id:o.getAttribute('data-dlopen')}); return; }
-    var f=e.target.closest('[data-dlfolder]');
-    if(f){ post({cmd:'dl_bubble_folder',id:f.getAttribute('data-dlfolder')}); return; }
-    var r=e.target.closest('[data-dlretry]');
-    if(r){ dlpop.style.display='none'; post({cmd:'dl_bubble_retry',id:r.getAttribute('data-dlretry')}); return; }
-    var x=e.target.closest('[data-dlremove]');
-    if(x){ post({cmd:'dl_bubble_remove',id:x.getAttribute('data-dlremove')}); return; }
+    post({cmd:'popover_open',kind:'downloads',x:Math.round(r.left),y:Math.round(r.top),
+      w:Math.round(r.width),h:Math.round(r.height)});
   });
-  // One shield popover, two entry points (omnibox pill + status strip).
-  function openShield(){
-    if(shieldpop.style.display==='block'){ shieldpop.style.display='none'; return; }
-    hidePops();
-    // shield popover: session totals plus the per-site line. The headline
-    // stays session-wide; only the "on this site" row attributes, so the
-    // popover never implies a total belongs to the open page.
-    var bd=S.status;
-    // Connection summary first (Chrome tune-panel parity): what the bar
-    // icon already says, spelled out, with the host named. Certificate
-    // details live one click down ("View certificate" below).
-    var at=activeTab(), au=at?(at.url||''):'';
-    var ahost=au.replace(/^[a-z]+:\/\//i,'').split('/')[0].split('?')[0];
-    var conn=S.sec==='lock'
-      ? '<span>🔒 Secure connection to '+esc(ahost||'this site')+'</span>'
-      : (S.sec==='info'
-        ? '<span style="color:var(--f-warning);">⚠ Not secure: '+esc(ahost||'this page')+' loads over plain HTTP</span>'
-        : '<span style="color:var(--f-faint);">Ferrite internal page (no network connection)</span>');
-    var rows='<b>Privacy Protection</b><br><br>'+conn+'<br><br>';
-    if(!bd.proxy_alive) rows+='<span style="color:var(--f-danger);">Proxy down: traffic is direct</span><br><br>';
-    rows+='<span>'+esc(String(bd.blocked))+' blocked this session</span>'
-      + '<span style="color:var(--f-faint);"> (ads '+bd.blocked_ad
-      + ' · trackers '+bd.blocked_tracker
-      + ' · fingerprinting '+(bd.blocked_fingerprinting||0)
-      + ' · malware '+bd.blocked_malware
-      + ' · mixed '+bd.blocked_mixed+')</span>';
-    if(bd.site_paused) rows+='<br><br><span style="color:var(--f-warning);">Blocking paused on this site.</span>';
-    else if(bd.site_blocked>0) rows+='<br><br><span>'+esc(String(bd.site_blocked))+' blocked on this site</span>';
-    rows+='<br><button id="pausebtn">'+(bd.site_paused?'Resume blocking':'Pause blocking for this site')+'</button>';
-    if(bd.fail_open) rows+='<br><span style="color:var(--f-danger);">'+bd.fail_open+' fail-open decisions</span>';
-    if(bd.recent_trackers && bd.recent_trackers.length){
-      rows+='<br><br><span style="color:var(--f-faint);">Recent trackers</span><br>';
-      bd.recent_trackers.forEach(function(h){ rows+='<span>'+esc(h)+'</span><br>'; });
-    } else rows+='<br><br><span style="color:var(--f-faint);">Blockers active for this session</span>';
-    rows+='<br><br><span class="all" data-manage="1">Manage privacy settings</span>';
-    rows+='<br><span class="all" data-cert="1">View certificate</span>';
-    // Site details only for network pages (internal ferrite:// pages
-    // have no site data; the page would show an empty validated row).
-    if(/^https?:\/\//i.test(au)) rows+='<br><span class="all" data-site="1">Site details</span>';
-    shieldpop.innerHTML=rows;
-    shieldpop.style.display='block';
-  }
-  sh.addEventListener('click',function(){ openShield(); });
-  shieldpop.addEventListener('click',function(e){
-    if(e.target.closest('[data-manage]')){ shieldpop.style.display='none'; post({cmd:'menu_item',id:'settings-privacy'}); return; }
-    if(e.target.closest('#pausebtn')){ shieldpop.style.display='none'; post({cmd:'shield_pause'}); return; }
-    if(e.target.closest('[data-cert]')){
-      shieldpop.style.display='none';
-      var at=activeTab(),u=at?(at.url||''):null;
-      if(u)post({cmd:'navigate',url:'ferrite://certs?url='+encodeURIComponent(u)});
-      return;
-    }
-    if(e.target.closest('[data-site]')){
-      shieldpop.style.display='none';
-      var st=activeTab(),su=st?(st.url||''):null;
-      if(su)post({cmd:'navigate',url:'ferrite://site?origin='+encodeURIComponent(su)});
-    }
+  sh.addEventListener('click',function(){
+    var r=sh.getBoundingClientRect();
+    post({cmd:'popover_open',kind:'shield',x:Math.round(r.left),y:Math.round(r.top),
+      w:Math.round(r.width),h:Math.round(r.height)});
   });
-  // Permission popover: opens on chip click only. Buttons arm 500ms
-  // after open (clickjacking delay); focus lands on Not now, never Allow.
-  function renderPermPop(){
-    var rows=S.perm||[], h='';
-    rows.forEach(function(r,i){
-      h+='<div class="prow"><div>'+icon(permIcon(r.kind))+'<b>'+esc(r.label)+'</b><br><span class="po">'+esc(r.origin)+'</span></div>'
-        +'<div class="pbtns"><button data-pallow="'+i+'">Allow once</button><button data-palways="'+i+'">Always</button></div></div>';
-    });
-    h+='<div class="pnote">Blocked until you allow. Allowing applies to future requests. The site must ask again.</div>';
-    h+='<button id="permnotnow" disabled>Not now</button>';
-    permpop.innerHTML=h;
-  }
+  // Permission card opens on chip click only (tasks/toolbar-overlay-3c.md
+  // 3c-4). Chrome keeps the chip — icon, badge, attention bump, aria-label,
+  // the live region — and posts only the anchor rect; the shell owns the
+  // rows, the arming window and Not now, and closes the card when the pending
+  // list empties. The chrome-DOM popover, its per-row command vocabulary and
+  // its own 500ms arm timer are deleted with this.
   perm.addEventListener('click',function(){
-    if(permpop.style.display==='block'){ permpop.style.display='none'; return; }
-    hidePops(); renderPermPop(); permpop.style.display='block';
-    permOpenedAt=Date.now();
-    setTimeout(function(){
-      var nn=document.getElementById('permnotnow');
-      if(nn && permpop.style.display==='block'){ nn.disabled=false; nn.focus(); }
-    },500);
+    var r=perm.getBoundingClientRect();
+    post({cmd:'popover_open',kind:'permissions',x:Math.round(r.left),y:Math.round(r.top),
+      w:Math.round(r.width),h:Math.round(r.height)});
   });
-  permpop.addEventListener('click',function(e){
-    if(Date.now()-permOpenedAt<500) return;
-    var nn=e.target.closest('#permnotnow');
-    if(nn){ permpop.style.display='none'; omni.focus(); return; }
-    var a=e.target.closest('[data-pallow],[data-palways]');
-    if(!a) return;
-    var idx=+(a.getAttribute('data-pallow')||a.getAttribute('data-palways'));
-    var r=(S.perm||[])[idx]; if(!r) return;
-    permpop.style.display='none';
-    post({cmd:'perm_decide',origin:r.origin,kind:r.kind,always:!!a.getAttribute('data-palways')});
-  });
-  // Zoom popup: same row as the menu zoom control (-, %, +). The
-  // percentage is a real button (reset) with a polite live region.
-  function renderZoomPop(){
-    var zp=S.zoom_pct||100;
-    zoompop.innerHTML='<div class="zrow"><button data-zoom="out" aria-label="Zoom out">−</button>'
-      +'<button class="zpct" data-zoom="reset" aria-label="Reset zoom to 100 percent"><span aria-live="polite">'+zp+'%</span></button>'
-      +'<button data-zoom="in" aria-label="Zoom in">+</button></div>';
-  }
+  // Toolbar pops live on the shell's shared overlay (chrome posts only
+  // geometry; see tasks/toolbar-overlay-3c.md D1-D6). Toggle and layout
+  // are shell-side kinds: every press posts the anchor rect, the shell
+  // opens, closes, or replaces by kind. aria-expanded is pushed back on
+  // __ferritePopState for each kind's owner button.
+  // Distinct from the omnibox mirror's `popOpen` boolean (same top-level
+  // script scope — two `var` declarations of one name would alias the two
+  // lifecycles into each other).
+  var toolPop=null;
+  var popOwners={zoom:'zoom',nav_back:'back',nav_fwd:'fwd',history:'hist',
+    downloads:'dl',shield:'sh',permissions:'perm',star:'star',
+    workspaces:'wsbtn',workspace_rename:'wsbtn',profiles:'profbtn'};
+  window.__ferritePopState=function(kind){
+    toolPop=kind||null;
+    if(!kind) surfOwner=null;
+    for(var k in popOwners){
+      var o=document.getElementById(popOwners[k]);
+      if(o) o.setAttribute('aria-expanded',toolPop===k?'true':'false');
+    }
+  };
+  // Focus return for a dismissed 3c-6 surface. Context menus have no owner
+  // (their row can be gone); the shell refocuses chrome itself in that case.
+  window.__ferriteRestoreFocus=function(owner){
+    var o=document.getElementById(owner);
+    if(o&&o.focus) o.focus();
+  };
+  // Multi-tab commands (close/pin/mute) and group creation consume the
+  // selection exactly as the old chrome-DOM command handlers did.
+  window.__ferriteClearSelection=function(){ clearSel(); };
+  // Owner presses post only the rect; the shell owns the open/toggle/layout
+  // decision (D1-D6). Spelled out per owner so each kind's post is
+  // auditable at the call site.
   zoom.addEventListener('click',function(){
-    if(zoompop.style.display==='block'){ zoompop.style.display='none'; return; }
-    hidePops(); renderZoomPop(); zoompop.style.display='block';
+    var r=zoom.getBoundingClientRect();
+    post({cmd:'popover_open',kind:'zoom',x:Math.round(r.left),y:Math.round(r.top),
+      w:Math.round(r.width),h:Math.round(r.height)});
   });
-  zoompop.addEventListener('click',function(e){
-    var b=e.target.closest('[data-zoom]'); if(!b) return;
-    var k=b.getAttribute('data-zoom');
-    if(k==='in') post({cmd:'zoom_in'});
-    else if(k==='out') post({cmd:'zoom_out'});
-    else if(k==='reset') post({cmd:'zoom_reset'});
-  });
-  // History dropdown: recent history plus the recently-closed stack
-  // (two hooks, one render; arrival order never matters). Closed rows
-  // reopen by display index; Restore-all reopens oldest first so the
-  // newest tab ends active.
-  var histItems=[], closedItems=[];
-  function renderHist(){
-    var h='';
-    if(closedItems.length){
-      h+='<div class="hsec">Recently closed</div>';
-      closedItems.forEach(function(it){
-        h+='<div class="m" data-cidx="'+it.index+'"><span class="t">'+esc(it.title||it.url||'')+'</span><span class="u">'+esc(it.url||'')+'</span></div>';
-      });
-      h+='<div class="m restore" data-call="1"><span class="t">Restore all '+closedItems.length+' tabs</span></div>';
-    }
-    if(histItems.length){
-      if(closedItems.length) h+='<div class="hsec">Recent history</div>';
-      histItems.forEach(function(it){
-        h+='<div class="m" data-hurl="'+esc(it.url||'')+'"><span class="t">'+esc(it.title||it.url||'')+'</span><span class="u">'+esc(it.url||'')+'</span></div>';
-      });
-    }
-    if(!h) h+='<div class="m"><span class="t">Nothing here yet</span></div>';
-    h+='<span class="all" data-hall="1">See all history</span>';
-    // Fill-only when already open (the click pre-shows a Loading row):
-    // closing mid-load means "go away", data must not pop it back open.
-    var histWasOpen=histpop.style.display==='block';
-    histpop.innerHTML=h;
-    if(!histWasOpen) return;
-    histpop.style.display='block';
-  }
-  window.__ferriteHistoryRecent=function(items){
-    histItems=items||[]; renderHist();
-  };
-  window.__ferriteClosedRecent=function(items){
-    closedItems=items||[]; renderHist();
-  };
-  histpop.addEventListener('click',function(e){
-    var all=e.target.closest('[data-hall]');
-    if(all){ histpop.style.display='none'; post({cmd:'navigate',url:'ferrite://history'}); return; }
-    var call=e.target.closest('[data-call]');
-    if(call){ histpop.style.display='none'; post({cmd:'closed_restore_all'}); return; }
-    var cl=e.target.closest('[data-cidx]');
-    if(cl){ histpop.style.display='none'; post({cmd:'closed_reopen',index:parseInt(cl.getAttribute('data-cidx'),10)||0}); return; }
-    var m=e.target.closest('[data-hurl]');
-    if(m&&m.getAttribute('data-hurl')){ histpop.style.display='none'; post({cmd:'navigate',url:m.getAttribute('data-hurl')}); }
-  });
+  // History dropdown: recent history plus the recently-closed stack,
+  // rendered by the shell from live stores (the old two-hook chrome-DOM
+  // render is deleted with this post). Clicking the button toggles: the
+  // shell owns the toggle decision, chrome only carries geometry.
   document.getElementById('hist').addEventListener('click',function(){
-    if(histpop.style.display==='block'){ histpop.style.display='none'; return; }
-    hidePops();
-    histpop.innerHTML='<div class="m"><span class="t" style="color:var(--f-faint);">Loading…</span></div>';
-    histpop.style.display='block';
-    post({cmd:'history_recent'});
+    var r=this.getBoundingClientRect();
+    post({cmd:'popover_open',kind:'history',x:Math.round(r.left),y:Math.round(r.top),
+      w:Math.round(r.width),h:Math.round(r.height)});
   });
   // ---- Side panel: bookmarks / history / reading in one dock ----
   // Lists arrive via hooks (never in state); the shell pushes the active
@@ -1514,75 +1319,35 @@
     function up(){ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); }
     document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up);
   });
-  // ---- Find-in-page: live search, Enter/F3 stepping, two-stage Esc ----
-  var findDeb=null;
-  var findq=document.getElementById('findq');
-  findq.addEventListener('input',function(){
-    clearTimeout(findDeb);
-    if(findq.value.length>500) findq.value=findq.value.slice(0,500);
-    findDeb=setTimeout(function(){ post({cmd:'find_search',query:findq.value,case:!!(S&&S.find_case)}); },150);
-  });
-  findq.addEventListener('keydown',function(e){
-    if(e.key==='Enter'){ e.preventDefault(); post({cmd:e.shiftKey?'find_prev':'find_next'}); }
-    else if(e.key==='Escape'){
-      // Two-stage, mirroring the omnibox: clear text first, close second.
-      if(findq.value){ findq.value=''; post({cmd:'find_search',query:'',case:!!(S&&S.find_case)}); }
-      else { post({cmd:'find_close'}); post({cmd:'focus_content'}); }
-    }
-  });
-  document.getElementById('findnext').addEventListener('click',function(){ post({cmd:'find_next'}); });
-  document.getElementById('findprev').addEventListener('click',function(){ post({cmd:'find_prev'}); });
-  document.getElementById('findcase').addEventListener('click',function(){
-    post({cmd:'find_search',query:findq.value,case:!(S&&S.find_case)});
-  });
-  document.getElementById('findx').addEventListener('click',function(){ post({cmd:'find_close'}); post({cmd:'focus_content'}); });
   document.getElementById('infrestore').addEventListener('click',function(){ post({cmd:'crash_restore'}); });
   document.getElementById('infexcept').addEventListener('click',function(){ post({cmd:'crash_restore_except_active'}); });
   document.getElementById('infdismiss').addEventListener('click',function(){ post({cmd:'crash_dismiss'}); });
-  // Back/forward history dropdowns (right-click or long-press territory;
-  // plain click still steps once). Rows jump N steps in one go. The popover
-  // anchors under the pressed button (its static CSS has no left edge).
-  function renderNavPop(list, hook){
-    var h='';
-    (list||[]).forEach(function(u,i){
-      h+='<div class="m" data-steps="'+(i+1)+'"><span>'+esc(u)+'</span></div>';
-    });
-    if(!h) h='<div class="m"><span style="color:var(--f-faint);">No history here</span></div>';
-    var pop=document.getElementById('navpop');
-    pop.innerHTML=h; pop.style.display='block';
-    pop.setAttribute('data-hook',hook);
-    try{
-      var anchor=(hook==='go_forward')?fwdBtn:backBtn;
-      var r=anchor.getBoundingClientRect();
-      pop.style.left=Math.max(8,r.left)+'px';
-    }catch(x){}
+  // Back/forward list drops (right-click or long-press territory; plain
+  // click still steps once). Rows jump N steps in one go, rendered by the
+  // shell from the active tab's history. The drop re-opens on every
+  // press, unlike the click-toggled pops.
+  function navDrop(kind){
+    var b=(kind==='nav_back')?backBtn:fwdBtn;
+    var r=b.getBoundingClientRect();
+    post({cmd:'popover_open',kind:kind,x:Math.round(r.left),y:Math.round(r.top),
+      w:Math.round(r.width),h:Math.round(r.height)});
   }
-  window.__ferriteBackList=function(list){ renderNavPop(list,'go_back'); };
-  window.__ferriteFwdList=function(list){ renderNavPop(list,'go_forward'); };
-  document.getElementById('navpop').addEventListener('click',function(e){
-    var m=e.target.closest('[data-steps]');
-    if(!m) return;
-    var hook=document.getElementById('navpop').getAttribute('data-hook')||'go_back';
-    document.getElementById('navpop').style.display='none';
-    post({cmd:hook,steps:parseInt(m.getAttribute('data-steps'),10)||1});
-  });
-  backBtn.addEventListener('contextmenu',function(e){ e.preventDefault(); hidePops(); post({cmd:'hist_list',dir:'back'}); });
-  fwdBtn.addEventListener('contextmenu',function(e){ e.preventDefault(); hidePops(); post({cmd:'hist_list',dir:'fwd'}); });
+  backBtn.addEventListener('contextmenu',function(e){ e.preventDefault(); navDrop('nav_back'); });
+  fwdBtn.addEventListener('contextmenu',function(e){ e.preventDefault(); navDrop('nav_fwd'); });
   // Touch long-press mirrors right-click (no contextmenu event fires).
   // Mouse pointers keep the native path above; touch gets a 500ms hold.
-  function holdToList(el,dir){
+  function holdToList(el,kind){
     var t=null;
     el.addEventListener('pointerdown',function(e){
       if(e.pointerType==='mouse') return;
       clearTimeout(t);
-      t=setTimeout(function(){ hidePops(); post({cmd:'hist_list',dir:dir}); },500);
+      t=setTimeout(function(){ navDrop(kind); },500);
     });
     ['pointerup','pointercancel','pointerleave'].forEach(function(ev){
       el.addEventListener(ev,function(){ clearTimeout(t); });
     });
   }
-  holdToList(backBtn,'back'); holdToList(fwdBtn,'fwd');
-  function hidePops(){ ['shieldpop','histpop','navpop','starpop','barmenu','barsub','ctxpop','permpop','zoompop','gedit','wspop','profpop','dlpop'].forEach(function(id){ var el=document.getElementById(id); if(el) el.style.display='none'; }); }
+  holdToList(backBtn,'nav_back'); holdToList(fwdBtn,'nav_fwd');
   // ---- Bookmarks bar: curated shortlist, not all bookmarks ----
   function renderBar(){
     if(S.bar_visible) bookbar.classList.add('open'); else bookbar.classList.remove('open');
@@ -1593,53 +1358,32 @@
       h+='<div class="bitem" role="menuitem" tabindex="-1" draggable="'+(b.folder?'false':'true')+'" data-bid="'+b.id+'" data-burl="'+esc(b.url||'')+'" data-bfolder="'+(b.folder?'1':'')+'" title="'+esc(b.title)+'">'+face+'<span class="t">'+esc(b.title)+'</span></div>';
     });
     baritems.innerHTML=h;
-    // Overflow past the bar width collapses into the chevron.
+    // Overflow past the bar width collapses into the chevron. The hidden id
+    // list is chrome's only measurement; the shell re-resolves every id
+    // against the live vault before painting the overflow menu.
     var w=baritems.clientWidth, x=0, hidden=[];
     Array.prototype.forEach.call(baritems.children,function(ch){
-      if(x+ch.offsetWidth>w){ ch.style.display='none'; hidden.push(ch); }
+      if(x+ch.offsetWidth>w){ ch.style.display='none'; hidden.push(ch.getAttribute('data-bid')); }
       else x+=ch.offsetWidth;
     });
     barover.style.display=hidden.length?'':'none';
-    barover.onclick=function(){
-      var bh='';
-      hidden.forEach(function(ch){
-        bh+='<div class="m" data-bid="'+ch.getAttribute('data-bid')+'"><span>'+esc(ch.title||'')+'</span></div>';
-      });
-      showBarSub(bh, barover);
-    };
+    barover.onclick=function(){ postSurface('bar_menu',barover,{items:hidden}); };
   }
+  // Bar lookup by id: the context menu resolves its one target against
+  // the pushed shortlist, never the DOM.
   function barItemById(id){
     for(var i=0;i<(S.bar_items||[]).length;i++) if(S.bar_items[i].id===id) return S.bar_items[i];
     return null;
   }
-  function showBarSub(html, anchor){
-    barsub.innerHTML=html;
-    var r=anchor.getBoundingClientRect();
-    barsub.style.left=Math.min(r.left, window.innerWidth-250)+'px';
-    barsub.style.top=(r.bottom+4)+'px';
-    barsub.style.display='block';
-  }
-  window.__ferriteFolderList=function(payload){
-    var h='';
-    (payload.items||[]).forEach(function(it){
-      if(it.folder) h+='<div class="m" data-bfolder-open="'+it.id+'"><span>'+esc(it.title)+'</span><span class="k">›</span></div>';
-      else h+='<div class="m" data-burl="'+esc(it.url||'')+'"><span>'+esc(it.title||it.url)+'</span></div>';
-    });
-    if(!h) h='<div class="m"><span style="color:var(--f-faint);">Empty folder</span></div>';
-    barsub.innerHTML=h; barsub.style.display='block';
-  };
-  // Click: pages navigate, folders open dropdowns (recursive via re-post).
+  // Click: pages navigate, folders open the shell-hosted drill-in menu
+  // anchored to the clicked chip.
   baritems.addEventListener('click',function(e){
     var t=e.target.closest('[data-bid]'); if(!t) return;
-    var item=barItemById(t.getAttribute('data-bid')); if(!item) return;
-    if(item.folder){ post({cmd:'folder_list',id:item.id}); showBarSub('', t); }
+    var item=null;
+    for(var i=0;i<(S.bar_items||[]).length;i++) if(S.bar_items[i].id===t.getAttribute('data-bid')) item=S.bar_items[i];
+    if(!item) return;
+    if(item.folder) postSurface('bar_menu',t,{id:item.id});
     else if(item.url) post({cmd:'navigate',url:item.url});
-  });
-  barsub.addEventListener('click',function(e){
-    var f=e.target.closest('[data-bfolder-open]');
-    if(f){ post({cmd:'folder_list',id:f.getAttribute('data-bfolder-open')}); return; }
-    var m=e.target.closest('[data-burl]');
-    if(m&&m.getAttribute('data-burl')){ barsub.style.display='none'; post({cmd:'navigate',url:m.getAttribute('data-burl')}); }
   });
   // Bar drag-reorder (root items) + drop-to-save links and tabs.
   var barDragId=null;
@@ -1665,62 +1409,16 @@
     if(tabMatch) post({cmd:'bookmark_add',url:tabMatch.url,title:tabMatch.title,parent:null});
     else if(/^https?:\/\//.test(url)||/^ferrite:\/\//.test(url)) post({cmd:'bookmark_add',url:url,title:url,parent:null});
   });
-  // Empty-space menu: add page / folder / all tabs / visibility.
+  // Empty-space menu: add page / folder / all tabs / visibility. The shell
+  // owns the rows; chrome only supplies the pointer point.
   bookbar.addEventListener('contextmenu',function(e){
     if(e.target.closest('[data-bid]')) return;
-    e.preventDefault(); hidePops();
-    barmenu.innerHTML='<div class="m" data-bm="page"><span>Add this page</span></div>'
-      +'<div class="m" data-bm="folder"><span>New folder…</span></div>'
-      +'<div class="m" data-bm="all"><span>Bookmark all tabs</span></div><hr>'
-      +'<div class="m" data-bm="always"><span>Always show bar</span></div>'
-      +'<div class="m" data-bm="ntp"><span>Show on new tab only</span></div>'
-      +'<div class="m" data-bm="never"><span>Hide bar</span></div>';
-    barmenu.style.left=e.clientX+'px'; barmenu.style.top=e.clientY+'px';
-    barmenu.style.display='block';
+    e.preventDefault();
+    postSurface('bar_menu',null,{point:true,x:e.clientX,y:e.clientY});
   });
-  barmenu.addEventListener('click',function(e){
-    var m=e.target.closest('[data-bm]'); if(!m) return;
-    var k=m.getAttribute('data-bm');
-    barmenu.style.display='none';
-    if(k==='page'){ var a=activeTab(); if(a) post({cmd:'bookmark_add',url:a.url,title:a.title,parent:null}); }
-    else if(k==='folder'){ var n=window.prompt('Folder name:',''); if(n) post({cmd:'folder_add',name:n}); }
-    else if(k==='all') post({cmd:'bookmark_all_tabs'});
-    else if(k==='always'||k==='ntp'||k==='never') post({cmd:'menu_item',id:'bar-'+k});
-  });
-  // Star popover: name + folder picker + save/remove (the curation moment).
-  star.addEventListener('click',function(){
-    var a=activeTab(); if(!a) return;
-    if(starpop.style.display==='block'){ starpop.style.display='none'; return; }
-    hidePops();
-    var opts='<option value="">Bookmarks bar</option>';
-    (S.folders||[]).forEach(function(f){
-      opts+='<option value="'+esc(f.id)+'"'+((S.starred&&S.starred_folder===f.id)?' selected':'')+'>'+esc(f.name)+'</option>';
-    });
-    starpop.innerHTML='<div><input id="sp-name" value="'+esc(a.title||a.url||'')+'" placeholder="Name"></div>'
-      +'<div><select id="sp-folder">'+opts+'</select></div>'
-      +'<div class="row"><button class="primary" id="sp-save">Save</button>'
-      +(S.starred?'<button id="sp-remove">Remove</button>':'')+'</div>'
-      +'<div id="sp-manage" style="margin-top:8px;font-size:12px;color:var(--f-accent);cursor:pointer;">Show in bookmarks manager</div>';
-    var r=star.getBoundingClientRect();
-    starpop.style.left=Math.max(8,r.right-260)+'px'; starpop.style.top=(r.bottom+6)+'px';
-    starpop.style.display='block';
-    document.getElementById('sp-save').addEventListener('click',function(){
-      var nm=document.getElementById('sp-name').value;
-      var fo=document.getElementById('sp-folder').value||null;
-      starpop.style.display='none';
-      post({cmd:'bookmark_add',url:a.url,title:nm,parent:fo});
-    });
-    var rm=document.getElementById('sp-remove');
-    if(rm) rm.addEventListener('click',function(){
-      starpop.style.display='none';
-      post({cmd:'toggle_star',url:a.url,title:a.title});
-    });
-    document.getElementById('sp-manage').addEventListener('click',function(){
-      var fo=document.getElementById('sp-folder').value||'';
-      starpop.style.display='none';
-      post({cmd:'navigate',url:fo?('ferrite://bookmarks?folder='+encodeURIComponent(fo)):'ferrite://bookmarks'});
-    });
-  });
+  // Star: the shell builds the name/folder form from live state and owns
+  // save/remove/manage. Chrome posts the button rect only.
+  star.addEventListener('click',function(){ postSurface('star',star); });
   // Reader entry: explicit gesture only (extraction never runs on load).
   readbtn.addEventListener('click',function(){ post({cmd:'reader_open'}); });
   pipbtn.addEventListener('click',function(){ post({cmd: S.pip_active ? 'exit_pip' : 'enter_pip'}); });
@@ -1734,7 +1432,6 @@
       var n=e.key==='ArrowRight'?(idx+1)%Math.max(items.length,1):(idx-1+items.length)%Math.max(items.length,1);
       if(items[n]) items[n].focus();
     } else if((e.key==='Enter'||e.key===' ')&&idx>=0){ e.preventDefault(); items[idx].click(); }
-    else if(e.key==='Escape'){ barsub.style.display='none'; }
   });
   // Main menu lives in the overlay window (topmost layer): chrome-DOM
   // popups render below the content webview in window stacking and are
@@ -1745,200 +1442,31 @@
     var r=menuBtn.getBoundingClientRect();
     post({cmd:'menu_open',x:Math.round(r.right),y:Math.round(r.bottom)});
   });
-  // Shared menu keyboard: arrows move, Home/End jump, typeahead, Enter.
-  // Two consumers (main menu, context popup), one implementation.
-  function menuKeys(el, rowSel){
-    el.addEventListener('keydown',function(e){
-      var rows=Array.prototype.slice.call(el.querySelectorAll(rowSel));
-      if(!rows.length) return;
-      var idx=rows.indexOf(document.activeElement);
-      if(e.key==='ArrowDown'||e.key==='ArrowUp'){
-        e.preventDefault();
-        rows[e.key==='ArrowDown'?(idx+1)%rows.length:(idx-1+rows.length)%rows.length].focus();
-      } else if(e.key==='Home'){ e.preventDefault(); rows[0].focus(); }
-      else if(e.key==='End'){ e.preventDefault(); rows[rows.length-1].focus(); }
-      else if(e.key==='Enter'||e.key===' '){
-        var m=e.target.closest?e.target.closest(rowSel):null;
-        if(m){ e.preventDefault(); m.click(); }
-      }
-      else if(e.key&&e.key.length===1){
-        var ch=e.key.toLowerCase(), start=(idx+1)%rows.length;
-        for(var i=0;i<rows.length;i++){
-          var r=rows[(start+i)%rows.length], label=r.querySelector('span');
-          if(label&&label.textContent.toLowerCase().indexOf(ch)===0){ r.focus(); break; }
-        }
-      }
-    });
-  }
-  // Context popup for chrome-surface right-clicks (tab strip, bookmarks
-  // bar). Content-surface menus live in the overlay window instead,
-  // chrome DOM sits below content in z-order.
-  var ctxpop=document.getElementById('ctxpop');
-  // rows: [[post, label]...] through the same typed IPC as everything else.
-  function showCtx(rows, x, y){
-    hidePops();
-    var h='';
-    rows.forEach(function(r){
-      h+='<div class="m" role="menuitem" tabindex="-1" data-post="'+encodeURIComponent(JSON.stringify(r[0]))+'"><span>'+esc(r[1])+'</span></div>';
-    });
-    ctxpop.innerHTML=h;
-    ctxpop.style.display='block';
-    ctxpop.style.left=Math.max(4,Math.min(x,window.innerWidth-ctxpop.offsetWidth-4))+'px';
-    ctxpop.style.top=Math.max(4,Math.min(y,window.innerHeight-ctxpop.offsetHeight-4))+'px';
-    var first=ctxpop.querySelector('[data-post]'); if(first) first.focus();
-  }
-  ctxpop.addEventListener('click',function(e){
-    var m=e.target.closest('[data-post]'); if(!m) return;
-    ctxpop.style.display='none';
-    var cmd=null;
-    try{ cmd=JSON.parse(decodeURIComponent(m.getAttribute('data-post'))); }catch(err){}
-    try{ if(cmd) post(cmd); }catch(err){}
-    // Bulk close/group consume their selection; mute/pin keep it (the
-    // tabs stay where they are, so the outline still means something).
-    if(cmd&&(cmd.cmd==='tabs_close'||cmd.cmd==='group_create')) clearSel();
-  });
-  menuKeys(ctxpop,'[data-post]');
+  // Context menus for chrome-surface right-clicks (tab strip, bookmarks bar,
+  // group headers). Chrome owns geometry and the target ids only; the shell
+  // resolves every row against live state and hosts the menu on the overlay,
+  // which is the only layer that can paint above content (3c-6, ARCH-15).
   tabsEl.addEventListener('contextmenu',function(e){
     var t=e.target.closest('.tab'); if(!t) return;
     e.preventDefault();
     var id=t.getAttribute('data-sel'), at=null;
     for(var i=0;i<S.tabs.length;i++) if(S.tabs[i].id===id) at=S.tabs[i];
     if(!at) return;
-    // Multi-selection menu: every row acts on the whole selection, then
-    // clears it (the push prunes dead ids either way; explicit clear
-    // keeps the gesture predictable).
     if(sel.indexOf(id)>=0&&sel.length>1){
-      var ids=sel.slice(), n=ids.length;
-      var allMuted=ids.every(function(x){
-        var r=null;
-        for(var k=0;k<S.tabs.length;k++) if(S.tabs[k].id===x) r=S.tabs[k];
-        return r&&r.muted;
-      });
-      var allPinned=ids.every(function(x){
-        var r=null;
-        for(var k=0;k<S.tabs.length;k++) if(S.tabs[k].id===x) r=S.tabs[k];
-        return r&&r.pinned;
-      });
-      showCtx([
-        [{cmd:'tabs_close',ids:ids},'Close '+n+' tabs'],
-        [{cmd:'tabs_mute',ids:ids,muted:!allMuted},(allMuted?'Unmute ':'Mute ')+n+' tabs'],
-        [{cmd:'tabs_pin',ids:ids,pinned:!allPinned},(allPinned?'Unpin ':'Pin ')+n+' tabs'],
-        [{cmd:'group_new_multi',tabs:ids},'Group '+n+' tabs…']
-      ], e.clientX, e.clientY);
+      // Multi-selection menu: the shell builds rows for the whole selection.
+      // Bulk actions run shell-side; the outline is cleared by the shell via
+      // __ferriteClearSelection when the command consumes the selection.
+      postSurface('tabs_context',t,{ids:sel.slice()});
       return;
     }
-    showCtx([
-      [{cmd:'ctx_reload',id:id},'Reload'],
-      [{cmd:'ctx_duplicate',id:id},'Duplicate tab'],
-      [{cmd:'ctx_pin',id:id},at.pinned?'Unpin tab':'Pin tab'],
-      [{cmd:'ctx_mute',id:id},at.muted?'Unmute tab':'Mute tab'],
-      [{cmd:'ctx_copy_url',id:id},'Copy tab URL'],
-      [{cmd:'close_tab',id:id},'Close tab'],
-      [{cmd:'ctx_close_others',id:id},'Close other tabs'],
-      [{cmd:'ctx_close_right',id:id},'Close tabs to the right']
-    ].concat(at.discarded?[]:[[{cmd:'ctx_sleep',id:id},'Sleep tab']]).concat(groupMenuRows(id, at)), e.clientX, e.clientY);
+    postSurface('tab_context',t,{id:id});
   });
   // ---- Tab groups: headers, editor, drag-move ----
-  // Palette mirror of ferrite_tabs::manager::GROUP_COLORS (name unused
-  // here, index is the contract; length mismatch fails closed on save).
-  var GCOLORS=['#9AA0A6','#4F86F7','#E57373','#F6BF26','#33A852','#F194B4','#A074E8','#F2994A','#4FC3F7'];
   function groupById(gid){
     var gs=S.groups||[];
     for(var i=0;i<gs.length;i++) if(gs[i].id===gid) return gs[i];
     return null;
   }
-  // Extra tab-menu rows for groups. Capped: a 40-group strip must not
-  // flood the menu; the editor covers the rest.
-  function groupMenuRows(id, at){
-    var rows=[];
-    if(!at.pinned){
-      rows.push([{cmd:'group_new',tab:id},'Add to new group…']);
-      var gs=S.groups||[], shown=0;
-      for(var i=0;i<gs.length&&shown<8;i++){
-        if(at.group!==gs[i].id){
-          rows.push([{cmd:'group_add_tab',id:gs[i].id,tab:id},'Move to '+gs[i].name]);
-          shown++;
-        }
-      }
-      if(at.group) rows.push([{cmd:'group_remove_tab',tab:id},'Remove from group']);
-    }
-    return rows;
-  }
-  var gedit=document.getElementById('gedit'),
-      gename=document.getElementById('gename'),
-      gesws=document.getElementById('gesws'),
-      gecoll=document.getElementById('gecoll'),
-      gesave=document.getElementById('gesave'),
-      gedel=document.getElementById('gedel'),
-      geclose=document.getElementById('geclose'),
-      getitle=document.getElementById('getitle'),
-      geditMode=null, geditGid=null, geditTabs=[], geditColor=0;
-  function paintSwatches(){
-    var h='';
-    for(var i=0;i<GCOLORS.length;i++){
-      h+='<button class="sw'+(i===geditColor?' on':'')+'" data-sw="'+i+'" role="radio" aria-checked="'+(i===geditColor)+'" title="Color '+(i+1)+'" style="background:'+GCOLORS[i]+'"></button>';
-    }
-    gesws.innerHTML=h;
-  }
-  gesws.addEventListener('click',function(e){
-    var b=e.target.closest?e.target.closest('[data-sw]'):null; if(!b) return;
-    geditColor=parseInt(b.getAttribute('data-sw'),10)||0;
-    paintSwatches();
-    // Edit mode recolors live; create mode carries the pick on Save.
-    if(geditMode==='edit'&&geditGid) post({cmd:'group_color',id:geditGid,color:geditColor});
-  });
-  function openGedit(mode, gid, tabs, x, y){
-    geditMode=mode; geditGid=gid; geditTabs=tabs||[];
-    var g=gid?groupById(gid):null;
-    getitle.textContent=(mode==='create'?'New group ('+geditTabs.length+' tabs)':'Edit group');
-    gename.value=g?g.name:'';
-    geditColor=g?g.color:0;
-    gecoll.checked=g?!!g.collapsed:false;
-    var showEdit=mode==='edit'&&!!g;
-    gedel.style.display=showEdit?'':'none';
-    geclose.style.display=showEdit?'':'none';
-    if(g) geclose.textContent='Close '+g.count+' tabs';
-    paintSwatches();
-    hidePops();
-    gedit.style.display='block';
-    gedit.style.left=Math.max(4,Math.min(x,window.innerWidth-262))+'px';
-    gedit.style.top=Math.max(44,Math.min(y,window.innerHeight-260))+'px';
-    setTimeout(function(){ gename.focus(); gename.select(); },0);
-  }
-  gesave.addEventListener('click',function(){
-    var name=gename.value.trim();
-    if(!name){ gename.focus(); return; }
-    if(geditMode==='create'&&geditTabs.length){
-      // Atomic create: name + color + collapse ride one post (the group
-      // has no client-known id yet, so follow-ups would race).
-      var col=(geditColor>=0&&geditColor<GCOLORS.length)?geditColor:0;
-      post({cmd:'group_create',name:name,tabs:geditTabs,color:col,collapsed:gecoll.checked});
-      clearSel();
-    } else if(geditMode==='edit'&&geditGid){
-      post({cmd:'group_rename',id:geditGid,name:name});
-    }
-    gedit.style.display='none';
-  });
-  gename.addEventListener('keydown',function(e){
-    if(e.key==='Enter'){ e.preventDefault(); gesave.click(); }
-    else if(e.key==='Escape'){ gedit.style.display='none'; }
-    e.stopPropagation();
-  });
-  gedit.addEventListener('keydown',function(e){
-    if(e.key==='Escape'){ gedit.style.display='none'; }
-    e.stopPropagation();
-  });
-  gedel.addEventListener('click',function(){
-    if(geditGid) post({cmd:'group_delete',id:geditGid});
-    gedit.style.display='none';
-  });
-  geclose.addEventListener('click',function(){
-    if(geditGid) post({cmd:'group_close',id:geditGid});
-    gedit.style.display='none';
-  });
-  gecoll.addEventListener('change',function(){
-    if(geditMode==='edit'&&geditGid) post({cmd:'group_collapse',id:geditGid,collapsed:gecoll.checked});
-  });
   // Header: click toggles collapse, right-click opens the group menu,
   // horizontal drag moves the whole run.
   var gDrag=null;
@@ -1996,219 +1524,56 @@
     e.stopPropagation();
     var g=groupById(gh.getAttribute('data-gid'));
     if(!g) return;
-    showCtx([
-      [{cmd:'group_edit',gid:g.id},'Edit group…'],
-      [{cmd:'group_collapse',id:g.id,collapsed:!g.collapsed},g.collapsed?'Expand group':'Collapse group'],
-      [{cmd:'group_delete',id:g.id},'Ungroup ('+g.count+' tabs stay open)'],
-      [{cmd:'group_close',id:g.id},'Close '+g.count+' tabs']
-    ], e.clientX, e.clientY);
+    postSurface('group_context',gh,{id:g.id});
   });
   // ---- Workspaces: switcher button + popover ----
-  var wsbtn=document.getElementById('wsbtn'), wspop=document.getElementById('wspop');
+  var wsbtn=document.getElementById('wsbtn');
   function paintWsBtn(){
     var name=(S&&S.workspace)||'Default';
     wsbtn.textContent=name;
     wsbtn.classList.toggle('on',!!(S&&S.workspace));
     wsbtn.title='Workspace: '+name+'. Click to switch';
   }
-  function openWs(){
-    if(wspop.style.display==='block'){ wspop.style.display='none'; return; }
-    hidePops();
-    wsRenaming=null;
-    renderWs();
-    wspop.style.display='block';
-    var r=wsbtn.getBoundingClientRect();
-    wspop.style.left=Math.max(4,Math.min(r.left,window.innerWidth-310))+'px';
-    wspop.style.top=Math.max(44,r.bottom+4)+'px';
-    setTimeout(function(){ var i=document.getElementById('wsnew'); if(i) i.focus(); },0);
-  }
-  // renaming: workspace id whose row is an input, null otherwise.
-  var wsRenaming=null;
-  function renderWs(){
-    var h='';
-    var defN=S.tabs?S.tabs.length:0;
-    h+='<div class="m'+(!(S&&S.workspace)?' cur':'')+'" role="menuitem" tabindex="-1" data-ws=""><span class="nm">Default</span><span class="ct">'+defN+'</span></div>';
-    (S.workspaces||[]).forEach(function(w){
-      h+='<div class="m'+(w.active?' cur':'')+'" role="menuitem" tabindex="-1" data-ws="'+w.id+'">';
-      if(wsRenaming===w.id){
-        h+='<input class="nm" id="wsren" maxlength="64" value="'+esc(w.name)+'" aria-label="Rename workspace">';
-      } else {
-        h+='<span class="nm">'+esc(w.name)+'</span>';
-      }
-      h+='<span class="ct">'+w.count+'</span>'
-        +'<button class="ic rn" data-wsren="'+w.id+'" title="Rename">✎</button>'
-        +'<button class="ic" data-wsdel="'+w.id+'" title="Delete workspace">🗑</button></div>';
-    });
-    h+='<div class="newrow"><input id="wsnew" maxlength="64" placeholder="New workspace…" aria-label="New workspace name"><button id="wsadd">Add</button></div>';
-    wspop.innerHTML=h;
-    var inp=document.getElementById('wsnew');
-    if(inp){
-      inp.addEventListener('keydown',function(e){
-        if(e.key==='Enter'){ e.preventDefault(); wsCreate(); }
-        else if(e.key==='Escape'){ wspop.style.display='none'; }
-        e.stopPropagation();
-      });
-    }
-    var add=document.getElementById('wsadd');
-    if(add) add.addEventListener('click',wsCreate);
-    var ren=document.getElementById('wsren');
-    if(ren){
-      ren.focus(); ren.select();
-      ren.addEventListener('keydown',function(e){
-        if(e.key==='Enter'){ e.preventDefault(); wsRenameGo(); }
-        else if(e.key==='Escape'){ wsRenaming=null; renderWs(); }
-        e.stopPropagation();
-      });
-      ren.addEventListener('click',function(e){ e.stopPropagation(); });
-    }
-  }
-  function wsCreate(){
-    var inp=document.getElementById('wsnew');
-    var name=inp?inp.value.trim():'';
-    if(!name){ if(inp) inp.focus(); return; }
-    wspop.style.display='none';
-    post({cmd:'ws_create',name:name});
-  }
-  function wsRenameGo(){
-    var ren=document.getElementById('wsren');
-    var name=ren?ren.value.trim():'';
-    var id=wsRenaming; wsRenaming=null;
-    if(!id) return;
-    if(name) post({cmd:'ws_rename',id:id,name:name});
-    else renderWs();
-  }
-  wspop.addEventListener('click',function(e){
-    var ren=e.target.closest?e.target.closest('[data-wsren]'):null;
-    if(ren){ e.stopPropagation(); wsRenaming=ren.getAttribute('data-wsren'); renderWs(); return; }
-    var del=e.target.closest?e.target.closest('[data-wsdel]'):null;
-    if(del){ wspop.style.display='none'; post({cmd:'ws_delete',id:del.getAttribute('data-wsdel')}); return; }
-    var row=e.target.closest?e.target.closest('[data-ws]'):null;
-    if(!row||e.target.closest('#wsren')||e.target.closest('.newrow')) return;
-    var id=row.getAttribute('data-ws');
-    wspop.style.display='none';
-    if(id) post({cmd:'ws_switch',id:id});
-    else post({cmd:'ws_default'});
-  });
-  wsbtn.addEventListener('click',function(){ openWs(); });
+  // The switcher rows, rename form and create field are shell-hosted
+  // (3c-6); chrome keeps the button and its label only.
+  wsbtn.addEventListener('click',function(){ postSurface('workspaces',wsbtn); });
   // ---- Profiles: avatar button + popover ----
-  var profbtn=document.getElementById('profbtn'), profpop=document.getElementById('profpop');
+  var profbtn=document.getElementById('profbtn');
   function paintProfBtn(){
     var cur=null, ps=S.profiles||[];
     for(var i=0;i<ps.length;i++) if(ps[i].current) cur=ps[i];
     profbtn.textContent=cur?cur.initial:'?';
     profbtn.title=cur?('Profile: '+cur.name+'. Click to switch'):'Profiles';
   }
-  function openProf(){
-    if(profpop.style.display==='block'){ profpop.style.display='none'; return; }
-    hidePops();
-    renderProf();
-    profpop.style.display='block';
-    var r=profbtn.getBoundingClientRect();
-    profpop.style.left=Math.max(4,Math.min(r.right-240,window.innerWidth-310))+'px';
-    profpop.style.top=Math.max(44,r.bottom+4)+'px';
-  }
-  function renderProf(){
-    var h='', ps=S.profiles||[];
-    ps.forEach(function(p){
-      // Default and the current profile never offer delete (the shell
-      // refuses both; the button must not imply otherwise).
-      var del=(p.current||p.id==='Default')?'':'<button class="ic" data-profdel="'+esc(p.id)+'" title="Delete profile">🗑</button>';
-      var tag=p.current?'<span class="ct">current</span>':'';
-      h+='<div class="m'+(p.current?' cur':'')+'" role="menuitem" tabindex="-1" data-prof="'+esc(p.id)+'">'
-        +'<span class="av">'+esc(p.initial)+'</span><span class="nm">'+esc(p.name)+'</span>'
-        +tag+del
-        +'</div>';
-    });
-    h+='<div class="newrow"><input id="profnew" maxlength="32" placeholder="New profile…" aria-label="New profile name"><button id="profadd">Add</button></div>';
-    h+='<div class="note">Switching opens a new window; this one stays put.</div>';
-    profpop.innerHTML=h;
-    var inp=document.getElementById('profnew');
-    if(inp){
-      inp.addEventListener('keydown',function(e){
-        if(e.key==='Enter'){ e.preventDefault(); profCreate(); }
-        else if(e.key==='Escape'){ profpop.style.display='none'; }
-        e.stopPropagation();
-      });
-    }
-    var add=document.getElementById('profadd');
-    if(add) add.addEventListener('click',profCreate);
-  }
-  function profCreate(){
-    var inp=document.getElementById('profnew');
-    var name=inp?inp.value.trim():'';
-    if(!name){ if(inp) inp.focus(); return; }
-    profpop.style.display='none';
-    post({cmd:'profile_create',name:name});
-  }
-  profpop.addEventListener('click',function(e){
-    var del=e.target.closest?e.target.closest('[data-profdel]'):null;
-    if(del){ profpop.style.display='none'; post({cmd:'profile_delete',id:del.getAttribute('data-profdel')}); return; }
-    var row=e.target.closest?e.target.closest('[data-prof]'):null;
-    if(!row||e.target.closest('.newrow')) return;
-    var id=row.getAttribute('data-prof');
-    var cur=null, ps=S.profiles||[];
-    for(var i=0;i<ps.length;i++) if(ps[i].id===id&&ps[i].current) cur=ps[i];
-    profpop.style.display='none';
-    if(!cur) post({cmd:'profile_switch',id:id});
-  });
-  profbtn.addEventListener('click',function(){ openProf(); });
-  // `group_new` (tab menu) and `group_edit` (header menu) open the editor;
-  // showCtx only posts, so intercept here before it reaches the shell.
-  ctxpop.addEventListener('click',function(e){
-    var m=e.target.closest?e.target.closest('[data-post]'):null; if(!m) return;
-    var cmd=null;
-    try{ cmd=JSON.parse(decodeURIComponent(m.getAttribute('data-post'))); }catch(x){}
-    if(cmd&&cmd.cmd==='group_new'&&cmd.tab){
-      e.stopImmediatePropagation();
-      ctxpop.style.display='none';
-      var r=m.getBoundingClientRect();
-      openGedit('create',null,[cmd.tab],r.left,r.bottom+4);
-    } else if(cmd&&cmd.cmd==='group_new_multi'&&cmd.tabs&&cmd.tabs.length){
-      e.stopImmediatePropagation();
-      ctxpop.style.display='none';
-      var r3=m.getBoundingClientRect();
-      openGedit('create',null,cmd.tabs,r3.left,r3.bottom+4);
-    } else if(cmd&&cmd.cmd==='group_edit'&&cmd.gid){
-      e.stopImmediatePropagation();
-      ctxpop.style.display='none';
-      var r2=m.getBoundingClientRect();
-      openGedit('edit',cmd.gid,null,r2.left,r2.bottom+4);
-    }
-  },true);
+  // Profile switch/delete/create are shell-hosted; chrome keeps the avatar.
+  profbtn.addEventListener('click',function(){ postSurface('profiles',profbtn); });
   baritems.addEventListener('contextmenu',function(e){
     var t=e.target.closest('[data-bid]');
     if(!t||t.getAttribute('data-bfolder')==='1') return;
+    e.preventDefault();
     var n=barItemById(t.getAttribute('data-bid'));
     if(!n||!n.url) return;
-    e.preventDefault();
-    showCtx([
-      [{cmd:'navigate',url:n.url},'Open'],
-      [{cmd:'new_tab',url:n.url},'Open in new tab'],
-      [{cmd:'ctx_bookmark_delete',id:n.id},'Delete']
-    ], e.clientX, e.clientY);
+    postSurface('bookmark_context',t,{id:n.id});
   });
-  document.addEventListener('click',function(e){
-    if(!e.target.closest('#shieldpop')&&!e.target.closest('#sh')) shieldpop.style.display='none';
-    if(!e.target.closest('#histpop')&&!e.target.closest('#hist')) histpop.style.display='none';
-    if(!e.target.closest('#navpop')&&!e.target.closest('#back')&&!e.target.closest('#fwd')) document.getElementById('navpop').style.display='none';
-    if(!e.target.closest('#starpop')&&!e.target.closest('#star')) starpop.style.display='none';
-    if(!e.target.closest('#zoompop')&&!e.target.closest('#zoom')) zoompop.style.display='none';
-    if(!e.target.closest('#permpop')&&!e.target.closest('#perm')) permpop.style.display='none';
-    if(!e.target.closest('#barmenu')) barmenu.style.display='none';
-    if(!e.target.closest('#barsub')) barsub.style.display='none';
-    if(!e.target.closest('#ctxpop')) ctxpop.style.display='none';
-    if(!e.target.closest('#gedit')) gedit.style.display='none';
-    if(!e.target.closest('#wspop')&&!e.target.closest('#wsbtn')) wspop.style.display='none';
-    if(!e.target.closest('#profpop')&&!e.target.closest('#profbtn')) profpop.style.display='none';
-    var dlp=document.getElementById('dlpop');
-    if(dlp&&!e.target.closest('#dlpop')&&!e.target.closest('#dl')) dlp.style.display='none';
+  document.addEventListener('mousedown',function(e){
+    // Click-away for every shell-hosted pop. mousedown, not click: the
+    // gesture that opened a press-driven surface has already passed this
+    // handler by the time the surface posts, so it cannot close what it
+    // opened (ARCH-15). A press inside the surface's chrome owner is the
+    // owner's own toggle, left to its click handler. Content-page presses
+    // are reported by the page's pointerdown reporter (tasks/toolbar-overlay-3c.md D2).
+    if(!toolPop) return;
+    var owner=surfOwner;
+    if(!owner&&popOwners[toolPop]) owner=document.getElementById(popOwners[toolPop]);
+    if(owner&&owner.contains(e.target)) return;
+    post({cmd:'popover_close',kind:'*'});
   });
   omni.addEventListener('focus',function(){ entryText=omni.value; clipMaybe(); });
   // Clipboard zero-state row: read once per focus while the bar is
   // empty. Focus is the user gesture (no background reads); denial is a
   // silent no-op and the row only ever renders locally. Typing or blur
   // clears it; pasted text must never linger as a suggestion.
-  var clipText=null, clipReading=false;
+  var clipText=null, clipHeld=null, clipReading=false;
   function clipLooksUrl(t){
     if(/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return true;
     return t.indexOf(' ')<0&&t.indexOf('.')>0&&t.indexOf('.')<t.length-1&&/^[^\s<>"]+$/.test(t);
@@ -2220,12 +1585,16 @@
       clipReading=false;
       t=String(t==null?'':t).trim();
       clipText=(document.activeElement===omni&&!omni.value&&t)?t.slice(0,1800):null;
+      clipHeld=clipText;
       render();
-    },function(){ clipReading=false; clipText=null; });
+    },function(){ clipReading=false; clipText=null; clipHeld=null; });
   }
   function clipSubmit(){
-    if(!clipText) return;
-    omni.value=clipText; clipText=null; clr.style.display='';
+    // `clipHeld` outlives the blur an overlay click causes (blur clears the
+    // live display row `clipText`); without it the paste row would silently
+    // no-op when the overlay is the one that took focus.
+    var t=clipText||clipHeld; if(!t) return;
+    omni.value=t; clipText=null; clipHeld=null; syncClr();
     post({cmd:'omnibox_input',text:omni.value});
     post({cmd:'omnibox_submit',text:submitText(null),url:null,provider:provId});
     exitProvider(); omni.blur();
@@ -2235,14 +1604,14 @@
     // Hold posts until composition commits; the commit handler below
     // flushes immediately so there is no 120ms dead key.
     if(e&&e.isComposing) return;
-    clearTimeout(deb); hl=-1; clipText=null;
-    clr.style.display=omni.value?'':'none';
+    clearTimeout(deb); hl=-1; clipText=null; clipHeld=null;
+    syncClr();
     updateGhost();
     deb=setTimeout(function(){ post({cmd:'omnibox_input',text:omni.value}); },120);
   });
   omni.addEventListener('compositionend',function(){
     clearTimeout(deb); hl=-1;
-    clr.style.display=omni.value?'':'none';
+    syncClr();
     updateGhost();
     post({cmd:'omnibox_input',text:omni.value});
   });
@@ -2258,10 +1627,10 @@
     },0);
   });
   omni.addEventListener('blur',function(){ clipText=null; setTimeout(render,0); });
-  disp.addEventListener('click',function(){ omni.style.display=''; disp.style.display='none'; omni.value=S.omnibox_text||S.raw_url||''; clr.style.display=omni.value?'':'none'; omni.focus(); omni.select(); });
+  disp.addEventListener('click',function(){ selectOmnibox(); });
   clr.addEventListener('mousedown',function(e){
     e.preventDefault();
-    exitProvider(); omni.value=''; clr.style.display='none'; post({cmd:'omnibox_input',text:''}); omni.focus();
+    exitProvider(); omni.value=''; post({cmd:'omnibox_input',text:''}); focusOmnibox();
   });
   function tabsearchRow(){ for(var i=0;i<S.suggestions.length;i++){ var g=S.suggestions[i]; if(g&&g.kind==='tabsearch'&&g.provider) return g; } return null; }
   // Clipboard row reach: it renders last (index == server row count)
@@ -2275,7 +1644,7 @@
   // of the envelope. Pastes longer than the input cap were already dead
   // submits before this; now they search.
   function submitText(url){ var t=omni.value||''; return t.slice(0,url?200:1800); }
-  function enterProvider(g){ provId=g.provider; provName=(g.title||'').replace(/^Press Tab to search /,'')||g.provider; omni.value=''; omni.placeholder='Search '+provName+' (Esc to exit)'; hl=-1; render(); omni.focus(); }
+  function enterProvider(g){ provId=g.provider; provName=(g.title||'').replace(/^Press Tab to search /,'')||g.provider; omni.value=''; omni.placeholder='Search '+provName+' (Esc to exit)'; hl=-1; render(); focusOmnibox(); }
   function exitProvider(){ provId=null; provName=''; ghostFull=null; omni.placeholder='Search or enter address  (Ctrl+L)'; }
   omni.addEventListener('keydown',function(e){
     // IME composition commits with Enter on CJK layouts: let the commit
@@ -2305,7 +1674,7 @@
         navigator.clipboard.readText().then(function(t){
           t=String(t==null?'':t);
           if(!t) return;
-          omni.value=t.slice(0,1800); clr.style.display='';
+          omni.value=t.slice(0,1800); syncClr();
           post({cmd:'omnibox_input',text:omni.value});
           post({cmd:'omnibox_submit',text:submitText(null),url:null,provider:provId});
           exitProvider(); omni.blur();
@@ -2371,7 +1740,7 @@
     if(n) n.focus();
   });
   document.addEventListener('keydown',function(e){
-    if(e.key==='Escape'){ hidePops(); if(typeof ftipHide==='function') ftipHide(); }
+    if(e.key==='Escape'){ if(toolPop) post({cmd:'popover_close',kind:'*'}); if(typeof ftipHide==='function') ftipHide(); }
   });
   // Tooltip primitive: one shared #ferrite-tip for every chrome surface.
   // Simple text for toolbar / bookmark labels ("New tab" plus shortcut);
@@ -2502,76 +1871,18 @@
   document.addEventListener('focusout',function(){ ftipHide(); });
   document.addEventListener('scroll',function(){ ftipHide(); },true);
   document.addEventListener('click',function(){ ftipHide(); },true);
-  // Toast primitive: renders the shell queue head (S.status.toast).
-  // One frame at a time, coalescing/queueing/expiry are shell-side.
-  // Auto-dismiss pauses on hover AND keyboard focus (a keyboard user
-  // racing the timer gets the same pause as a hovering mouse); the ×
-  // advances the queue shell-side. Downloads anchor above the toolbar
-  // icon; everything else floats bottom-right, never top (infobar
-  // territory). Chrome-layer only, so no content-webview overlay issue.
-  var toastEl=document.getElementById('toast'),
-      toastSeq=null, toastTimer=null, toastLeft=0, toastStamp=0;
-  function hideToastVisual(){
-    if(toastTimer){ clearTimeout(toastTimer); toastTimer=null; }
-    toastLeft=0;
-    toastEl.style.display='none'; toastEl.hidden=true;
-    toastEl.classList.remove('show');
+  // Load bar geometry: the last 2px of the chrome band. #infobar is the last
+  // band surface, so its measured bottom is where the content inset begins.
+  // Recompute after the infobar's height transition too, or the bar would sit
+  // 40px too high for the length of the slide.
+  function positionLoadbar(){
+    var lb=document.getElementById('loadbar');
+    var ib=document.getElementById('infobar');
+    if(!lb||!ib) return;
+    lb.style.top=Math.max(0,Math.round(ib.getBoundingClientRect().bottom)-2)+'px';
   }
-  function armToastTimer(ms){
-    if(toastTimer) clearTimeout(toastTimer);
-    toastLeft=ms; toastStamp=Date.now();
-    toastTimer=setTimeout(hideToastVisual, ms);
-  }
-  function pauseToastTimer(){
-    if(!toastTimer) return;
-    clearTimeout(toastTimer); toastTimer=null;
-    toastLeft=Math.max(0, toastLeft-(Date.now()-toastStamp));
-  }
-  function resumeToastTimer(){
-    if(toastTimer||toastLeft<=0) return;
-    toastStamp=Date.now();
-    toastTimer=setTimeout(hideToastVisual, toastLeft);
-  }
-  function placeToast(anchor){
-    if(anchor==='downloads'&&dl){
-      var r=dl.getBoundingClientRect();
-      toastEl.style.visibility='hidden';
-      toastEl.classList.add('show');
-      var w=toastEl.offsetWidth, h=toastEl.offsetHeight;
-      var x=Math.max(8,Math.min(r.right-w,window.innerWidth-w-8));
-      var y=Math.max(8,r.top-h-8);
-      toastEl.style.left=x+'px'; toastEl.style.top=y+'px';
-      toastEl.style.right='auto'; toastEl.style.bottom='auto';
-      toastEl.style.visibility='';
-    } else {
-      toastEl.style.left=''; toastEl.style.top='';
-      toastEl.style.right=''; toastEl.style.bottom='';
-    }
-  }
-  function renderToast(){
-    var frame=S.status?S.status.toast:null;
-    if(!frame){ if(toastSeq!==null){ hideToastVisual(); toastSeq=null; } return; }
-    if(frame.seq===toastSeq) return;
-    var h='<span class="tic">'+icon(frame.icon||'check')+'</span>'
-      +'<span class="ttx">'+esc(frame.text||'')+'</span>';
-    if(frame.action_label) h+='<button class="tact" data-tact="1">'+esc(frame.action_label)+'</button>';
-    h+='<button class="tx" data-tx="1" aria-label="Dismiss notification">×</button>';
-    toastEl.innerHTML=h;
-    toastSeq=frame.seq;
-    placeToast(frame.anchor);
-    toastEl.hidden=false;
-    toastEl.classList.add('show');
-    armToastTimer(frame.duration_ms||4000);
-  }
-  toastEl.addEventListener('mouseenter',pauseToastTimer);
-  toastEl.addEventListener('mouseleave',resumeToastTimer);
-  toastEl.addEventListener('focusin',pauseToastTimer);
-  toastEl.addEventListener('focusout',resumeToastTimer);
-  toastEl.addEventListener('click',function(e){
-    if(!S.status||!S.status.toast) return;
-    var seq=S.status.toast.seq;
-    if(e.target.closest('[data-tact]')){ post({cmd:'toast_action',seq:seq}); return; }
-    if(e.target.closest('[data-tx]')){ post({cmd:'toast_dismiss',seq:seq}); hideToastVisual(); return; }
+  document.getElementById('infobar').addEventListener('transitionend',function(e){
+    if(e.propertyName==='max-height') positionLoadbar();
   });
   // boot with empty state; shell pushes the real one (and answers this).
   // First push on a fresh window focuses the omnibox when there is nothing
@@ -2591,10 +1902,10 @@
     render();
     if(!booted){
       booted=true;
-      if(S.tabs.length<=1 && !S.raw_url && !S.omnibox_text) omni.focus();
+      if(S.tabs.length<=1 && !S.raw_url && !S.omnibox_text) focusOmnibox();
     }
   };
-  window.__ferriteChrome({tabs:[],raw_url:'',disp:{sch:'',sub:'',dom:'',path:''},hover:{sch:'',sub:'',dom:'',path:''},hover_mine:false,sec:'shield',omnibox_text:'',suggestions:[],perm:[],zoom_pct:100,engines:[],themes:[],status:{tabs:0,proxy_alive:false,blocked:0,blocked_ad:0,blocked_tracker:0,blocked_fingerprinting:0,blocked_malware:0,blocked_mixed:0,recent_trackers:[],fail_open:0,downloads:0,last_download:null,last_download_id:null,show:false,dl_active:false,dl_frac:0,dl_flash:false,dl_failed:false,console_errors:0,toast:null},accent:'#ffc670',pinned_view:false,starred:false,panel_open:false,panel_section:'bookmarks',panel_w:320,find_open:false,find_query:'',find_case:false,find_total:0,find_index:0,crash_offer:false,crash_tabs:0,version:''});
+  window.__ferriteChrome({tabs:[],raw_url:'',disp:{sch:'',sub:'',dom:'',path:''},hover:{sch:'',sub:'',dom:'',path:''},hover_mine:false,sec:'shield',omnibox_text:'',suggestions:[],perm:[],zoom_pct:100,engines:[],themes:[],status:{tabs:0,proxy_alive:false,blocked:0,blocked_ad:0,blocked_tracker:0,blocked_fingerprinting:0,blocked_malware:0,blocked_mixed:0,recent_trackers:[],fail_open:0,downloads:0,last_download:null,last_download_id:null,show:false,dl_active:false,dl_frac:0,dl_flash:false,dl_failed:false,console_errors:0},accent:'#ffc670',pinned_view:false,starred:false,panel_open:false,panel_section:'bookmarks',panel_w:320,crash_offer:false,crash_tabs:0,version:''});
   post({cmd:'request_state'});
 })();
 </script>

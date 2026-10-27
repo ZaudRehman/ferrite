@@ -439,6 +439,111 @@ html,body{margin:0;padding:0;background:transparent;font-family:var(--f-font-ui)
 #m .mi .ck{width:14px;flex:none;color:var(--f-accent)}
 #m hr{border:none;border-top:1px solid var(--f-border);margin:4px 0}
 #m .v{padding:6px 10px 2px;color:var(--f-faint);font-size:11px;text-align:right}
+/* Omnibox suggestion rows: a visual mirror of chrome's own #sugs listbox
+   (chrome keeps the a11y tree and the action logic; this page only paints). */
+#m .sg{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:var(--pk-card-radius,8px);cursor:pointer;font-size:13px;color:var(--f-fg);overflow:hidden}
+#m .sg:hover,#m .sg.hl{background:var(--f-surface-2)}
+#m .sg .av{width:18px;height:18px;border-radius:50%;background:var(--f-surface-2);color:var(--f-muted);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none}
+#m .sg .tt{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#m .sg .u{color:var(--f-faint);font-size:12px}
+#m .sg .k{color:var(--f-faint);font-size:10px;letter-spacing:.08em;text-transform:uppercase;flex:none}
+#m .sg .sugx{border:none;background:transparent;color:var(--f-faint);font-size:14px;line-height:1;border-radius:var(--pk-ctl-radius,6px);padding:2px 6px;cursor:pointer;flex:none}
+#m .sg .sugx:hover{color:var(--f-fg);background:var(--f-surface-2)}
+/* Toolbar popover rows (shell-built real UI, not a mirror). Zoom is the
+   3c-1 kind: one horizontal control row, buttons act on mousedown.
+   The card is 160x44 and this row must fit it exactly, `box-sizing`
+   included: height 4+2+30+2+4 + 2 border = 44, width 4+4 + 34+6+64+6+34
+   + 2 border = 154 (the outer `#m` padding/border is NOT overridden for
+   zoom, unlike `#m.plist`). Growing either padding clips the card and
+   raises a scrollbar, so the numbers live in the comment. */
+#m .pz{display:flex;align-items:center;justify-content:center;gap:6px;padding:2px 0}
+#m .pz button{width:34px;height:30px;display:flex;align-items:center;justify-content:center;border:1px solid var(--f-border);background:var(--f-surface-2);color:var(--f-fg);border-radius:var(--pk-ctl-radius,6px);cursor:pointer;font:inherit;font-size:15px;padding:0}
+#m .pz button:hover,#m .pz button:focus{background:var(--f-surface-1);outline:none;border-color:var(--f-accent)}
+#m .pz .zpct{width:64px;font-size:13px;font-weight:700}
+/* List rows for the nav + history pops (3c-2): one row grammar — section
+   headers, single-line rows (26px: 5+16+5), two-line title+url rows
+   (40px: 5+16+14+5), and the muted empty row. The shell computes the card
+   height from exactly these numbers. */
+#m.plist{padding:5px 0}
+#m .psec{padding:6px 10px 2px;color:var(--f-muted);font-weight:700;font-size:11px;line-height:12px;letter-spacing:.06em;text-transform:uppercase}
+#m .pr{display:flex;align-items:baseline;gap:8px;padding:5px 10px;line-height:16px;font-size:13px;color:var(--f-fg);cursor:pointer;overflow:hidden}
+#m .pr:hover,#m .pr:focus{background:var(--f-surface-2);outline:none}
+#m .pr .pt{flex:1;min-width:0;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+#m .pr2{display:block}
+#m .pr2 .pt{display:block}
+#m .pr2 .pu{display:block;color:var(--f-faint);font-size:12px;line-height:14px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+#m .pr .mut{color:var(--f-faint)}
+/* Call-to-action rows keep the accent the old chrome-DOM history popup gave
+   them (`#histpop .m.restore span.t`, `#histpop .all`): restore-all and the
+   see-all footer. The footer is centred there too. Neither changes a row's
+   26px height, so the shell's card arithmetic is untouched. */
+#m .pr.acc .pt{color:var(--f-accent)}
+#m .pr.foot{justify-content:center}
+/* A footer's label must not flex: `.pr .pt` is `flex:1`, which would fill
+   the row and defeat the centring above (old DOM: `.all{display:block;
+   text-align:center}`). */
+#m .pr.foot .pt{flex:0 1 auto;text-align:center}
+/* Downloads + shield card rows (3c-3). Same contract as the list rows
+   above: every kind is a fixed height the shell's card arithmetic mirrors
+   exactly, and every one-line surface ellipsizes so no value can grow the
+   card. `.ptx` = 1+16+1 = 18, `.pbtn` = 6+24+6 = 36, `.pdl` =
+   6+16+(2+14)+6+24+6 = 74. */
+#m .ptx{padding:1px 10px;line-height:16px;font-size:13px;color:var(--f-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#m .ptx.head{font-weight:700}
+#m .ptx.warn{color:var(--f-warning)}
+#m .ptx.danger{color:var(--f-danger)}
+#m .ptx.faint{color:var(--f-faint)}
+#m .pbtn{padding:6px 10px}
+/* `display:block` is load-bearing: an inline-level button sits on the text
+   baseline, so the parent line box picks up the font's descender and the
+   row can measure a fraction taller at some DPI scales (measured 37 at 2x),
+   which would push the exactly-sized card into a scrollbar. As a block the
+   row is padding + 24 with no font metrics in the sum. */
+#m .pbtn button{display:block;width:100%;height:24px;border:1px solid var(--f-border);background:var(--f-surface-2);color:var(--f-fg);border-radius:var(--pk-ctl-radius,6px);cursor:pointer;font:inherit;font-size:12px}
+#m .pbtn button:hover,#m .pbtn button:focus{background:var(--f-surface-1);border-color:var(--f-accent);outline:none}
+#m .pdl,#m .pperm{padding:6px 10px}
+#m .pdl .fn,#m .pperm .fn{line-height:16px;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#m .pdl .meta,#m .pperm .meta{line-height:14px;font-size:11px;color:var(--f-faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#m .pdl .acts,#m .pperm .acts{display:flex;gap:6px;margin-top:6px;flex-wrap:nowrap;overflow:hidden}
+#m .pdl .acts button,#m .pperm .acts button{height:24px;flex:none;border:1px solid var(--f-border);background:transparent;color:var(--f-fg);border-radius:var(--pk-ctl-radius,6px);padding:0 10px;cursor:pointer;font:inherit;font-size:12px}
+#m .pdl .acts button:hover,#m .pdl .acts button:focus,#m .pperm .acts button:hover,#m .pperm .acts button:focus{background:var(--f-surface-2);border-color:var(--f-accent);outline:none}
+/* A permission row is a `.pdl` row that asks a question: same pinned height
+   and button strip, its own class so the renderer branch stays explicit. */
+/* Arming window: every decision control is disabled until the shell's
+   deadline, so the click that opened the card cannot also answer it. */
+#m .pperm .acts button:disabled,#m .pbtn button:disabled{opacity:.45;cursor:default}
+#m .pperm .acts button:disabled:hover,#m .pbtn button:disabled:hover{background:transparent;border-color:var(--f-border)}
+/* One fixed sentence in a fixed 28px box: two lines of line-height:14 plus
+   1px of padding is the 30px the shell budgets, whatever the wrap. `#m`'s own
+   border-box does not reach children, so 28 here is content height. */
+#m .pnote{padding:1px 10px;height:28px;line-height:14px;font-size:11px;color:var(--f-faint);overflow:hidden}
+/* 3c-6 forms and people lists. Every height here is mirrored by the shell's
+   FORM_* arithmetic: title 24, field 53 (14 label + 3 + 28 control + 8 gap),
+   swatch row 36, check row 24, button row 36, people row 34. */
+#m.pform{padding:8px}
+#m .pft{font-weight:700;font-size:13px;line-height:18px;margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#m .pft .n{font-weight:400;color:var(--f-muted)}
+#m .pfield{margin:0 0 8px}
+#m .pfield label{display:block;font-size:11px;line-height:14px;color:var(--f-muted);margin:0 0 3px}
+#m .pfield input,#m .pfield select{display:block;width:100%;box-sizing:border-box;height:28px;background:var(--f-surface-2);border:1px solid var(--f-border);color:var(--f-fg);border-radius:var(--pk-ctl-radius,6px);padding:0 8px;font:inherit;font-size:13px}
+#m .pfield input:focus,#m .pfield select:focus{outline:none;border-color:var(--f-accent)}
+#m .pbtnrow{display:flex;gap:6px}
+#m .pbtnrow button{flex:1;height:28px;border:1px solid var(--f-border);background:var(--f-surface-2);color:var(--f-fg);border-radius:var(--pk-ctl-radius,6px);cursor:pointer;font:inherit;font-size:12px;padding:0 8px}
+#m .pbtnrow button.primary{background:var(--f-accent);border-color:transparent;color:var(--f-bg);font-weight:700}
+#m .pbtnrow button:hover,#m .pbtnrow button:focus{outline:none;border-color:var(--f-accent)}
+#m .pwrow{display:flex;align-items:center;gap:4px;height:34px}
+#m .pwrow button{border:1px solid transparent;background:transparent;color:var(--f-fg);border-radius:var(--pk-ctl-radius,6px);cursor:pointer;font:inherit;font-size:13px}
+#m .pwrow button:hover,#m .pwrow button:focus{background:var(--f-surface-2);outline:none}
+#m .pwrow.cur button.pwn{font-weight:700}
+#m .pwrow .pwn{flex:1;min-width:0;height:30px;text-align:left;padding:0 8px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#m .pwrow .pwn .s{color:var(--f-faint);font-size:11px;margin-left:6px}
+#m .pwrow .pwo{flex:none;height:26px;padding:0 7px;font-size:11px;color:var(--f-muted);border-color:var(--f-border)}
+#m .psw{display:flex;gap:6px;align-items:center;height:28px;margin:0 0 8px}
+#m .psw button{width:24px;height:24px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+#m .psw button[aria-checked="true"]{border-color:var(--f-fg)}
+#m .psw button:focus{outline:2px solid var(--f-accent);outline-offset:1px}
+#m .pcheck{display:flex;align-items:center;gap:8px;height:24px;font-size:12px;color:var(--f-fg);margin:0 0 8px}
+#m .pcheck input{margin:0}
 @media (prefers-reduced-motion:reduce){#m{animation:none}}
 </style></head>
 <body><div id="m" role="menu" aria-label="Context menu"></div>
@@ -446,23 +551,308 @@ html,body{margin:0;padding:0;background:transparent;font-family:var(--f-font-ui)
 (function(){
   function post(o){ try{ window.ipc.postMessage(JSON.stringify(o)); }catch(e){} }
   function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  // Which hook painted #m. Drives the post types so the shell can tell
+  // menu / context-menu / omnibox-suggestion / toolbar-popover traffic
+  // apart on the shared overlay channel. Suggestions are aria-hidden: chrome
+  // owns that a11y. Toolbar popovers are real UI (they have no chrome DOM
+  // copy), so they are NOT aria-hidden and use normal button semantics.
+  var menuMode=false, sugMode=false, popMode=null;
+  // Every renderer owns the whole mode. `popMode` must be cleared even when
+  // a menu or suggestion list is replacing a toolbar card, otherwise the
+  // click/mousedown paths still think a pop is open and the new surface is
+  // inert (ARCH-05). `__ferritePop` sets popMode immediately after this.
+  function setMode(sug,menu){ sugMode=!!sug; menuMode=!!menu; popMode=null; var m=document.getElementById('m'); m.setAttribute('role','menu'); if(sugMode) m.setAttribute('aria-hidden','true'); else m.removeAttribute('aria-hidden'); }
+  function dismissType(){ return (sugMode||popMode)?'popover_dismiss':(menuMode?'menu_dismiss':'ctx_dismiss'); }
+  // Pop-mode dismissal is marked `src:'overlay'` so the shell can tell it
+  // from a content page's pointerdown report (`src:'page'`): only the
+  // overlay-originated one needs focus handed back to chrome. The shell
+  // leaves the source off for the menu/ctx types it already owns.
+  function dismissMsg(){ var t=dismissType(); return popMode?{type:t,src:'overlay'}:{type:t}; }
+  // A form submit reads the live field values and posts them with the button's
+  // action tag (or the default button's, for Enter). Declared at this scope,
+  // NOT inside `__ferritePop`: the mousedown/keydown handlers are bound once at
+  // load and call this for whatever card is open, so a declaration inside the
+  // renderer is invisible to them. That failure mode is silent and confusing —
+  // the card paints and Escape closes it, but every button press throws
+  // ReferenceError before a message is posted.
+  function popValues(){
+    function val(id){ var n=document.getElementById('pf-'+id); return n?n.value:''; }
+    var sw=document.querySelector('#m .psw button[aria-checked="true"]');
+    var ck=document.getElementById('pf-collapsed');
+    return {name:val('name'),folder:val('folder'),
+      color:sw?(+sw.getAttribute('data-color')||0):0,
+      collapsed:ck?!!ck.checked:false};
+  }
+  function submitFrame(i,a){
+    if(!popMode) return;
+    post({type:'popover_submit',kind:popMode,i:i,act:a,values:popValues()});
+  }
   window.__ferriteCtxMenu=function(items,hl){
-    menuMode=false;
+    setMode(false,false);
     renderRows(items,hl);
     // Focus-first only for the classic menu call (no hl): the focus
     // dropdown passes hl and keeps field focus, highlighting visually.
     if(hl===undefined){ var fm=document.getElementById('m'); var first=fm.querySelector('[data-id]'); if(first) first.focus(); }
   };
-  // Main application menu: same rows plus optional hint/checked/footer,
-  // same overlay window (it sits above content in z-order, which chrome
-  // DOM cannot). Mode switches the post types so the shell can tell menu
-  // traffic from context-menu traffic on the shared channel.
-  var menuMode=false;
   window.__ferriteMenu=function(items){
-    menuMode=true;
+    setMode(false,true);
     renderRows(items);
     var first=document.querySelector('#m [data-id]'); if(first) first.focus();
   };
+  // Omnibox suggestions: a visual mirror only. Chrome keeps keyboard focus
+  // and the a11y listbox (#sugs), so this page is aria-hidden and a click is
+  // relayed back to chrome by the shell (one owner of suggestion state).
+  window.__ferriteSugs=function(rows,hl){
+    setMode(true,false);
+    var h='';
+    (rows||[]).forEach(function(r,i){
+      if(r.clip){
+        h+='<div class="sg'+(i===hl?' hl':'')+'" data-sug="'+i+'"><span class="av">⧉</span><span class="tt">'+esc(r.go||'Paste')+'<br><span class="u">'+esc(r.u||'')+'</span></span><span class="k">clipboard</span></div>';
+        return;
+      }
+      var del=r.del?'<button class="sugx" data-del="'+i+'" aria-label="Remove from history">×</button>':'';
+      h+='<div class="sg'+(i===hl?' hl':'')+'" data-sug="'+i+'"><span class="av">'+esc(avatar(r.t||r.u))+'</span><span class="tt">'+esc(r.t||r.u)+'<br><span class="u">'+esc(r.u||'')+'</span></span><span class="k">'+esc(r.k||'')+'</span>'+del+'</div>';
+    });
+    document.getElementById('m').innerHTML=h;
+  };
+  // Toolbar popover (shell-owned real UI; chrome posts only geometry).
+  // One kind at a time from the shell; frame.kind must match what the
+  // shell published (posts carry it back for validation). Unknown kind:
+  // render nothing (the shell would not have opened us for it).
+  window.__ferritePop=function(frame){
+    setMode(false,false);
+    popMode=(frame&&frame.kind)||null;
+    var m=document.getElementById('m');
+    // One card, many surfaces: the overlay webview is a single page reused for
+    // every kind, so the container's accessible name must follow the kind
+    // (the pre-migration bubbles each carried their own label; without this a
+    // screen reader announces "Context menu" for a downloads card).
+    var POP_NAME={zoom:'Page zoom',nav_back:'Back history',nav_fwd:'Forward history',
+      history:'History',downloads:'Recent downloads',shield:'Privacy protection',
+      permissions:'Permission request',star:'Bookmark this page',
+      workspaces:'Workspaces',workspace_rename:'Rename workspace',
+      profiles:'Profiles',group_editor:'Tab group',bar_menu:'Bookmarks bar',
+      bar_folder_new:'New bookmark folder',tab_context:'Tab actions',
+      tabs_context:'Selected tab actions',group_context:'Tab group actions',
+      bookmark_context:'Bookmark actions'};
+    m.setAttribute('aria-label',POP_NAME[popMode]||'Context menu');
+    var k=+(frame&&frame.pct)||100;
+    // Repaints land under the user (a zoom step, a fresh history entry) and
+    // `#m` is re-rendered wholesale, which detaches the focused node and
+    // dumps focus on body — stranding arrow/Enter navigation. Re-focus the
+    // row/control that had focus, falling back to the first one.
+    function refocus(attr,sel,html){
+      var tag=(document.activeElement&&document.activeElement.getAttribute)?document.activeElement.getAttribute(attr):null;
+      m.innerHTML=html;
+      var cands=Array.prototype.slice.call(m.querySelectorAll(sel));
+      var keep=null;
+      if(tag!==null&&tag!==undefined) cands.forEach(function(c){ if(c.getAttribute(attr)===tag) keep=c; });
+      var next=keep||cands[0];
+      if(next) next.focus();
+    }
+    function fieldsOf(f){
+      if(f.kind==='star'){
+        var opts=[{id:'',name:'Bookmarks bar'}].concat(f.folders||[]);
+        return [{id:'name',label:'Name',value:f.name||'',max:200},
+          {id:'folder',label:'Folder',type:'select',value:f.folder||'',options:opts}];
+      }
+      if(f.kind==='workspace_rename'||f.kind==='bar_folder_new'){
+        return [{id:'name',label:'Name',value:f.name||'',max:f.kind==='bar_folder_new'?200:64}];
+      }
+      // The group editor carries name/colour/collapsed and the shell rejects
+      // an empty name, so the field rule is load-bearing: without it the card
+      // paints no input and Save can only ever post an empty name.
+      if(f.kind==='group_editor'){
+        return [{id:'name',label:'Name',value:f.name||'',max:64,placeholder:'Group name'}];
+      }
+      return f.fields||[];
+    }
+    function fieldHTML(f){
+      var id=esc(f.id||'name'), label='<label for="pf-'+id+'">'+esc(f.label||'Name')+'</label>';
+      if(f.type==='select'){
+        var opts='';
+        (f.options||[]).forEach(function(o){
+          opts+='<option value="'+esc(o.id)+'"'+(o.id===(f.value||'')?' selected':'')+'>'+esc(o.name)+'</option>';
+        });
+        return '<div class="pfield">'+label+'<select id="pf-'+id+'">'+opts+'</select></div>';
+      }
+      return '<div class="pfield">'+label+'<input id="pf-'+id+'" type="text" maxlength="'+(+f.max||200)+'"'
+        +' value="'+esc(f.value||'')+'" placeholder="'+esc(f.placeholder||'')+'" autocomplete="off" spellcheck="false"></div>';
+    }
+    // Buttons share one row, so a label has to stay short enough for its
+    // column: the shell pairs each short label with the full sentence as the
+    // accessible name instead of letting the text wrap inside a 28px button.
+    function buttonsHTML(btns){
+      var h='<div class="pbtnrow">';
+      (btns||[]).forEach(function(b){
+        var aria=b.aria?' aria-label="'+esc(b.aria)+'" title="'+esc(b.aria)+'"':'';
+        h+='<button data-submit="'+b.i+'" data-a="'+esc(b.a||'')+'"'+aria
+          +(b.def?' data-default="1" class="primary"':'')+'>'+esc(b.t||'')+'</button>';
+      });
+      return h+'</div>';
+    }
+    function formCard(frame){
+      var h='';
+      if(frame.title){
+        // The group editor says what it will affect; the count rides on the
+        // title line so the card's pinned height does not change.
+        var cnt=frame.count?'<span class="n"> · '+frame.count+' tab'+(frame.count===1?'':'s')+'</span>':'';
+        h+='<div class="pft">'+esc(frame.title)+cnt+'</div>';
+      }
+      fieldsOf(frame).forEach(function(f){ h+=fieldHTML(f); });
+      if(frame.swatches){
+        h+='<div class="psw" role="radiogroup" aria-label="Group colour">';
+        (frame.swatches||[]).forEach(function(s,i){
+          h+='<button type="button" role="radio" aria-checked="'+(i===(+frame.color||0))+'" data-color="'+i+'" data-sw="'+i+'"'+(s.i>=0?' data-i="'+s.i+'" data-a="'+esc(s.a||'')+'"':'')+' style="background:'+esc((frame.colors||[])[i]||'#9AA0A6')+'" title="Colour '+(i+1)+'"></button>';
+        });
+        h+='</div>';
+      }
+      if(frame.swatches){
+        h+='<label class="pcheck"><input id="pf-collapsed" type="checkbox"'
+          +(frame.collapsed?' checked':'')+'> Collapse this group</label>';
+      }
+      h+=buttonsHTML(frame.buttons);
+      return h;
+    }
+    function peopleCard(frame){
+      var h='';
+      (frame.rows||[]).forEach(function(r){
+        h+='<div class="pwrow'+(r.cur?' cur':'')+'">'
+          +'<button class="pwn" data-i="'+r.i+'" data-a="'+esc(r.a||'')+'" title="'+esc(r.t||'')+'">'
+          +esc(r.t||'')+(r.s?'<span class="s">'+esc(r.s)+'</span>':'')+'</button>';
+        (r.ops||[]).forEach(function(o){
+          h+='<button class="pwo" data-i="'+o.i+'" data-a="'+esc(o.a||'')+'" title="'+esc(o.t||'')+'">'+esc(o.t||'')+'</button>';
+        });
+        h+='</div>';
+      });
+      if(frame.form){
+        var f=frame.form.field||{id:'name'};
+        h+='<div class="pfield"><label for="pf-name">'+esc(f.label||'')+'</label>'
+          +'<input id="pf-name" type="text" maxlength="'+(+f.max||64)+'" placeholder="'+esc(f.placeholder||'')+'" autocomplete="off"></div>';
+        var b=frame.form.button||{};
+        h+='<div class="pbtnrow"><button class="primary" data-submit="'+b.i+'" data-a="'+esc(b.a||'')+'" data-default="1">'+esc(b.t||'Add')+'</button></div>';
+      }
+      return h;
+    }
+    if(frame&&frame.kind==='zoom'){
+      m.className='';
+      refocus('data-act','.pz button',
+        '<div class="pz" role="group" aria-label="Page zoom">'
+        +'<button data-act="out" aria-label="Zoom out">-</button>'
+        +'<button class="zpct" data-act="reset" aria-label="Reset zoom to 100 percent"><span aria-live="polite">'+k+'%</span></button>'
+        +'<button data-act="in" aria-label="Zoom in">+</button></div>');
+      return;
+    }
+    if(frame&&(frame.kind==='star'||frame.kind==='workspace_rename'||frame.kind==='bar_folder_new')){
+      m.className='pform';
+      m.setAttribute('role','dialog');
+      m.innerHTML=formCard(frame);
+      var fi=m.querySelector('#pf-name')||m.querySelector('[data-submit]');
+      if(fi){ fi.focus(); if(fi.select) fi.select(); }
+      return;
+    }
+    if(frame&&(frame.kind==='workspaces'||frame.kind==='profiles')){
+      m.className='pform';
+      m.setAttribute('role','dialog');
+      m.innerHTML=peopleCard(frame);
+      var pi=m.querySelector('.pwrow .pwn')||m.querySelector('#pf-name');
+      if(pi) pi.focus();
+      return;
+    }
+    if(frame&&frame.kind==='group_editor'){
+      m.className='pform';
+      m.setAttribute('role','dialog');
+      m.innerHTML=formCard(frame);
+      var gi=m.querySelector('#pf-name')||m.querySelector('[data-submit]');
+      if(gi){ gi.focus(); if(gi.select) gi.select(); }
+      return;
+    }
+    // List and card pops (nav_back / nav_fwd / history / downloads /
+    // shield / permissions): the frame carries section headers, single-line
+    // text rows, full-width buttons, download rows with their own button
+    // strips, permission rows with their own decision strip, the fixed note,
+    // and action rows (index + act tag both gated by the shell against its
+    // own table). The shell computed the card height from these pinned row
+    // heights, so nothing scrolls. Every one-line surface ellipsizes: the
+    // shell's height arithmetic assumes exactly one line.
+    if(frame&&(frame.kind==='nav_back'||frame.kind==='nav_fwd'||frame.kind==='history'
+      ||frame.kind==='downloads'||frame.kind==='shield'||frame.kind==='permissions'
+      ||frame.kind==='bar_menu'||frame.kind==='tab_context'||frame.kind==='tabs_context'
+      ||frame.kind==='group_context'||frame.kind==='bookmark_context')){
+      m.className='plist';
+      m.setAttribute('role','menu');
+      var h='';
+      (frame.rows||[]).forEach(function(r){
+        if(r.sep){ h+='<hr>'; return; }
+        if(r.sec){ h+='<div class="psec">'+esc(r.sec)+'</div>'; return; }
+        if(r.m){ h+='<div class="pr"><span class="pt mut">'+esc(r.t||'')+'</span></div>'; return; }
+        if(r.k==='tx'){
+          h+='<div class="ptx'+(r.col?' '+esc(r.col):'')+'" title="'+esc(r.t||'')+'">'+esc(r.t||'')+'</div>';
+          return;
+        }
+        if(r.k==='btn'){
+          h+='<div class="pbtn"><button tabindex="-1" data-i="'+r.i+'" data-a="'+esc(r.a||'')+'"'
+            +(r.arm?' data-arm="1"':'')+(r.def?' data-default="1"':'')+'>'+esc(r.t||'')+'</button></div>';
+          return;
+        }
+        if(r.k==='dl'){
+          h+='<div class="pdl"><div class="fn" title="'+esc(r.t||'')+'">'+esc(r.t||'')+'</div>'
+            +'<div class="meta">'+esc(r.s||'')+'</div><div class="acts">';
+          (r.btns||[]).forEach(function(b){
+            h+='<button tabindex="-1" data-i="'+b.i+'" data-a="'+esc(b.a||'')+'">'+esc(b.t||'')+'</button>';
+          });
+          h+='</div></div>';
+          return;
+        }
+        if(r.k==='perm'){
+          h+='<div class="pperm"><div class="fn" title="'+esc(r.t||'')+'">'+esc(r.t||'')+'</div>'
+            +'<div class="meta" title="'+esc(r.s||'')+'">'+esc(r.s||'')+'</div><div class="acts">';
+          (r.btns||[]).forEach(function(b){
+            h+='<button tabindex="-1" data-arm="1" data-i="'+b.i+'" data-a="'+esc(b.a||'')+'">'+esc(b.t||'')+'</button>';
+          });
+          h+='</div></div>';
+          return;
+        }
+        if(r.k==='note'){
+          h+='<div class="pnote" title="'+esc(r.t||'')+'">'+esc(r.t||'')+'</div>';
+          return;
+        }
+        h+='<div class="pr'+(r.u!==undefined?' pr2':'')+(r.k==='acc'?' acc':'')+(r.foot?' foot':'')+'" role="menuitem" tabindex="-1" aria-label="'+esc(r.t||'')+'" data-i="'+r.i+'" data-a="'+esc(r.a||'')+'">'
+          +'<span class="pt">'+esc(r.t||'')+'</span>'
+          +(r.u!==undefined?'<span class="pu">'+esc(r.u||'')+'</span>':'')
+          +'</div>';
+      });
+      if(frame.kind==='permissions'){
+        // Clickjacking window: the shell publishes an absolute deadline, and
+        // every `[data-arm]` control stays disabled until it passes; then the
+        // safe default (Not now) takes focus, never an Allow button. A
+        // mid-window refresh keeps the same deadline, so the wait cannot be
+        // restarted from here. The shell re-checks the same deadline, so this
+        // is UX, not the security boundary.
+        m.innerHTML=h;
+        var armNodes=Array.prototype.slice.call(m.querySelectorAll('[data-arm]'));
+        var armDef=m.querySelector('[data-default]');
+        var armLeft=(+frame.arm_until||0)-Date.now();
+        if(armLeft>0&&armNodes.length){
+          armNodes.forEach(function(n){ n.disabled=true; });
+          setTimeout(function(){
+            if(popMode!=='permissions') return;
+            armNodes.forEach(function(n){ n.disabled=false; });
+            if(armDef&&document.body.contains(armDef)) armDef.focus();
+          },armLeft);
+        }
+        else if(armDef){ armDef.focus(); }
+        return;
+      }
+      refocus('data-i','[data-i]',h);
+      return;
+    }
+    popMode=null;
+    m.className='';
+    m.setAttribute('role','menu');
+    m.innerHTML='';
+  };
+  function avatar(text){ var m=String(text||'').match(/[A-Za-z0-9]/); return m?m[0].toUpperCase():'•'; }
   function renderRows(items,hl){
     var h='';
     (items||[]).forEach(function(it,i){
@@ -476,19 +866,134 @@ html,body{margin:0;padding:0;background:transparent;font-family:var(--f-font-ui)
     });
     var m=document.getElementById('m'); m.innerHTML=h;
   }
+  // Suggestion rows act on mousedown, never click: pressing the overlay hands
+  // OS focus to this webview, so the chrome omnibox blurs and (deferred) posts
+  // popover_close, which hides this view before mouseup — a click would never
+  // land. mousedown fires first and carries the action regardless. Chrome's
+  // own in-document list posts on mousedown for exactly the same reason.
+  document.getElementById('m').addEventListener('mousedown',function(e){
+    // Toolbar popover rows act on mousedown too: the press hands OS focus
+    // to this webview, and any click-phase dismissal the chrome side
+    // triggers would land before mouseup. Same physics as suggestion rows.
+    if(popMode){
+      e.preventDefault();
+      // Form buttons submit their values; row activations carry an index.
+      // The shell re-validates the kind/index/tag pair for both paths.
+      var sb=e.target.closest('[data-submit]');
+      if(sb&&!sb.disabled){
+        submitFrame(+sb.getAttribute('data-submit')||0,sb.getAttribute('data-a')||'');
+        return;
+      }
+      // Swatches are local selections in a create form and live colour
+      // actions in an edit form.
+      var sw=e.target.closest('[data-sw]');
+      if(sw&&!sw.disabled){
+        var group=sw.parentNode;
+        Array.prototype.forEach.call(group.querySelectorAll('[data-sw]'),function(n){
+          n.setAttribute('aria-checked',n===sw?'true':'false');
+        });
+        var sai=sw.getAttribute('data-i');
+        if(sai!==null&&+sai>=0){
+          post({type:'popover_activate',kind:popMode,i:+sai,act:sw.getAttribute('data-a')||''});
+        }
+        return;
+      }
+      // A disabled control is in its arming window: the press decides nothing
+      // here and nothing at the shell (which re-checks the same deadline).
+      var rw=e.target.closest('[data-i]');
+      if(rw&&!rw.disabled) post({type:'popover_activate',kind:popMode,i:+rw.getAttribute('data-i')||0,act:rw.getAttribute('data-a')||''});
+      var b=e.target.closest('[data-act]');
+      if(b) post({type:'popover_activate',kind:popMode,act:b.getAttribute('data-act')});
+      return;
+    }
+    if(!sugMode) return;
+    e.preventDefault();
+    var d=e.target.closest('[data-del]'); if(d){ post({type:'sug_delete',index:+d.getAttribute('data-del')}); return; }
+    var s=e.target.closest('[data-sug]'); if(s) post({type:'sug_activate',index:+s.getAttribute('data-sug')});
+  });
   document.getElementById('m').addEventListener('click',function(e){
+    // Suggestion + popover rows already acted on mousedown; only menu rows
+    // and ctx rows land here.
+    if(sugMode||popMode) return;
     var r=e.target.closest('[data-id]'); if(!r) return;
     post({type:(menuMode?'menu_activate':'ctx_activate'),id:r.getAttribute('data-id')});
   });
   document.getElementById('m').addEventListener('keydown',function(e){
+    if(e.key==='Escape'){ e.preventDefault(); post(dismissMsg()); return; }
+    if(popMode){
+      // Enter in a form field runs the default button, exactly as a native
+      // form would. Bare activations never submit (the shell drops them).
+      if(e.key==='Enter'){
+        var dflt=document.querySelector('#m [data-submit][data-default]');
+        var tgt=e.target;
+        var inForm=document.querySelector('#m.pform');
+        if(dflt&&inForm&&(tgt.tagName==='INPUT'||tgt.hasAttribute('data-submit'))){
+          e.preventDefault();
+          submitFrame(+dflt.getAttribute('data-submit')||0,dflt.getAttribute('data-a')||'');
+          return;
+        }
+      }
+      // Arrow cycling across the kind's actionable rows (zoom buttons and
+      // list rows alike); a text field keeps its caret moving, arrows only
+      // cycle when a row/button owns focus. Disabled controls (a permission
+      // card inside its arming window) are skipped: they cannot take focus,
+      // so cycling onto one would look stuck.
+      var prows=Array.prototype.slice.call(document.querySelectorAll('#m [data-act],#m [data-i]')).filter(function(n){ return !n.disabled; });
+      if(prows.length&&(e.key==='ArrowDown'||e.key==='ArrowUp')&&!(e.target.tagName==='INPUT'&&e.target.type==='text')){
+        e.preventDefault();
+        var pidx=prows.indexOf(document.activeElement);
+        prows[e.key==='ArrowDown'?(pidx+1)%prows.length:(pidx-1+prows.length)%prows.length].focus();
+        return;
+      }
+      // Hard focus trap: Tab cycles only among this card's own controls,
+      // the same contract as the script-dialog overlay — a form or menu
+      // that tabs into dead chrome would strand the keyboard.
+      if(e.key==='Tab'){
+        var ctrls=Array.prototype.slice.call(document.querySelectorAll('#m input:not([disabled]),#m button:not([disabled]),#m select:not([disabled]),#m [data-i][tabindex]:not([disabled])'));
+        if(ctrls.length){
+          var ti=ctrls.indexOf(document.activeElement);
+          e.preventDefault();
+          if(e.shiftKey) ctrls[(ti-1+ctrls.length)%ctrls.length].focus();
+          else ctrls[(ti+1)%ctrls.length].focus();
+        }
+        return;
+      }
+      var rw=e.target.closest?e.target.closest('[data-i]'):null;
+      var b=e.target.closest?e.target.closest('[data-act]'):null;
+      if((rw||b)&&(e.key==='Enter'||e.key===' ')){
+        e.preventDefault();
+        if(rw) post({type:'popover_activate',kind:popMode,i:+rw.getAttribute('data-i')||0,act:rw.getAttribute('data-a')||''});
+        else post({type:'popover_activate',kind:popMode,act:b.getAttribute('data-act')});
+      }
+      return;
+    }
     var rows=Array.prototype.slice.call(document.querySelectorAll('#m [data-id]'));
     if(!rows.length) return;
     var idx=rows.indexOf(document.activeElement);
     if(e.key==='ArrowDown'||e.key==='ArrowUp'){ e.preventDefault(); rows[e.key==='ArrowDown'?(idx+1)%rows.length:(idx-1+rows.length)%rows.length].focus(); }
+    else if(e.key==='Home'){ e.preventDefault(); rows[0].focus(); }
+    else if(e.key==='End'){ e.preventDefault(); rows[rows.length-1].focus(); }
     else if(e.key==='Enter'||e.key===' '){ var r=e.target.closest?e.target.closest('[data-id]'):null; if(r){ e.preventDefault(); r.click(); } }
-    else if(e.key==='Escape'){ e.preventDefault(); post({type:(menuMode?'menu_dismiss':'ctx_dismiss')}); }
+    else if(e.key&&e.key.length===1&&!e.ctrlKey&&!e.altKey&&!e.metaKey){
+      // Typeahead: first row whose label starts with the pressed character,
+      // scanning forward from the current one (the deleted chrome-DOM
+      // menuKeys contract, restated for the overlay-hosted menus). Row
+      // markup is [checkmark, label, hint], so the label is child 1 and
+      // rows that render none cannot match.
+      var ch=e.key.toLowerCase(), start=(idx+1)%rows.length;
+      for(var i=0;i<rows.length;i++){
+        var rr=rows[(start+i)%rows.length], lab=rr.children&&rr.children[1];
+        if(lab&&lab.textContent.toLowerCase().indexOf(ch)===0){ rr.focus(); break; }
+      }
+    }
   });
-  document.addEventListener('keydown',function(e){ if(e.key==='Escape') post({type:(menuMode?'menu_dismiss':'ctx_dismiss')}); });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') post(dismissMsg()); });
+  // Readiness handshake: the shell creates and shows this webview
+  // synchronously, then evaluates the first frame. Navigation is async, so
+  // that first eval can land on the initial empty document. Announce the
+  // installed hooks and let the shell replay its last frame; a late post
+  // while no card is open is ignored.
+  post({type:'ctx_ready'});
 })();
 </script></body></html>
 "#;
@@ -585,6 +1090,219 @@ html,body{margin:0;padding:0;background:transparent;font-family:var(--f-font-ui)
 })();
 </script></body></html>
 "#;
+
+/// Find-in-page overlay (3c-5). Chrome and content are separate OS webviews,
+/// so a chrome-DOM card below the toolbar band is covered by the page; the bar
+/// is the Chrome/Edge floating model and must not dock (a dock would reflow
+/// the document on every `Ctrl+F`, moving the text being searched). The window
+/// is exactly the fixed 360x36 card (`FIND_W_PX`/`FIND_H_PX`). Posts the same
+/// commands the old inline bar posted, as unprivileged overlay types. The
+/// input is re-seeded and selected only on the open transition, so an echo
+/// push never moves the caret mid-typing.
+pub const FIND_HTML: &str = r##"<!DOCTYPE html><!-- ferrite://find -->
+<html><head><meta charset="utf-8"><title>Find in page</title>
+<style>
+/*__FERRITE_THEME__*/
+html,body{margin:0;padding:0;height:100%;overflow:hidden;background:var(--f-surface-1);color:var(--f-fg);font-family:var(--f-font-ui);font-size:12px;}
+#bar{display:flex;align-items:center;gap:4px;height:100%;box-sizing:border-box;padding:0 6px 0 9px;border:1px solid var(--f-border);border-radius:var(--pk-pop-radius,4px);}
+svg.ic{display:block;flex:none;fill:currentColor;}
+#glass{display:flex;color:var(--f-faint);flex:none;}
+#glass svg.ic{width:15px;height:15px;}
+#q{flex:1;min-width:0;background:transparent;border:none;outline:none;color:var(--f-fg);font:inherit;font-size:12px;}
+#count{font-size:11px;color:var(--f-faint);min-width:60px;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;flex:none;}
+button{border:none;background:transparent;color:var(--f-faint);border-radius:var(--pk-tab-radius,2px);padding:4px;cursor:pointer;display:flex;flex:none;}
+button:hover{color:var(--f-fg);background:var(--f-surface-2);}
+button.on{color:var(--f-accent);background:var(--f-surface-2);}
+button svg.ic{width:14px;height:14px;}
+button.up svg.ic{transform:rotate(180deg);}
+:focus-visible{outline:2px solid var(--f-accent);outline-offset:1px;}
+</style></head>
+<body>
+<div id="bar" role="search" aria-label="Find in page">
+<span id="glass" aria-hidden="true"></span>
+<input id="q" type="text" placeholder="Find in page" aria-label="Find in page" spellcheck="false" autocomplete="off">
+<span id="count" aria-live="polite"></span>
+<button id="prev" class="up" title="Previous match (Shift+Enter)" aria-label="Previous match"></button>
+<button id="next" title="Next match (Enter)" aria-label="Next match"></button>
+<button id="case" title="Match case" aria-label="Match case" aria-pressed="false"></button>
+<button id="x" title="Close (Escape)" aria-label="Close find bar"></button>
+</div>
+<script>
+(function(){
+  // Only the glyphs this card paints: a second document cannot reach the
+  // chrome sprite, and shipping the whole set here would be dead weight.
+  var ICONS={
+    find:'<path d="M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"/>',
+    caret:'<path d="M216.49,104.49l-80,80a12,12,0,0,1-17,0l-80-80a12,12,0,0,1,17-17L128,159l71.51-71.52a12,12,0,0,1,17,17Z"/>',
+    aa:'<path d="M87.24,52.59a8,8,0,0,0-14.48,0l-64,136a8,8,0,1,0,14.48,6.81L39.9,160h80.2l16.66,35.4a8,8,0,1,0,14.48-6.81ZM47.43,144,80,74.79,112.57,144ZM200,96c-12.76,0-22.73,3.47-29.63,10.32a8,8,0,0,0,11.26,11.36c3.8-3.77,10-5.68,18.37-5.68,13.23,0,24,9,24,20v3.22A42.76,42.76,0,0,0,200,128c-22.06,0-40,16.15-40,36s17.94,36,40,36a42.73,42.73,0,0,0,24-7.25,8,8,0,0,0,16-.75V132C240,112.15,222.06,96,200,96Zm0,88c-13.23,0-24-9-24-20s10.77-20,24-20,24,9,24,20S213.23,184,200,184Z"/>',
+    x:'<path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/>'
+  };
+  function icon(n){ return '<svg class="ic" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">'+(ICONS[n]||'')+'</svg>'; }
+  document.getElementById('glass').innerHTML=icon('find');
+  document.getElementById('prev').innerHTML=icon('caret');
+  document.getElementById('next').innerHTML=icon('caret');
+  document.getElementById('case').innerHTML=icon('aa');
+  document.getElementById('x').innerHTML=icon('x');
+  var q=document.getElementById('q'), count=document.getElementById('count'),
+      cs=document.getElementById('case'), open=false, caseOn=false, deb=null;
+  function post(m){ window.ipc.postMessage(JSON.stringify(m)); }
+  function search(){ post({type:'find_search',q:q.value,case:caseOn}); }
+  q.addEventListener('input',function(){
+    if(q.value.length>500) q.value=q.value.slice(0,500);
+    clearTimeout(deb);
+    deb=setTimeout(search,150);
+  });
+  q.addEventListener('keydown',function(e){
+    if(e.key==='Enter'){ e.preventDefault(); post({type:e.shiftKey?'find_prev':'find_next'}); }
+    else if(e.key==='Escape'){
+      e.preventDefault();
+      if(q.value){ q.value=''; search(); }
+      else post({type:'find_close'});
+    }
+  });
+  document.getElementById('prev').addEventListener('click',function(){ post({type:'find_prev'}); });
+  document.getElementById('next').addEventListener('click',function(){ post({type:'find_next'}); });
+  cs.addEventListener('click',function(){
+    caseOn=!caseOn;
+    cs.classList.toggle('on',caseOn);
+    cs.setAttribute('aria-pressed',caseOn?'true':'false');
+    search();
+  });
+  document.getElementById('x').addEventListener('click',function(){ post({type:'find_close'}); });
+  // Shell push: {open, query, case, total, index, focus}. `focus` marks the
+  // open/re-open push only (Ctrl+F while open re-selects the term).
+  var readyTimer=null;
+  window.__ferriteFind=function(f){
+    if(readyTimer){ clearInterval(readyTimer); readyTimer=null; }
+    if(!f) return;
+    var wasOpen=open;
+    open=!!f.open;
+    if(!open) return;
+    if(!wasOpen) q.value=f.query||'';
+    if(f.focus||!wasOpen){ q.focus(); q.select(); }
+    caseOn=!!f.case;
+    cs.classList.toggle('on',caseOn);
+    cs.setAttribute('aria-pressed',caseOn?'true':'false');
+    var t=(f.query||'').trim();
+    count.textContent=!t?'':(f.total?(f.index+' of '+f.total):'No results');
+  };
+  // Ready is a handshake over a bounded queue: the shell drops a post while it
+  // drains a burst (first paint is exactly such a moment), and an unready card
+  // stays hidden, so one post is not a handshake. Keep asking until the
+  // shell's first frame lands. Bounded: a page the shell never answers must
+  // not tick forever.
+  var readyAsks=0;
+  readyTimer=setInterval(function(){
+    if(++readyAsks>40){ clearInterval(readyTimer); readyTimer=null; return; }
+    post({type:'find_ready'});
+  },250);
+  post({type:'find_ready'});
+})();
+</script></body></html>
+"##;
+
+/// Toast overlay (3c-5): one transient confirmation, floating above the page.
+/// Chrome and content are separate OS webviews, so the old chrome-DOM card at
+/// `bottom:36` painted under the page. The window is exactly the card: the
+/// page measures itself and posts `toast_size`, so no empty part of the window
+/// can ever swallow a click. Timer semantics are the chrome card's, unchanged:
+/// the page owns the visual countdown, hover/focus pause, and the close
+/// button; the shell's queue `tick` stays authoritative. `toast_expired` lets
+/// the shell drop the window when the card empties between ticks.
+pub const TOAST_HTML: &str = r##"<!DOCTYPE html><!-- ferrite://toast -->
+<html><head><meta charset="utf-8"><title>Notification</title>
+<style>
+/*__FERRITE_THEME__*/
+html,body{margin:0;padding:0;height:100%;overflow:hidden;background:var(--f-surface-1);color:var(--f-fg);font-family:var(--f-font-ui);font-size:12px;}
+#card{display:flex;align-items:center;gap:8px;width:max-content;max-width:360px;box-sizing:border-box;padding:8px 10px 8px 12px;border:1px solid var(--f-border);border-radius:var(--pk-pop-radius,4px);}
+#ic{display:flex;color:var(--f-muted);flex:none;}
+#ic svg.ic{width:14px;height:14px;}
+#tx{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+#act{border:1px solid var(--f-accent);background:transparent;color:var(--f-accent);border-radius:var(--pk-tab-radius,2px);padding:3px 10px;cursor:pointer;font:inherit;font-size:12px;font-weight:700;flex:none;}
+#act:hover{background:var(--f-surface-2);}
+#x{border:none;background:transparent;color:var(--f-faint);font-size:14px;line-height:1;border-radius:var(--pk-ctl-radius,6px);padding:2px 6px;cursor:pointer;flex:none;}
+#x:hover{color:var(--f-fg);background:var(--f-surface-2);}
+[hidden]{display:none!important;}
+:focus-visible{outline:2px solid var(--f-accent);outline-offset:1px;}
+</style></head>
+<body>
+<div id="card" role="status" aria-live="polite">
+<span id="ic" aria-hidden="true"></span>
+<span id="tx"></span>
+<button id="act" hidden></button>
+<button id="x" aria-label="Dismiss notification">×</button>
+</div>
+<script>
+(function(){
+  // Same glyph subset as the chrome sprite; `key` paints a padlock because
+  // the chrome sprite never had a `key` entry (the save-login toast used to
+  // ship an empty slot).
+  var ICONS={
+    check:'<path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z"/>',
+    alert:'<path d="M236.8,188.09,149.35,36.22h0a24.76,24.76,0,0,0-42.7,0L19.2,188.09a23.51,23.51,0,0,0,0,23.72A24.35,24.35,0,0,0,40.55,224h174.9a24.35,24.35,0,0,0,21.33-12.19A23.51,23.51,0,0,0,236.8,188.09ZM222.93,203.8a8.5,8.5,0,0,1-7.48,4.2H40.55a8.5,8.5,0,0,1-7.48-4.2,7.59,7.59,0,0,1,0-7.72L120.52,44.21a8.75,8.75,0,0,1,15,0l87.45,151.87A7.59,7.59,0,0,1,222.93,203.8ZM120,144V104a8,8,0,0,1,16,0v40a8,8,0,0,1-16,0Zm20,36a12,12,0,1,1-12-12A12,12,0,0,1,140,180Z"/>',
+    dl:'<path d="M208,32H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32Zm0,16V152h-28.7A15.86,15.86,0,0,0,168,156.69L148.69,176H107.31L88,156.69A15.86,15.86,0,0,0,76.69,152H48V48Zm0,160H48V168H76.69L96,187.31A15.86,15.86,0,0,0,107.31,192h41.38A15.86,15.86,0,0,0,160,187.31L179.31,168H208v40ZM90.34,125.66a8,8,0,0,1,11.32-11.32L120,132.69V72a8,8,0,0,1,16,0v60.69l18.34-18.35a8,8,0,0,1,11.32,11.32l-32,32a8,8,0,0,1-11.32,0Z"/>',
+    key:'<path d="M208,80H176V56a48,48,0,0,0-96,0V80H48A16,16,0,0,0,32,96V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V96A16,16,0,0,0,208,80ZM96,56a32,32,0,0,1,64,0V80H96ZM208,208H48V96H208V208Zm-68-56a12,12,0,1,1-12-12A12,12,0,0,1,140,152Z"/>'
+  };
+  function icon(n){ return '<svg class="ic" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">'+(ICONS[n]||ICONS.check)+'</svg>'; }
+  var card=document.getElementById('card'), ic=document.getElementById('ic'),
+      tx=document.getElementById('tx'), act=document.getElementById('act'),
+      xb=document.getElementById('x');
+  var seq=null, timer=null, left=0, stamp=0, armed=false, readyTimer=null;
+  function post(m){ window.ipc.postMessage(JSON.stringify(m)); }
+  function pauseTimer(){ if(!timer) return; clearTimeout(timer); timer=null; left=Math.max(0,left-(Date.now()-stamp)); }
+  function expire(){
+    timer=null; armed=false; left=0;
+    card.style.visibility='hidden';
+    if(seq!==null) post({type:'toast_expired',seq:seq});
+  }
+  function arm(ms){ pauseTimer(); left=ms; stamp=Date.now(); armed=true; timer=setTimeout(expire,ms); }
+  function resumeTimer(){ if(timer||left<=0||!armed) return; stamp=Date.now(); timer=setTimeout(expire,left); }
+  function measure(){
+    var r=card.getBoundingClientRect();
+    if(seq!==null) post({type:'toast_size',seq:seq,w:Math.ceil(r.width),h:Math.ceil(r.height)});
+  }
+  window.__ferriteToast=function(f){
+    if(readyTimer){ clearInterval(readyTimer); readyTimer=null; }
+    if(!f){ seq=null; pauseTimer(); left=0; armed=false; card.style.visibility='hidden'; return; }
+    if(f.seq===seq) return;
+    seq=f.seq;
+    card.style.visibility='hidden';
+    ic.innerHTML=icon(f.icon||'check');
+    tx.textContent=f.text||'';
+    if(f.action_label){ act.textContent=f.action_label; act.hidden=false; }
+    else { act.textContent=''; act.hidden=true; }
+    requestAnimationFrame(function(){
+      measure();
+      card.style.visibility='';
+      arm(f.duration_ms||4000);
+    });
+  };
+  card.addEventListener('mouseenter',pauseTimer);
+  card.addEventListener('mouseleave',resumeTimer);
+  card.addEventListener('focusin',pauseTimer);
+  card.addEventListener('focusout',resumeTimer);
+  act.addEventListener('click',function(){ if(seq!==null) post({type:'toast_action',seq:seq}); });
+  xb.addEventListener('click',function(){
+    if(seq===null) return;
+    post({type:'toast_dismiss',seq:seq});
+    pauseTimer(); left=0; armed=false; card.style.visibility='hidden';
+  });
+  // The card is `width:max-content`, so a font or theme change (the live theme
+  // script rewrites the tokens) changes its size without any shell round-trip.
+  if(window.ResizeObserver) new ResizeObserver(measure).observe(card);
+  // Same ready handshake as the find card: a bounded queue can drop the first
+  // post, and an unanswered ready means a window that never shows. Keep asking
+  // until the shell's first frame lands; bounded so a page the shell never
+  // answers does not tick forever.
+  var readyAsks=0;
+  readyTimer=setInterval(function(){
+    if(++readyAsks>40){ clearInterval(readyTimer); readyTimer=null; return; }
+    post({type:'toast_ready'});
+  },250);
+  post({type:'toast_ready'});
+})();
+</script></body></html>
+"##;
 
 /// Password manager: list/add/delete/reveal/copy over CredentialStore.
 /// Usernames are metadata (plaintext rows, like history); passwords arrive
@@ -2197,7 +2915,7 @@ pub const SETTINGS_HTML: &str = r##"<!DOCTYPE html>
 <div class="set" id="set-language-translate-target" data-keys="translate target language destination default translator"><div class="t">Translation target language</div><p><input type="text" id="translateTarget" size="12" placeholder="en"> <button onclick="saveTranslateTarget()">Save</button></p><div class="d">The language pages and selections translate into, as a language code (e.g. en, de, fr, pt-BR). Source language is detected on-device automatically.</div></div>
 </section>
 <section id="cat-downloads"><h2>Downloads</h2>
-<div class="set" id="set-downloads-page" data-keys="downloads folder save files library"><div class="t">Download library</div><div class="d">Files save to your Downloads folder. Browse, verify, and manage them at <a href="ferrite://downloads">ferrite://downloads</a>. Clearing records never deletes files.</div><label class="row"><input type="checkbox" id="askDownloads" onchange="postAskDownloads(this.checked)"> Ask where to save each download</label><div class="d">Off by default. When on, every download shows a save dialog first (form-button downloads can't survive the handoff and stay automatic).</div></div>
+<div class="set" id="set-downloads-page" data-keys="downloads folder save files library parallel accelerate speed connections"><div class="t">Download library</div><div class="d">Files save to your Downloads folder. Browse, verify, and manage them at <a href="ferrite://downloads">ferrite://downloads</a>. Clearing records never deletes files.</div><label class="row"><input type="checkbox" id="askDownloads" onchange="postAskDownloads(this.checked)"> Ask where to save each download</label><div class="d">Off by default. When on, every download shows a save dialog first (form-button downloads can't survive the handoff and stay automatic).</div><div id="parallelDownloadsRow"><label class="row"><input type="checkbox" id="parallelDownloads" checked onchange="postParallelDownloads(this.checked)"> Multiple connections for large files</label><div class="d">Windows only, on by default. When a server supports ranges, the engine can fetch large files over three connections instead of one. Takes effect after restarting Ferrite; turn it off if a server behaves badly. Save Link As and ask-where-to-save refetches are not accelerated, and this is an engine feature flag, so a future engine may ignore it and fall back to one connection.</div></div></div>
 </section>
 <section id="cat-startup"><h2>Startup</h2>
 <div class="set" id="set-startup-mode" data-keys="startup start launch open restore session new tab pages on startup"><div class="t">On startup</div><p><select id="startupMode" onchange="postStartupMode(this.value)"><option value="restore">Reopen previous tabs</option><option value="newtab">Open a new tab</option><option value="urls">Open specific pages</option></select></p><div class="d">Clean launches follow this. Crashes keep their own offer (or silent restore with "Always restore on launch"), and an explicit URL on the command line always opens in addition.</div></div>
@@ -2239,6 +2957,7 @@ function postRestore(v){ try{ window.ipc.postMessage(JSON.stringify({type:'resto
 function postPip(v){ try{ window.ipc.postMessage(JSON.stringify({type:'pip_auto',value:v})); }catch(e){} }
 function postAutofill(key,v){ try{ window.ipc.postMessage(JSON.stringify({type:key,value:v})); }catch(e){} }
 function postAskDownloads(v){ try{ window.ipc.postMessage(JSON.stringify({type:'ask_downloads',value:v})); }catch(e){} }
+function postParallelDownloads(v){ try{ window.ipc.postMessage(JSON.stringify({type:'parallel_downloads',value:v})); }catch(e){} }
 function postHistoryRetention(v){ try{ window.ipc.postMessage(JSON.stringify({type:'history_retention',value:parseInt(v,10)||0})); }catch(e){} }
 function postStartupMode(v){ try{ window.ipc.postMessage(JSON.stringify({type:'startup_mode',value:v})); }catch(e){} }
 function startupUrlAdd(){ var el=document.getElementById('startupUrl'); var v=el?el.value:''; try{ window.ipc.postMessage(JSON.stringify({type:'startup_url_add',value:v})); }catch(e){} if(el)el.value=''; }
@@ -2505,6 +3224,9 @@ window.__ferriteSetSettings = function(s){
     document.getElementById('autofillPayment').checked = s.autofill_payment !== false;
     document.getElementById('autofillForm').checked = s.autofill_form !== false;
     document.getElementById('askDownloads').checked = !!s.ask_downloads;
+    document.getElementById('parallelDownloads').checked = s.parallel_downloads !== false;
+    var pdRow=document.getElementById('parallelDownloadsRow');
+    if(pdRow) pdRow.hidden = s.parallel_downloads_supported === false;
     var retentionSel=document.getElementById('historyRetention');
     if(retentionSel){
       var rv=(typeof s.history_retention_days==='number')?s.history_retention_days:90;
@@ -2621,7 +3343,7 @@ macro_rules! list_page {
             "var t=document.createElement('span');t.className='t';t.textContent=it.title||it.url||it.filename||'';r.appendChild(t);",
             "var u=document.createElement('span');u.className='u';u.textContent=it.url||it.state||'';r.appendChild(u);",
             "if(it.id&&KIND==='bookmarks'){var b=document.createElement('button');b.textContent='Delete';b.onclick=function(e){e.stopPropagation();post({type:KIND+'_delete',id:it.id});};r.appendChild(b);}",
-            "if(it.id&&KIND==='history'){var d=document.createElement('button');d.textContent='Delete';d.onclick=function(e){e.stopPropagation();post({type:'history_delete',id:it.id,query:q.value});};r.appendChild(d);",
+            "if(it.id&&KIND==='history'){var d=document.createElement('button');d.textContent='Delete';d.onclick=function(e){e.stopPropagation();post({type:'history_delete',id:it.id,query:q.value});};r.appendChild(d);}",
             "if(it.url&&KIND==='history'){var cb=document.createElement('button');cb.textContent='Copy link';cb.onclick=function(e){e.stopPropagation();post({type:'dl_copy',text:it.url});};r.appendChild(cb);}",            "try{var hu=new URL(it.url||'');if(KIND==='history'&&hu.hostname){var sb=document.createElement('button');sb.textContent='Delete site';sb.onclick=function(e){e.stopPropagation();post({type:'history_delete_site',host:hu.hostname,query:q.value});};r.appendChild(sb);}}catch(_){}",
             "r.onclick=function(){var url=it.url;if(url)post({type:'navigate',url:url});};l.appendChild(r);});};",
             "var q=document.getElementById('q');",
@@ -4046,6 +4768,8 @@ pub fn ferrite_protocol_handler(
         FerritePage::TabSearch => html_response(200, themed(TABSEARCH_HTML)),
         FerritePage::CtxMenu => html_response(200, themed(CONTEXT_HTML)),
         FerritePage::Dialog => html_response(200, themed(DIALOG_HTML)),
+        FerritePage::Find => html_response(200, themed(FIND_HTML)),
+        FerritePage::Toast => html_response(200, themed(TOAST_HTML)),
         FerritePage::Passwords => html_response(200, themed(PASSWORDS_HTML)),
         FerritePage::Autofill => html_response(200, themed(AUTOFILL_HTML)),
         FerritePage::About => {
@@ -4227,6 +4951,8 @@ pub const INTERNAL_PAGE_NAMES: &[&str] = &[
     "tabsearch",
     "ctxmenu",
     "dialog",
+    "find",
+    "toast",
     "passwords",
     "autofill",
     "about",
@@ -4260,6 +4986,8 @@ enum FerritePage {
     TabSearch,
     CtxMenu,
     Dialog,
+    Find,
+    Toast,
     Passwords,
     Autofill,
     About,
@@ -4343,6 +5071,8 @@ fn ferrite_route(uri: &str) -> FerritePage {
         "tabsearch" => FerritePage::TabSearch,
         "ctxmenu" => FerritePage::CtxMenu,
         "dialog" => FerritePage::Dialog,
+        "find" => FerritePage::Find,
+        "toast" => FerritePage::Toast,
         "passwords" => FerritePage::Passwords,
         "autofill" => FerritePage::Autofill,
         "about" => FerritePage::About,
@@ -4766,6 +5496,377 @@ mod tests {
     }
 
     #[test]
+    fn ctxmenu_page_carries_the_omnibox_suggestion_mirror() {
+        // The overlay also paints the omnibox dropdown; chrome keeps the
+        // a11y listbox, so this mirror is aria-hidden and posts back to the
+        // shell (which replays the action in chrome).
+        let body = themed_body("ferrite://ctxmenu", ":root{}");
+        assert!(body.contains("__ferriteSugs"), "suggestion hook");
+        assert!(body.contains("sug_activate"), "suggestion activation post");
+        assert!(body.contains("sug_delete"), "per-row history delete post");
+        assert!(body.contains("popover_dismiss"), "suggestion dismiss post");
+        assert!(
+            body.contains("aria-hidden"),
+            "mirror stays out of the a11y tree"
+        );
+        assert!(body.contains("data-sug"), "suggestion rows");
+        // Rows act on mousedown: once the overlay takes OS focus the chrome
+        // omnibox blurs and closes the popover, so a click would never land.
+        assert!(
+            body.contains("addEventListener('mousedown'"),
+            "suggestion rows act before the blur-close"
+        );
+    }
+
+    #[test]
+    fn ctxmenu_page_carries_the_toolbar_pop_channel() {
+        // Toolbar pops are real UI (no chrome DOM copy left behind, unlike
+        // the suggestion mirror): the page is NOT aria-hidden for them, rows
+        // are tagged actions, and the posts carry the open kind so the shell
+        // can drop stale traffic.
+        let body = themed_body("ferrite://ctxmenu", ":root{}");
+        assert!(body.contains("__ferritePop"), "toolbar pop hook");
+        assert!(body.contains("popover_activate"), "kind-tagged action post");
+        assert!(body.contains("data-act"), "action-tagged controls");
+        assert!(
+            body.contains("popMode"),
+            "a fourth traffic mode alongside menu/ctx/sugs"
+        );
+        assert!(
+            body.contains("ctx_ready"),
+            "readiness handshake for the first paint race"
+        );
+        assert!(body.contains("kind==='zoom'"), "zoom renderer");
+        assert!(
+            body.contains("aria-live=\"polite\""),
+            "zoom percent stays a polite live region"
+        );
+        // List renderers (3c-2): nav drops and history rows share one row
+        // grammar — section headers, single-line rows, two-line title+url
+        // rows, muted empty rows — and every row carries its index + act
+        // tag for the shell's table gate.
+        assert!(
+            body.contains("kind==='nav_back'") && body.contains("kind==='nav_fwd'"),
+            "nav drop renderers"
+        );
+        assert!(body.contains("kind==='history'"), "history renderer");
+        assert!(body.contains("psec"), "section header rows");
+        assert!(body.contains("pr2"), "two-line history rows");
+        assert!(body.contains("data-i"), "indexed action rows");
+        // Old DOM hierarchy: the restore-all and see-all rows carry the
+        // accent, and the footer is centred.
+        assert!(
+            body.contains("r.k==='acc'?' acc':'")
+                && body.contains("#m .pr.acc .pt{color:var(--f-accent)}")
+                && body.contains("#m .pr.foot{justify-content:center}"),
+            "accent/centred CTA rows survive the migration"
+        );
+        assert!(body.contains("data-a"), "act-tagged rows for the wire gate");
+        assert!(
+            body.contains("'popover_activate',kind:popMode,i:"),
+            "indexed posts"
+        );
+        assert!(body.contains(".plist"), "list card frame class");
+        // Card geometry: the zoom row must fit the 160x44 card exactly. The
+        // 6px `.pz` padding used to overflow it on both axes (a scrollbar and
+        // a clipped bottom border), so the padding is pinned to 2px 0 with
+        // the buttons centred.
+        assert!(
+            body.contains("#m .pz{display:flex;align-items:center;justify-content:center;gap:6px;padding:2px 0}"),
+            "zoom row fits the card the shell sizes"
+        );
+        // Repaints (a zoom step, a fresh history row) must not drop keyboard
+        // focus: the renderer restores the focused control/row by its
+        // data-act / data-i tag.
+        assert!(
+            body.contains("function refocus(attr,sel,html)"),
+            "repaints restore focus instead of parking it on body"
+        );
+        assert!(
+            body.contains("refocus('data-act','.pz button'")
+                && body.contains("refocus('data-i','[data-i]'"),
+            "both renderers restore their own focused row"
+        );
+        // Task 3c-3: downloads and shield ride the same card channel. Their
+        // row kinds are pinned by name and by the exact CSS each one's
+        // height arithmetic mirrors in the shell (POP_TX_PX / POP_BTN_PX /
+        // POP_DL_ROW_PX), so a CSS edit that changes a height fails here.
+        assert!(
+            body.contains("frame.kind==='downloads'") && body.contains("frame.kind==='shield'"),
+            "downloads and shield use the shared list renderer"
+        );
+        for (rule, why) in [
+            (
+                "#m .ptx{padding:1px 10px;line-height:16px;",
+                "text row = 18px",
+            ),
+            ("#m .pbtn{padding:6px 10px}", "button row pad = 6px"),
+            (
+                "#m .pdl,#m .pperm{padding:6px 10px}",
+                "download and permission row pad = 6px",
+            ),
+            (
+                "#m .pdl .fn,#m .pperm .fn{line-height:16px;",
+                "row title = 16px",
+            ),
+            (
+                "#m .pdl .meta,#m .pperm .meta{line-height:14px;",
+                "row meta = 14px",
+            ),
+            (
+                "#m .pdl .acts,#m .pperm .acts{display:flex;gap:6px;margin-top:6px;",
+                "row button strip = 6+24",
+            ),
+        ] {
+            assert!(body.contains(rule), "row grammar: {why}");
+        }
+        assert!(
+            body.contains("r.k==='tx'")
+                && body.contains("r.k==='btn'")
+                && body.contains("r.k==='dl'"),
+            "every new row kind has a renderer branch"
+        );
+        assert!(
+            body.contains(r#"data-i="'+b.i+'" data-a="'+esc(b.a||'')+'"#),
+            "each download button carries its own index+act pair"
+        );
+        assert!(
+            body.contains("white-space:nowrap;overflow:hidden;text-overflow:ellipsis"),
+            "one-line surfaces ellipsize instead of growing the card"
+        );
+        // The overlay page is one surface reused for every kind, so the card
+        // must name itself per kind (a screen reader must not hear "Context
+        // menu" for a downloads card). The pre-migration bubbles each had
+        // their own label: this is that parity in the shared renderer.
+        assert!(
+            body.contains("var POP_NAME={zoom:'Page zoom',nav_back:'Back history',")
+                && body.contains(
+                    "history:'History',downloads:'Recent downloads',shield:'Privacy protection'"
+                )
+                && body.contains("m.setAttribute('aria-label',POP_NAME[popMode]||'Context menu')"),
+            "each card kind carries its own accessible name"
+        );
+        // Load-bearing for the pinned `btn` row height: as an inline-level
+        // button the row's line box absorbs the font descender and measures
+        // 37 instead of 36 at some DPI scales, which grows a scrollbar on the
+        // exactly-sized card.
+        assert!(
+            body.contains("#m .pbtn button{display:block;"),
+            "button row height must not depend on font metrics"
+        );
+        // The shared overlay row cycling must skip header/muted rows but
+        // reach every action row.
+        assert!(
+            body.contains("querySelectorAll('#m [data-act],#m [data-i]')"),
+            "arrow cycling spans zoom buttons and list rows"
+        );
+        // Esc and dismissal stay on the shared type; the shell routes it.
+        assert!(
+            body.contains("dismissType()"),
+            "Esc posts through the mode table like every other surface"
+        );
+        // Pop-mode dismissal marks its origin so the shell can leave OS focus
+        // on a content page that reported its own press (D6b) while still
+        // handing it back to chrome for the overlay's own Esc.
+        assert!(
+            body.contains("post(dismissMsg())") && body.contains("src:'overlay'"),
+            "overlay Esc is marked as overlay-originated"
+        );
+        // Task 3c-4: the permission card rides the same channel. Its row kinds,
+        // the fixed note box and the arming window are pinned the way the shell
+        // mirrors them (POP_PERM_ROW_PX / POP_NOTE_PX / POP_ARM_MS).
+        assert!(
+            body.contains("frame.kind==='permissions'"),
+            "permissions uses the shared list renderer"
+        );
+        assert!(
+            body.contains("r.k==='perm'") && body.contains("r.k==='note'"),
+            "permission row and note renderers exist"
+        );
+        assert!(
+            body.contains("#m .pdl,#m .pperm{padding:6px 10px}"),
+            "a permission row is the download row's pinned height"
+        );
+        assert!(
+            body.contains("#m .pnote{padding:1px 10px;height:28px;line-height:14px;"),
+            "the note is a fixed two-line box, never a card growth"
+        );
+        assert!(
+            body.contains("permissions:'Permission request'"),
+            "the card names itself"
+        );
+        // Arming: the shell publishes an absolute deadline (so a mid-window
+        // refresh cannot restart the wait), the page disables every arm
+        // control until it passes, then focuses the safe default.
+        assert!(
+            body.contains("var armLeft=(+frame.arm_until||0)-Date.now()")
+                && body.contains("armNodes.forEach(function(n){ n.disabled=true; })")
+                && body.contains("if(armDef&&document.body.contains(armDef)) armDef.focus();")
+                && body.contains("if(popMode!=='permissions') return;"),
+            "arming window disables decisions, survives repaints and focuses the default"
+        );
+        assert!(
+            body.contains("data-arm=\"1\"") && body.contains("data-default=\"1\""),
+            "arm/default markers reach the DOM"
+        );
+        assert!(
+            body.contains("if(rw&&!rw.disabled) post("),
+            "a press inside the arming window posts nothing"
+        );
+        assert!(
+            body.contains("filter(function(n){ return !n.disabled; })"),
+            "arrow cycling skips disabled controls"
+        );
+    }
+
+    #[test]
+    fn ctxmenu_page_carries_the_chrome_surface_channel() {
+        // 3c-6: the migrated chrome-DOM popovers (star, workspaces, profiles,
+        // bookmarks-bar menu, tab/group/bookmark context menus, group editor)
+        // ride the same overlay page as the toolbar cards. The shell owns
+        // every row/form; the page only renders the typed frame.
+        let body = themed_body("ferrite://ctxmenu", ":root{}");
+        // ARCH-05 regression: every mode switch clears popMode. Chrome used
+        // to leave it set when a toolbar card was replaced by a menu or a
+        // suggestion list, which left the new surface inert behind the old
+        // mousedown/mode branch.
+        assert!(
+            body.contains(
+                "function setMode(sug,menu){ sugMode=!!sug; menuMode=!!menu; popMode=null;"
+            ),
+            "setMode must clear popMode on every switch"
+        );
+        assert!(
+            body.contains("m.setAttribute('role','menu')")
+                && body.contains("m.setAttribute('role','dialog')"),
+            "the shared card resets its role per mode"
+        );
+        // Menu kinds ride the shared list renderer (sections + separators).
+        for k in [
+            "bar_menu",
+            "tab_context",
+            "tabs_context",
+            "group_context",
+            "bookmark_context",
+        ] {
+            assert!(
+                body.contains(&format!("frame.kind==='{k}'")),
+                "missing menu kind: {k}"
+            );
+        }
+        assert!(body.contains("r.sep"), "separator rows");
+        // Form and people cards.
+        for k in ["star", "workspace_rename", "bar_folder_new", "group_editor"] {
+            assert!(
+                body.contains(&format!("frame.kind==='{k}'")),
+                "missing form kind: {k}"
+            );
+        }
+        for k in ["workspaces", "profiles"] {
+            assert!(
+                body.contains(&format!("frame.kind==='{k}'")),
+                "missing people kind: {k}"
+            );
+        }
+        assert!(body.contains("function formCard("), "form card renderer");
+        assert!(
+            body.contains("function peopleCard("),
+            "people card renderer"
+        );
+        // Keyboard reachability of the host-shared page: menu rows jump to
+        // their ends and typeahead by label, while a form/menu card traps
+        // Tab inside its own controls (the script-dialog overlay contract).
+        assert!(
+            body.contains("e.key==='Home'") && body.contains("e.key==='End'"),
+            "menu rows jump to their ends"
+        );
+        assert!(
+            body.contains("indexOf(ch)===0"),
+            "menu rows typeahead by label"
+        );
+        assert!(
+            body.contains("#m input:not([disabled]),#m button:not([disabled]),#m select:not([disabled]),#m [data-i][tabindex]:not([disabled])"),
+            "pop cards trap Tab among their own controls"
+        );
+        assert!(
+            body.contains("data-default"),
+            "primary submit carries the default marker"
+        );
+        assert!(
+            body.contains("b.aria") && body.contains("aria-label="),
+            "short button labels keep the full sentence as the accessible name"
+        );
+        assert!(
+            body.contains("type:'popover_submit'") && body.contains("data-submit"),
+            "form values submit over the typed channel"
+        );
+        assert!(body.contains("data-sw"), "colour swatch marker");
+        // Each new kind names its card (a11y parity with the deleted bubbles).
+        for name in [
+            "star:'Bookmark this page'",
+            "workspaces:'Workspaces'",
+            "profiles:'Profiles'",
+            "group_editor:'Tab group'",
+            "bar_menu:'Bookmarks bar'",
+            "tab_context:'Tab actions'",
+            "bookmark_context:'Bookmark actions'",
+        ] {
+            assert!(body.contains(name), "missing card name: {name}");
+        }
+    }
+
+    #[test]
+    fn pop_form_helpers_live_at_handler_scope() {
+        // Regression net for the delivered-build defect where every 3c-6 card
+        // painted but its form never submitted. `submitFrame`/`popValues` were
+        // declared inside `__ferritePop`; the mousedown/keydown handlers are
+        // bound once at load, outside it, and threw ReferenceError before
+        // posting — so Save, Manage and Enter were inert while Escape (which
+        // needs no helper) still closed the card. A noun check cannot see a
+        // broken scope, so pin the declarations to the outer IIFE: they must
+        // appear before the renderer hook, exactly once, with both event paths
+        // routed through the single submit poster.
+        let body = themed_body("ferrite://ctxmenu", ":root{}");
+        let renderer = body
+            .find("window.__ferritePop=function")
+            .expect("pop renderer hook");
+        for decl in ["function submitFrame(i,a){", "function popValues(){"] {
+            let at = body.find(decl).unwrap_or_else(|| panic!("{decl} missing"));
+            assert!(
+                at < renderer,
+                "{decl} must be declared outside __ferritePop, or the handlers \
+                 cannot reach it"
+            );
+            assert_eq!(body.matches(decl).count(), 1, "{decl} declared once");
+        }
+        assert_eq!(
+            body.matches("post({type:'popover_submit'").count(),
+            1,
+            "one submit poster, called from the button and Enter paths"
+        );
+        assert_eq!(
+            body.matches("submitFrame(").count(),
+            3,
+            "one declaration plus the mousedown and Enter call sites"
+        );
+    }
+
+    #[test]
+    fn every_rendered_form_kind_has_a_field_rule() {
+        // The group editor shipped with `name` in its frame and no rule in
+        // `fieldsOf`, so the card painted no input and Save could only post
+        // an empty name (which the shell then rejects): a form that cannot
+        // succeed. Every kind the form branch renders must name its fields.
+        let body = themed_body("ferrite://ctxmenu", ":root{}");
+        for kind in ["star", "workspace_rename", "bar_folder_new", "group_editor"] {
+            assert!(
+                body.contains(&format!("f.kind==='{kind}'")),
+                "{kind} renders a form but `fieldsOf` has no rule for it"
+            );
+        }
+    }
+
+    #[test]
     fn dialog_route_serves_script_dialog_page() {
         let body = themed_body("ferrite://dialog", ":root{}");
         assert!(body.contains("__ferriteDialog"), "dialog hook");
@@ -4789,6 +5890,76 @@ mod tests {
             "scanner",
         ] {
             assert!(!body.contains(hook), "autofill hook left: {hook}");
+        }
+    }
+
+    #[test]
+    fn find_overlay_serves_its_own_page() {
+        let body = themed_body("ferrite://find", ":root{}");
+        assert!(body.contains("__ferriteFind"), "find hook");
+        assert!(body.contains("find_ready"), "ready handshake");
+        assert!(body.contains("find_search"), "query post");
+        assert!(
+            body.contains("find_next") && body.contains("find_prev"),
+            "step posts"
+        );
+        assert!(body.contains("find_close"), "close post");
+        assert!(body.contains("role=\"search\""), "search landmark");
+        assert!(body.contains("aria-live=\"polite\""), "count announced");
+        assert!(!body.contains(THEME_MARKER), "marker consumed");
+        // The card is the window: it must never scroll or resize itself.
+        assert!(body.contains("overflow:hidden"), "no scrollbars");
+    }
+
+    #[test]
+    fn toast_overlay_serves_its_own_page() {
+        let body = themed_body("ferrite://toast", ":root{}");
+        assert!(body.contains("__ferriteToast"), "toast hook");
+        assert!(body.contains("toast_ready"), "ready handshake");
+        assert!(body.contains("toast_size"), "size post");
+        assert!(body.contains("toast_expired"), "expiry post");
+        assert!(
+            body.contains("toast_action") && body.contains("toast_dismiss"),
+            "actions"
+        );
+        assert!(body.contains("role=\"status\""), "live region");
+        assert!(body.contains("width:max-content"), "measure-before-show");
+        assert!(!body.contains(THEME_MARKER), "marker consumed");
+    }
+
+    #[test]
+    fn overlay_ready_handshakes_retry_until_the_shell_answers() {
+        // A one-shot ready post rides a bounded queue, and that queue drops
+        // posts while it drains a burst (measured live: the first find card
+        // never appeared). Both pages must keep asking and stop on the first
+        // shell frame. Capped, so a page the shell never answers cannot tick
+        // forever.
+        for (page, ready, hook) in [
+            (
+                "ferrite://find",
+                "find_ready",
+                "window.__ferriteFind=function(f){",
+            ),
+            (
+                "ferrite://toast",
+                "toast_ready",
+                "window.__ferriteToast=function(f){",
+            ),
+        ] {
+            let body = themed_body(page, ":root{}");
+            let post = format!("post({{type:'{ready}'}})");
+            let retry = body
+                .split("setInterval(function(){")
+                .nth(1)
+                .unwrap_or_else(|| panic!("{page}: retry loop"));
+            assert!(retry.contains(&post), "{page}: asks again");
+            assert!(retry.contains("readyAsks>40"), "{page}: bounded retries");
+            let at = body.find(hook).unwrap_or_else(|| panic!("{page}: hook"));
+            let handler = &body[at..(at + 400).min(body.len())];
+            assert!(
+                handler.contains("clearInterval(readyTimer)"),
+                "{page}: first frame stops the retries"
+            );
         }
     }
 
@@ -5089,6 +6260,27 @@ mod tests {
         assert!(body.contains("id=\"askDownloads\""), "toggle anchor");
         assert!(body.contains("postAskDownloads"), "toggle post");
         assert!(body.contains("s.ask_downloads"), "envelope read");
+    }
+
+    #[test]
+    fn parallel_downloads_toggle_posts() {
+        let body = themed_body("ferrite://settings", ":root{}");
+        assert!(body.contains("id=\"parallelDownloads\""), "toggle anchor");
+        assert!(body.contains("id=\"parallelDownloadsRow\""), "row anchor");
+        assert!(
+            body.contains("Multiple connections for large files"),
+            "the label describes the mechanism, not a separate downloader"
+        );
+        assert!(body.contains("postParallelDownloads"), "toggle post");
+        assert!(body.contains("s.parallel_downloads"), "envelope read");
+        assert!(
+            body.contains("Save Link As") && body.contains("not accelerated"),
+            "the UI scopes the engine-only path honestly"
+        );
+        assert!(
+            body.contains("ParallelDownloading") || body.contains("engine feature flag"),
+            "the UI names the engine caveat"
+        );
     }
 
     #[test]

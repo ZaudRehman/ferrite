@@ -5,8 +5,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use ferrite_chrome::chrome::{ToastActionView, ToastAnchor, ToastView};
 use ferrite_vault::vault::{DownloadRecord, HistoryEntry, ReadingItem};
+use serde::Serialize;
 
 /// Undo staging cap. Larger deletes apply without Undo. Matches the bulk cap.
 pub const UNDO_SNAPSHOT_CAP: usize = 500;
@@ -48,6 +48,54 @@ impl ToastActionKind {
             Self::SaveLogin => ToastActionView::SaveLogin,
         }
     }
+}
+
+/// Where the floating card attaches. Geometry, not a DOM lookup: the shell
+/// anchors from the content slot it already owns (3c-5). `downloads` sits at
+/// the top-right of the page, `floating` at the bottom-right above the status
+/// bar strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToastAnchor {
+    Downloads,
+    Floating,
+}
+
+/// Labels render verbatim, never interpolated with untrusted text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToastActionView {
+    Undo,
+    OpenDownloads { id: Option<String> },
+    SaveLogin,
+}
+
+/// Frame for the `ferrite://toast` overlay page: queue head only. The shell
+/// owns expiry and queueing. `seq` pairs clicks with the visible frame, and
+/// stale clicks are ignored shell side.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ToastView {
+    pub seq: u64,
+    pub icon: String,
+    pub text: String,
+    pub action_label: Option<String>,
+    pub action: Option<ToastActionView>,
+    pub anchor: ToastAnchor,
+    pub duration_ms: u64,
+}
+
+/// Script that paints one frame in the toast overlay. `</` is escaped so an
+/// untrusted filename or title cannot break out of the script string.
+pub fn frame_script(view: &ToastView) -> String {
+    let json = serde_json::to_string(view)
+        .unwrap_or_else(|_| "null".to_owned())
+        .replace("</", "<\\/");
+    format!("__ferriteToast({json})")
+}
+
+/// Script that empties the toast overlay (the shell hides the window next).
+pub fn clear_script() -> String {
+    "__ferriteToast(null)".to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,7 +486,7 @@ impl ToastQueue {
             || self.pending.iter().any(|t| t.seq == seq)
     }
 
-    /// Render the head for the chrome push. `None` hides the popup.
+    /// Render the head for the toast overlay push. `None` hides the card.
     pub fn current_view(&self) -> Option<ToastView> {
         self.current.as_ref().map(|c| ToastView {
             seq: c.seq,
@@ -681,5 +729,23 @@ mod tests {
         let taken = s.take_password();
         assert_eq!(taken, b"secret");
         assert!(s.password.is_empty());
+    }
+
+    #[test]
+    fn frame_script_serializes_the_head_and_escapes_breakout() {
+        let mut q = ToastQueue::new();
+        q.push(ToastItem::download("</script><b>evil.zip", "dl-1"), now());
+        let v = q.current_view().expect("head");
+        let js = frame_script(&v);
+        assert!(js.starts_with("__ferriteToast({"), "hook");
+        assert!(!js.contains("</"), "script context stays closed");
+        assert!(js.contains("<\\/script>"), "closer escaped, text kept");
+        assert!(js.contains("\"anchor\":\"downloads\""), "anchor serialized");
+        assert!(
+            js.contains("\"kind\":\"open_downloads\""),
+            "action serialized"
+        );
+        assert!(js.contains("\"action_label\":\"Open\""), "label serialized");
+        assert_eq!(clear_script(), "__ferriteToast(null)");
     }
 }

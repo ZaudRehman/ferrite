@@ -6,18 +6,38 @@ use std::sync::Mutex;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+#[cfg(target_os = "windows")]
+use wry::WebViewBuilderExtWindows;
+
 use crate::error::{TabError, TabResult};
 
 pub trait WebViewHandle: std::fmt::Debug {
     fn set_visible(&self, visible: bool) -> TabResult<()>;
     fn set_bounds(&self, bounds: wry::Rect) -> TabResult<()>;
+    /// Put this webview above its sibling webviews without moving, resizing
+    /// or focusing it. Wry creates every child webview at `HWND_TOP` but
+    /// positions it with `SWP_NOZORDER`; a later sibling (a new tab's
+    /// content) therefore lands above an already-visible overlay and paints
+    /// over it. Overlay surfaces call this after any sibling is created or
+    /// shown (tasks/toolbar-dropdown-fix.md).
+    fn raise(&self) -> TabResult<()>;
     fn load_url(&self, url: &str) -> TabResult<()>;
     fn evaluate_script(&self, js: &str) -> TabResult<()>;
     fn reload(&self) -> TabResult<()>;
+    /// Reload without the HTTP cache. WebView2 has no direct wry method for
+    /// this; the Windows implementation uses CDP `Page.reload` with
+    /// `ignoreCache`. Non-Windows and mock backends fall back to `reload`.
+    fn hard_reload(&self) -> TabResult<()>;
     /// Needed when chrome overlay and content share one parent: they do not
     /// yield focus on their own.
     fn focus(&self) -> TabResult<()>;
     fn cookies_for_url(&self, url: &str) -> TabResult<Vec<(String, String)>>;
+    /// Engine-reported User-Agent for Ferrite-owned refetches (Save Link As,
+    /// ask-every-time). Windows exposes it through WebView2 settings; other
+    /// backends return `None` and the caller sends no synthesized UA.
+    fn user_agent(&self) -> Option<String> {
+        None
+    }
     /// Profile scoped, not per tab. Powers clear all plus per site viewer.
     fn cookies_all(&self) -> TabResult<Vec<wry::cookie::Cookie<'static>>>;
     /// Only write surface in pinned wry. Scoped resets loop per origin.
@@ -120,6 +140,42 @@ pub fn favicon_report_js() -> &'static str {
 })();"#
 }
 
+/// Title reporter: posts `document.title` so the tab strip, session file and
+/// the bookmark dialog name a page the way its author does instead of by URL.
+/// `navigate()` deliberately seeds the title with the URL until this arrives.
+/// Posts only on change (title churn during SPA routing is one message per
+/// change), main frame only, and bounded at 512 chars; the shell re-caps to
+/// `IPC_MAX_TITLE_CHARS` and treats the text as display data, never authority
+/// (a page controls its own title by definition).
+pub fn title_reporter_js() -> &'static str {
+    r#"(function(){
+  if (window.__ferriteTitleInstalled) return;
+  window.__ferriteTitleInstalled = true;
+  if (window.self !== window.top) return;
+  function post(o) { try { window.ipc.postMessage(JSON.stringify(o)); } catch(e) {} }
+  var last = null;
+  function report() {
+    try {
+      var t = String(document.title || '').trim();
+      if (!t || t === last) return;
+      if (t.length > 512) t = t.slice(0, 512);
+      last = t;
+      post({type:'title', title:t});
+    } catch(e) {}
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', report, false);
+  } else {
+    report();
+  }
+  window.addEventListener('load', report, false);
+  try {
+    new MutationObserver(report).observe(document.head || document.documentElement,
+      {childList:true, subtree:true, characterData:true});
+  } catch(e) {}
+})();"#
+}
+
 /// JS that reports the real hovered-link URL to Rust. Reads `element.href`
 /// (engine-resolved) on hover, never `window.status`, which pages can spoof.
 /// Hovering reports only, it triggers no fetch, DNS, or preconnect. Hover
@@ -160,6 +216,31 @@ pub fn link_hover_js() -> &'static str {
     if (a) leave();
   }, true);
   document.addEventListener('mouseleave', function(){ leave(); });
+})();"#
+}
+
+/// Toolbar-popover dismissal reporter (capture-phase `pointerdown`, main frame
+/// only). The shell holds `window.__ferritePopoverOpen` on every content page
+/// while one of its button-anchored popovers is open, and clears it when the
+/// popover closes. Only the first press after open reports: the shell drops
+/// its own flag while handling the report, so a double press cannot loop, and
+/// a stale report after close is gated again by shell-side state.
+/// The pressed click itself still works: dismissal never calls
+/// preventDefault, so a link under the pointer follows on release (the
+/// Chrome-style "first click both dismisses and acts" contract).
+///
+/// `src:'page'` marks the report as page-originated so the shell can leave OS
+/// focus on the page: that same press already focused it, and claiming focus
+/// for chrome would swallow the caret the user was aiming at (one click lost
+/// before they can type). The overlay's own Esc marks itself `'overlay'`.
+pub fn pop_dismiss_js() -> &'static str {
+    r#"(function(){
+  if (window.__ferritePopDismissInstalled) return;
+  window.__ferritePopDismissInstalled = true;
+  document.addEventListener('pointerdown', function(){
+    if (!window.__ferritePopoverOpen) return;
+    try { window.ipc.postMessage(JSON.stringify({type:'popover_dismiss',src:'page'})); } catch(err) {}
+  }, true);
 })();"#
 }
 
@@ -560,6 +641,48 @@ impl WebViewHandle for WryHandle {
             .map_err(|source| TabError::WebViewOperationFailed { source })
     }
 
+    #[cfg(target_os = "windows")]
+    fn raise(&self) -> TabResult<()> {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
+            SWP_NOSIZE, SetWindowPos,
+        };
+        use wry::WebViewExtWindows;
+        // The controller's parent HWND is wry's container for this webview:
+        // the same window `set_bounds` positions with `SWP_NOZORDER`. Raising
+        // it here is the missing half of creation's `HWND_TOP` placement.
+        let mut hwnd = windows::Win32::Foundation::HWND::default();
+        unsafe { self.inner.controller().ParentWindow(&mut hwnd) }.map_err(|source| {
+            TabError::WebViewOperationFailed {
+                source: wry::Error::WebView2Error(source.into()),
+            }
+        })?;
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOOWNERZORDER | SWP_NOSIZE,
+            )
+        }
+        .map_err(|source| TabError::WebViewOperationFailed {
+            source: wry::Error::WebView2Error(source.into()),
+        })
+    }
+
+    /// Child-webview stacking is a native sibling-window property. The
+    /// measured content-slot bug and this fix are Windows/WebView2; macOS and
+    /// Linux need their own view-ordering pass when those targets are
+    /// supported. A no-op here is deliberate: it does not pretend the Win32
+    /// fix transfers unchanged.
+    #[cfg(not(target_os = "windows"))]
+    fn raise(&self) -> TabResult<()> {
+        Ok(())
+    }
+
     fn load_url(&self, url: &str) -> TabResult<()> {
         // Internal pages must go through the workaround form (see
         // `workaround_url`); creation already does this inside wry.
@@ -580,6 +703,31 @@ impl WebViewHandle for WryHandle {
             .map_err(|source| TabError::WebViewOperationFailed { source })
     }
 
+    #[cfg(target_os = "windows")]
+    fn hard_reload(&self) -> TabResult<()> {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2CallDevToolsProtocolMethodCompletedHandler;
+        use windows::core::HSTRING;
+        use wry::WebViewExtWindows;
+        let core = unsafe { self.inner.controller().CoreWebView2() }.map_err(|source| {
+            TabError::WebViewOperationFailed {
+                source: wry::Error::WebView2Error(source.into()),
+            }
+        })?;
+        let method = HSTRING::from("Page.reload");
+        let params = HSTRING::from(r#"{"ignoreCache":true}"#);
+        let handler: Option<&ICoreWebView2CallDevToolsProtocolMethodCompletedHandler> = None;
+        unsafe { core.CallDevToolsProtocolMethod(&method, &params, handler) }.map_err(|source| {
+            TabError::WebViewOperationFailed {
+                source: wry::Error::WebView2Error(source.into()),
+            }
+        })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn hard_reload(&self) -> TabResult<()> {
+        self.reload()
+    }
+
     fn focus(&self) -> TabResult<()> {
         self.inner
             .focus()
@@ -595,6 +743,20 @@ impl WebViewHandle for WryHandle {
                     .collect()
             })
             .map_err(|source| TabError::WebViewOperationFailed { source })
+    }
+
+    #[cfg(target_os = "windows")]
+    fn user_agent(&self) -> Option<String> {
+        use webview2_com::{Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2, take_pwstr};
+        use windows::core::{Interface, PWSTR};
+        use wry::WebViewExtWindows;
+        let core = unsafe { self.inner.controller().CoreWebView2() }.ok()?;
+        let settings = unsafe { core.Settings() }.ok()?;
+        let settings2 = settings.cast::<ICoreWebView2Settings2>().ok()?;
+        let mut raw = PWSTR::null();
+        unsafe { settings2.UserAgent(&mut raw) }.ok()?;
+        let ua = take_pwstr(raw);
+        (!ua.trim().is_empty()).then_some(ua)
     }
 
     fn cookies_all(&self) -> TabResult<Vec<wry::cookie::Cookie<'static>>> {
@@ -638,6 +800,7 @@ impl WebViewHandle for WryHandle {
 pub struct MockHandle {
     visible: Mutex<bool>,
     bounds: Mutex<Option<wry::Rect>>,
+    raised: Mutex<u32>,
     last_url: Mutex<Option<String>>,
     scripts: Mutex<Vec<String>>,
     focused: Mutex<bool>,
@@ -647,6 +810,7 @@ pub struct MockHandle {
     deleted_cookies: Mutex<Vec<String>>,
     printed: Mutex<bool>,
     zoom: Mutex<Option<f64>>,
+    hard_reloads: Mutex<u32>,
 }
 
 impl MockHandle {
@@ -659,6 +823,12 @@ impl MockHandle {
 
     pub fn was_visible(&self) -> bool {
         *self.visible.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// How many times this webview was raised above its siblings. The shell
+    /// asserts an overlay is re-raised after content creation/tab switches.
+    pub fn raised_count(&self) -> u32 {
+        *self.raised.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn devtools_opened(&self) -> bool {
@@ -692,6 +862,12 @@ impl MockHandle {
 
     pub fn last_zoom(&self) -> Option<f64> {
         *self.zoom.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// How many hard reloads this mock was asked for. Distinguishes Ctrl+F5
+    /// from a plain F5 in shell/tab tests.
+    pub fn hard_reload_count(&self) -> u32 {
+        *self.hard_reloads.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn last_bounds(&self) -> Option<wry::Rect> {
@@ -732,6 +908,13 @@ impl WebViewHandle for MockHandle {
         Ok(())
     }
 
+    fn raise(&self) -> TabResult<()> {
+        if let Ok(mut guard) = self.raised.lock() {
+            *guard += 1;
+        }
+        Ok(())
+    }
+
     fn load_url(&self, url: &str) -> TabResult<()> {
         if let Ok(mut guard) = self.last_url.lock() {
             *guard = Some(url.to_owned());
@@ -751,6 +934,16 @@ impl WebViewHandle for MockHandle {
         // assert history-preserving reloads without a real engine.
         if let Ok(mut guard) = self.scripts.lock() {
             guard.push("location.reload()".to_owned());
+        }
+        Ok(())
+    }
+
+    fn hard_reload(&self) -> TabResult<()> {
+        if let Ok(mut guard) = self.hard_reloads.lock() {
+            *guard += 1;
+        }
+        if let Ok(mut guard) = self.scripts.lock() {
+            guard.push("Page.reload ignoreCache".to_owned());
         }
         Ok(())
     }
@@ -923,7 +1116,9 @@ fn init_scripts() -> Vec<(String, bool)> {
         (nav_commit_js().to_owned(), true),
         (crate::pip::pip_report_js().to_owned(), true),
         (favicon_report_js().to_owned(), true),
+        (title_reporter_js().to_owned(), true),
         (link_hover_js().to_owned(), true),
+        (pop_dismiss_js().to_owned(), true),
         (find_js().to_owned(), true),
         (context_menu_js().to_owned(), true),
         (console_errors_js().to_owned(), true),
@@ -940,10 +1135,89 @@ fn init_scripts() -> Vec<(String, bool)> {
     ]
 }
 
-/// Download destination → (download id, originating tab UUID string).
-/// Shared per webview creation for correlating started/completed hooks.
+/// The init scripts for one webview, in injection order: the shared table plus
+/// the shortcut reporter, which is per-webview because it carries that
+/// webview's capability token (`crate::shortcuts`). The reporter runs in every
+/// frame: a key press happens once, in the focused document, and does not
+/// cross a frame boundary.
+fn init_scripts_with_token(tab_id: Uuid) -> Vec<(String, bool)> {
+    let mut scripts = init_scripts();
+    // `false`: the reporter must run in every frame, not just the top one.
+    // Key events do not cross document boundaries, so a shortcut pressed while
+    // focus is inside an embedded frame only exists in that frame's document.
+    // It reports once (the event never reaches the parent), and the shell's
+    // token check is per webview, so a subframe cannot act as another one.
+    scripts.push((
+        crate::shortcuts::reporter_js(&crate::shortcuts::token_for(tab_id)),
+        false,
+    ));
+    scripts
+}
+
+/// One in-flight engine download. Wry passes no download id through its
+/// started/completed hooks, so the destination path is the correlation key.
+/// The URL is kept as a fallback because WebView2 reports `None` for the path
+/// when a download fails; without it a failed transfer would leave both the
+/// registry entry and a truncated file under the final name.
+#[derive(Debug, Clone)]
+struct PendingDownload {
+    id: String,
+    tab_id: Option<String>,
+    url: String,
+    dest: std::path::PathBuf,
+}
+
+/// Download destination → pending transfer. Shared per webview creation for
+/// correlating started/completed hooks.
 type PendingDownloads =
-    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (String, Option<String>)>>>;
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, PendingDownload>>>;
+
+/// Remove a completed/failed entry by its destination, falling back to the
+/// URL when WebView2 reports no path. The fallback picks the oldest matching
+/// URL only when there is exactly one; concurrent downloads of the same URL
+/// are left to their path keys rather than guessed.
+fn take_pending_download(
+    pending: &PendingDownloads,
+    path: Option<&std::path::Path>,
+    url: &str,
+) -> Option<PendingDownload> {
+    let Ok(mut map) = pending.lock() else {
+        return None;
+    };
+    if let Some(path) = path {
+        let key = path.to_string_lossy().to_string();
+        if let Some(entry) = map.remove(&key) {
+            return Some(entry);
+        }
+    }
+    let key = {
+        let mut matches = map.iter().filter(|(_, entry)| entry.url == url);
+        let key = matches.next().map(|(key, _)| key.clone())?;
+        if matches.next().is_some() {
+            // More than one download of this URL is in flight; a path-less
+            // failure cannot be attributed safely. Leave both for their paths.
+            return None;
+        }
+        key
+    };
+    map.remove(&key)
+}
+
+/// A failed engine transfer must not leave a truncated file under the final
+/// name. The destination was chosen as a new, non-existing path, so removing
+/// it cannot delete a user's pre-existing file. Best effort: WebView2 may
+/// still hold the file open while it finalizes the failure.
+fn remove_failed_destination(path: &std::path::Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => debug!(path = %path.display(), "removed failed download"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => warn!(
+            path = %path.display(),
+            %error,
+            "could not remove failed download"
+        ),
+    }
+}
 
 #[derive(Clone)]
 pub struct WryFactory {
@@ -963,6 +1237,18 @@ pub struct WryFactory {
     /// (filter lists) stays shared read-only in the `DecisionHook`; only the
     /// connection state partitions. `None` falls back to `proxy`.
     private_proxy: Option<(String, u16)>,
+    /// Engine parallel-download mode (WebView2 `ParallelDownloading`).
+    /// Fixed when the factory is built: WebView2 requires webviews with
+    /// different browser arguments to use different data directories, so a
+    /// live toggle must not mix argument sets inside one profile. The shell
+    /// persists the setting and applies it on the next launch.
+    parallel_downloads: bool,
+    /// Set when a webview creation with the parallel-download arguments
+    /// fails. A quick restart can race the previous WebView2 browser
+    /// process; retrying without the extra arguments keeps Ferrite usable
+    /// instead of leaving it with no webviews. Process-scoped, not
+    /// persisted: the next boot tries the configured mode again.
+    parallel_fallback: std::rc::Rc<std::cell::Cell<bool>>,
     archive: Option<std::sync::Arc<ferrite_archive::Archive>>,
     /// Engine profile root: the ONE user-data dir for this process, so the
     /// HTTP disk cache (engine-owned, unencrypted) lives in a predictable,
@@ -1044,6 +1330,31 @@ impl std::fmt::Debug for WryFactory {
     }
 }
 
+/// wry 0.56.1's Windows default arguments. Supplying browser arguments
+/// replaces this string, so the parallel-download path reproduces it and
+/// the proxy switch (wry otherwise appends the proxy only to its own
+/// defaults). Keep in sync when wry's Windows defaults change.
+#[cfg(target_os = "windows")]
+const WRY_DEFAULT_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+
+/// Build the additional WebView2 arguments for a new webview. `None` keeps
+/// wry's own defaults and proxy handling. Parallel downloading is a
+/// Chromium feature, not a supported WebView2 API: if a future runtime
+/// drops it, the engine falls back to one connection rather than failing.
+#[cfg(target_os = "windows")]
+fn engine_browser_args(proxy: Option<&(String, u16)>, parallel: bool) -> Option<String> {
+    if !parallel {
+        return None;
+    }
+    let mut args = String::from(WRY_DEFAULT_BROWSER_ARGS);
+    if let Some((host, port)) = proxy {
+        args.push_str(&format!(" --proxy-server=http://{host}:{port}"));
+    }
+    args.push_str(" --enable-features=ParallelDownloading");
+    Some(args)
+}
+
 impl WryFactory {
     pub fn new(
         ipc_sender: tokio::sync::mpsc::Sender<IpcMessage>,
@@ -1056,6 +1367,8 @@ impl WryFactory {
             theme_css: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
             proxy: None,
             private_proxy: None,
+            parallel_downloads: false,
+            parallel_fallback: std::rc::Rc::new(std::cell::Cell::new(false)),
             archive: None,
             data_dir: None,
             shared_context: std::rc::Rc::new(std::cell::RefCell::new(None)),
@@ -1104,6 +1417,22 @@ impl WryFactory {
     pub fn with_private_proxy(mut self, host: &str, port: u16) -> Self {
         self.private_proxy = Some((host.to_owned(), port));
         self
+    }
+
+    /// Engine parallel-download mode for every webview this factory creates.
+    /// Set once at boot; the shell applies a changed setting on restart.
+    #[must_use]
+    pub fn with_parallel_downloads(mut self, enabled: bool) -> Self {
+        self.parallel_downloads = enabled;
+        self
+    }
+
+    /// Whether the next creation should supply the parallel-download
+    /// arguments. Once a creation has failed with them, every later
+    /// webview in this process uses the engine defaults instead of paying
+    /// the same failure again.
+    fn parallel_creation_enabled(&self) -> bool {
+        self.parallel_downloads && !self.parallel_fallback.get()
     }
 
     /// Private-tab spill dir (see field docs). Created by the shell.
@@ -1252,7 +1581,6 @@ impl WryFactory {
     /// Shared creation path. `private` selects the engine's native
     /// non-persistent store (incognito): nothing written to the profile's
     /// disk cache, and the shared context is bypassed entirely.
-    #[allow(clippy::collapsible_if)]
     fn create_inner(
         &self,
         window: &winit::window::Window,
@@ -1261,6 +1589,30 @@ impl WryFactory {
         tab_id: Uuid,
         private: bool,
     ) -> TabResult<Rc<dyn WebViewHandle>> {
+        self.create_inner_with_parallel(
+            window,
+            url,
+            bounds,
+            tab_id,
+            private,
+            self.parallel_creation_enabled(),
+        )
+    }
+
+    /// Creation body with an explicit parallel-download choice. A failed
+    /// attempt with the extra WebView2 arguments retries once with the
+    /// engine defaults (see `parallel_fallback`).
+    #[allow(clippy::collapsible_if)]
+    fn create_inner_with_parallel(
+        &self,
+        window: &winit::window::Window,
+        url: &str,
+        bounds: Option<wry::Rect>,
+        tab_id: Uuid,
+        private: bool,
+        parallel: bool,
+    ) -> TabResult<Rc<dyn WebViewHandle>> {
+        let _ = parallel;
         let tab_hint = url.to_owned();
         let sender = self.ipc_sender.clone();
         let limits = self.ipc_limits.clone();
@@ -1401,29 +1753,44 @@ impl WryFactory {
                     )
                 },
             );
+        // Windows only: WebView2 ships with browser accelerators ON, so
+        // Ctrl+R/F5, Ctrl+F, Ctrl+P and Ctrl+±/0 act inside the engine and the
+        // shell's own state (loading, find bar, zoom) never learns. Off means
+        // every bound key reaches the reporter, and the shell decides.
+        #[cfg(target_os = "windows")]
+        {
+            builder = builder.with_browser_accelerator_keys(false);
+        }
         // Init scripts from the single table: frame scope reviewable and
-        // tested in `init_scripts`, not scattered down a builder chain.
-        for (js, main_only) in init_scripts() {
+        // tested in `init_scripts`, not scattered down a builder chain. The
+        // reporter is appended per webview because it carries this webview's
+        // shortcut token.
+        for (js, main_only) in init_scripts_with_token(ipc_tab_id) {
             builder = builder.with_initialization_script_for_main_only(js, main_only);
         }
+        // The top-frame handler and the child-frame bridge share one delivery
+        // path. Clone the producer handles first: the originals are needed to
+        // attach the frame bridge after the webview exists.
+        let ipc_sender = sender.clone();
+        let ipc_limits = limits.clone();
+        let ipc_waker = waker.clone();
+        let ipc_tab_hint = tab_hint.clone();
         builder = builder
             .with_ipc_handler(move |request: wry::http::Request<String>| {
-                let payload = request.body().clone();
-                let msg = IpcMessage {
-                    tab_id: ipc_tab_id,
-                    payload,
-                };
                 // Bounded, non-blocking, rate-limited: oversize/full/burst
                 // messages are dropped with a warning instead of growing
                 // memory without bound. Accepted messages wake the shell so
                 // the drain does not wait for the heartbeat tick.
-                if crate::ipc::IpcBridge::try_send_via(&sender, &limits, msg) {
-                    if let Some(wake) = waker.as_ref() {
-                        wake();
-                    }
-                } else {
-                    warn!(%tab_hint, "ipc message dropped (bound)");
-                }
+                crate::ipc::deliver_webview_message(
+                    &ipc_sender,
+                    &ipc_limits,
+                    ipc_waker.as_ref(),
+                    IpcMessage {
+                        tab_id: ipc_tab_id,
+                        payload: request.body().clone(),
+                    },
+                    &ipc_tab_hint,
+                );
             })
             .with_navigation_handler({
                 let perm_origins = std::sync::Arc::clone(&self.permission_origins);
@@ -1573,7 +1940,12 @@ impl WryFactory {
                     if let Ok(mut pending) = dl_pending.lock() {
                         pending.insert(
                             dest.to_string_lossy().to_string(),
-                            (id, Some(ipc_tab_id.to_string())),
+                            PendingDownload {
+                                id,
+                                tab_id: Some(ipc_tab_id.to_string()),
+                                url: url.clone(),
+                                dest: dest.clone(),
+                            },
                         );
                     }
                     *path = dest;
@@ -1588,26 +1960,41 @@ impl WryFactory {
                     let Some(manager) = dl_manager.as_ref() else {
                         return;
                     };
-                    let (key, filename, dest) = match &path {
-                        Some(p) => (
-                            p.to_string_lossy().to_string(),
-                            p.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("download")
-                                .to_owned(),
-                            Some(p.clone()),
-                        ),
-                        None => (url.clone(), "download".to_owned(), None),
-                    };
-                    let id = dl_pending.lock().ok().and_then(|mut m| m.remove(&key));
+                    let pending = take_pending_download(&dl_pending, path.as_deref(), &url);
+                    let dest = pending.as_ref().map(|entry| entry.dest.clone()).or(path);
+                    let filename = dest
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("download")
+                        .to_owned();
                     let dest_ref = dest.as_deref();
-                    match (id, success) {
-                        (Some((id, tab)), true) => {
-                            manager.complete_with_tab(&id, &url, &filename, dest_ref, tab);
+                    match (pending, success) {
+                        (Some(entry), true) => {
+                            manager.complete_with_tab(
+                                &entry.id,
+                                &url,
+                                &filename,
+                                dest_ref,
+                                entry.tab_id,
+                            );
                             debug!(url, filename, "download completed");
                         }
-                        (Some((id, tab)), false) => {
-                            manager.fail_with_tab(&id, &url, &filename, dest_ref, tab);
+                        (Some(entry), false) => {
+                            // WebView2 reports no path on failure. The
+                            // started hook's destination may still contain a
+                            // truncated file under the final name; remove it
+                            // rather than leave something that looks whole.
+                            if let Some(dest) = dest_ref {
+                                remove_failed_destination(dest);
+                            }
+                            manager.fail_with_tab(
+                                &entry.id,
+                                &url,
+                                &filename,
+                                dest_ref,
+                                entry.tab_id,
+                            );
                             warn!(url, filename, "download failed");
                         }
                         (None, _) => {
@@ -1644,6 +2031,15 @@ impl WryFactory {
             debug!(%host, port, private, "webview routed through ferrite proxy");
         }
 
+        // Parallel downloading is an engine feature flag, so supplying it
+        // also replaces wry's proxy argument; `engine_browser_args` repeats
+        // the proxy switch. The flag is fixed per factory because WebView2
+        // requires different data directories for different argument sets.
+        #[cfg(target_os = "windows")]
+        if let Some(args) = engine_browser_args(proxy_choice.as_ref(), parallel) {
+            builder = builder.with_additional_browser_args(args);
+        }
+
         #[cfg(target_os = "linux")]
         if std::env::var("WRY_WAYLAND").is_ok() {
             #[cfg(feature = "gtk")]
@@ -1661,9 +2057,38 @@ impl WryFactory {
                 "WRY_WAYLAND set but gtk feature not enabled; falling back to build_as_child"
             );
         }
-        let webview = builder
-            .build_as_child(window)
-            .map_err(|source| TabError::WebViewCreationFailed { source })?;
+        let webview = match builder.build_as_child(window) {
+            Ok(webview) => webview,
+            Err(source) => {
+                // A restart can overlap the previous WebView2 browser
+                // process. The extra argument set is the new variable; fall
+                // back to wry's defaults once so a race does not leave the
+                // window without any webview at all.
+                #[cfg(target_os = "windows")]
+                if parallel {
+                    warn!(
+                        error = %source,
+                        "webview creation failed with parallel-download args; retrying with engine defaults"
+                    );
+                    self.parallel_fallback.set(true);
+                    drop(shared);
+                    return self
+                        .create_inner_with_parallel(window, url, bounds, tab_id, private, false);
+                }
+                return Err(TabError::WebViewCreationFailed { source });
+            }
+        };
+
+        // Child-frame IPC (Windows only): wry wires only the top-level
+        // WebMessageReceived event, while WebView2 delivers a subframe's
+        // chrome.webview.postMessage to the frame object. Attach before the
+        // event loop can pump the initial navigation, so the first iframe is
+        // caught as well.
+        #[cfg(target_os = "windows")]
+        if let Err(e) = crate::frame_ipc::attach(&webview, tab_id, sender, limits, waker, tab_hint)
+        {
+            debug!(tab_id = %tab_id, error = %e, "frame IPC bridge unavailable");
+        }
 
         // Script-dialog interception (Windows only): engine defaults off,
         // every dialog routed to the shell overlay. Failure here is
@@ -1739,8 +2164,8 @@ mod tests {
     #[test]
     fn init_scripts_scanner_alone_runs_subframe() {
         let scripts = init_scripts();
-        // 22 scripts, each non-empty, each registered exactly once.
-        assert_eq!(scripts.len(), 22);
+        // 24 scripts, each non-empty, each registered exactly once.
+        assert_eq!(scripts.len(), 24);
         assert!(scripts.iter().all(|(js, _)| !js.is_empty()));
         let subframes: Vec<&String> = scripts
             .iter()
@@ -1779,6 +2204,102 @@ mod tests {
         let lang = lang_reporter_js();
         assert!(lang.contains("slice(0, 24)"));
         assert!(lang.contains("window.self !== window.top"));
+    }
+
+    #[test]
+    fn title_reporter_is_bounded_main_frame_and_change_only() {
+        // The shell seeds a navigated tab's title with the URL (`navigate()`);
+        // this reporter is the only producer of the real document title, and
+        // the shell's `title` IPC branch (which caps and validates) is inert
+        // without it.
+        let scripts = init_scripts();
+        let (js, main_only) = scripts
+            .iter()
+            .find(|(js, _)| js.contains("__ferriteTitleInstalled"))
+            .expect("title reporter injected");
+        assert!(*main_only, "a document has one title, in the top frame");
+        assert!(js.contains("type:'title'"), "the shell's title channel");
+        assert!(js.contains("t.length > 512"), "bounded before IPC");
+        assert!(
+            js.contains("window.self !== window.top"),
+            "subframes never claim the tab title"
+        );
+        assert!(js.contains("t === last"), "repeats never re-post");
+        assert!(
+            js.contains("MutationObserver"),
+            "SPA routers replace the title without a navigation"
+        );
+        assert!(
+            js.contains("document.title"),
+            "reads the engine's title, not page-supplied IPC"
+        );
+    }
+
+    #[test]
+    fn toolbar_pop_dismiss_reporter_is_gated_and_main_frame() {
+        // The shell opens a toolbar pop by painting
+        // `__ferritePopoverOpen=true` on every content page; this reporter is
+        // the only thing that turns a content press into a dismissal post
+        // (tasks/toolbar-popover-spike.md decision, toolbar-overlay-3c.md D2).
+        let scripts = init_scripts();
+        let pop = scripts
+            .iter()
+            .find(|(js, _)| js.contains("__ferritePopDismissInstalled"))
+            .expect("dismissal reporter injected");
+        assert!(
+            pop.1,
+            "dismissal is a main-frame concern; a press happens once"
+        );
+        let js = &pop.0;
+        assert!(
+            js.contains("__ferritePopoverOpen"),
+            "gates on the shell flag"
+        );
+        assert!(
+            js.contains("popover_dismiss"),
+            "posts the shared dismissal type"
+        );
+        assert!(
+            js.contains("src:'page'"),
+            "marks the report page-originated so the shell keeps OS focus here"
+        );
+        assert!(
+            js.contains("addEventListener('pointerdown'"),
+            "fires on pointer press, capture phase"
+        );
+        assert!(
+            js.contains("}, true)"),
+            "capture phase: a page handler cannot eat the dismissal"
+        );
+        // Dismissal must never stop the press itself: the link under the
+        // pointer follows on release (first click dismisses and acts).
+        assert!(!js.contains("preventDefault"), "no swallowed clicks");
+    }
+
+    #[test]
+    fn every_webview_gets_the_shortcut_reporter_with_its_own_token() {
+        let tab_id = Uuid::new_v4();
+        let scripts = init_scripts_with_token(tab_id);
+        // The shared table, unchanged, plus exactly one reporter.
+        assert_eq!(scripts.len(), init_scripts().len() + 1);
+        assert_eq!(&scripts[..init_scripts().len()], init_scripts().as_slice());
+        let (js, main_only) = scripts.last().expect("reporter present");
+        assert!(
+            !*main_only,
+            "a key press reports once, from the focused frame"
+        );
+        assert!(js.contains("type:'shortcut'"));
+        assert!(
+            js.contains(&format!(
+                "var token='{}';",
+                crate::shortcuts::token_for(tab_id)
+            )),
+            "reporter must carry this webview's token"
+        );
+        // A different webview gets a different token: the capability is
+        // per-webview, so one page cannot drive another's actions.
+        let other = init_scripts_with_token(Uuid::new_v4());
+        assert_ne!(other.last().unwrap().0, *js);
     }
 
     #[test]
@@ -2021,5 +2542,127 @@ mod tests {
             evil.contains("ferrite-theme-live"),
             "still targets live node"
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn engine_args_preserve_defaults_proxy_and_parallel_feature() {
+        let proxy = ("127.0.0.1".to_owned(), 50585);
+        let args = engine_browser_args(Some(&proxy), true).expect("parallel args");
+        assert!(
+            args.contains(WRY_DEFAULT_BROWSER_ARGS),
+            "wry's UI disables survive the override"
+        );
+        assert!(
+            args.contains("--proxy-server=http://127.0.0.1:50585"),
+            "the proxy is repeated because wry ignores proxy_config when args are set"
+        );
+        assert!(
+            args.contains("--enable-features=ParallelDownloading"),
+            "the engine feature is what splits the request"
+        );
+        assert_eq!(
+            engine_browser_args(Some(&proxy), false),
+            None,
+            "off keeps wry's own defaults and proxy path"
+        );
+        let no_proxy = engine_browser_args(None, true).expect("parallel args without proxy");
+        assert!(!no_proxy.contains("--proxy-server"), "no phantom proxy");
+    }
+
+    fn pending_entry(id: &str, url: &str, dest: &std::path::Path) -> PendingDownload {
+        PendingDownload {
+            id: id.to_owned(),
+            tab_id: None,
+            url: url.to_owned(),
+            dest: dest.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn failed_download_matches_url_when_webview2_reports_no_path() {
+        let pending: PendingDownloads =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let dest = std::path::Path::new("C:/tmp/ferrite-a.bin");
+        pending.lock().unwrap().insert(
+            dest.to_string_lossy().to_string(),
+            pending_entry("dl-1", "https://example.com/a", dest),
+        );
+        let found =
+            take_pending_download(&pending, None, "https://example.com/a").expect("URL fallback");
+        assert_eq!(found.id, "dl-1");
+        assert_eq!(found.dest, dest);
+        assert!(pending.lock().unwrap().is_empty(), "entry consumed");
+    }
+
+    #[test]
+    fn failed_download_is_not_guessed_when_two_urls_match() {
+        let pending: PendingDownloads =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let a = std::path::Path::new("C:/tmp/ferrite-a.bin");
+        let b = std::path::Path::new("C:/tmp/ferrite-b.bin");
+        let mut map = pending.lock().unwrap();
+        map.insert(
+            a.to_string_lossy().to_string(),
+            pending_entry("dl-1", "https://example.com/a", a),
+        );
+        map.insert(
+            b.to_string_lossy().to_string(),
+            pending_entry("dl-2", "https://example.com/a", b),
+        );
+        drop(map);
+        assert!(
+            take_pending_download(&pending, None, "https://example.com/a").is_none(),
+            "ambiguous failures stay for their path keys"
+        );
+        assert_eq!(pending.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn completed_download_matches_by_path_even_with_a_different_url() {
+        let pending: PendingDownloads =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let dest = std::path::Path::new("C:/tmp/ferrite-a.bin");
+        pending.lock().unwrap().insert(
+            dest.to_string_lossy().to_string(),
+            pending_entry("dl-1", "https://example.com/a", dest),
+        );
+        let found = take_pending_download(&pending, Some(dest), "https://example.com/redirected")
+            .expect("path key");
+        assert_eq!(found.id, "dl-1");
+    }
+
+    #[test]
+    fn failed_destination_removes_the_truncated_file() {
+        let dir = std::env::temp_dir().join(format!("ferrite-dl-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("partial.bin");
+        std::fs::write(&file, b"truncated").unwrap();
+        remove_failed_destination(&file);
+        assert!(!file.exists(), "failed destination removed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_parallel_creation_falls_back_for_later_webviews() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let bridge = crate::ipc::IpcBridge::new();
+        let f = WryFactory::new(tx, bridge.limiter()).with_parallel_downloads(true);
+        assert!(f.parallel_creation_enabled(), "configured mode starts on");
+        let g = f.clone();
+        g.parallel_fallback.set(true);
+        assert!(
+            !f.parallel_creation_enabled(),
+            "fallback is shared by every clone of the factory"
+        );
+        assert!(
+            !g.parallel_creation_enabled(),
+            "the failing clone stays off"
+        );
+        let off = WryFactory::new(
+            tokio::sync::mpsc::channel(16).0,
+            crate::ipc::IpcBridge::new().limiter(),
+        );
+        assert!(!off.parallel_creation_enabled(), "off stays off");
     }
 }

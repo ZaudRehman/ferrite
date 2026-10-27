@@ -7,6 +7,8 @@ pub mod dialog_win;
 pub mod downloads;
 pub mod engine;
 pub mod error;
+#[cfg(target_os = "windows")]
+mod frame_ipc;
 pub mod ipc;
 pub mod manager;
 pub mod media;
@@ -17,6 +19,7 @@ pub mod pip;
 pub mod print;
 pub mod protocol;
 pub mod share;
+pub mod shortcuts;
 pub mod spatial;
 pub mod tab;
 pub mod translate;
@@ -28,8 +31,9 @@ pub use dialog::{
 };
 pub use downloads::{
     DownloadEvent, DownloadManager, DownloadStateKind, decide_destination, default_download_dir,
-    is_dangerous_ext, mark_zone_identifier, partial_path_for, promote_partial, sanitize_filename,
-    sha256_file, should_block_mixed_content, unique_path, verify_zone_identifier,
+    is_dangerous_ext, mark_zone_identifier, partial_meta_path_for, partial_path_for,
+    promote_partial, sanitize_filename, sha256_file, should_block_mixed_content, unique_path,
+    verify_zone_identifier,
 };
 pub use engine::webview2_runtime_version;
 pub use error::{TabError, TabResult};

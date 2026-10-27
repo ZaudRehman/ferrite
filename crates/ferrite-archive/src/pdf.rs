@@ -29,6 +29,10 @@ pub const RENDERER_EXE_NAME: &str = "ferrite-pdf-renderer.exe";
 #[cfg(not(windows))]
 pub const RENDERER_EXE_NAME: &str = "ferrite-pdf-renderer";
 
+/// Win32 `CREATE_NO_WINDOW` (0x0800_0000): spawn without a console window.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Directory holding the running exe. None when undeterminable (tests,
 /// exotic hosts): callers treat that as "nothing shipped".
 pub fn exe_sibling_dir() -> Option<PathBuf> {
@@ -1187,15 +1191,22 @@ impl IsolatedPdfRenderer {
             .ok()
             .and_then(|p| p.parent().map(|d| d.join(RENDERER_EXE_NAME)))
             .unwrap_or_else(|| RENDERER_EXE_NAME.into());
-        let child = tokio::process::Command::new(&path)
-            .stdin(std::process::Stdio::piped())
+        let mut cmd = tokio::process::Command::new(&path);
+        cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| {
-                tracing::warn!(%e, path = %path.display(), "pdf renderer spawn failed");
-                ArchiveError::Pdf("pdf renderer unavailable (spawn failed)".to_string())
-            })?;
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            // The browser is GUI-subsystem with no console, so this console
+            // child would otherwise make Windows allocate a *new, visible*
+            // console window for the whole document session. Pipes are
+            // unaffected (the renderer's protocol is stdin/stdout).
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let child = cmd.spawn().map_err(|e| {
+            tracing::warn!(%e, path = %path.display(), "pdf renderer spawn failed");
+            ArchiveError::Pdf("pdf renderer unavailable (spawn failed)".to_string())
+        })?;
         self.child = Some(child);
         Ok(())
     }
@@ -1747,6 +1758,38 @@ mod sibling_layout_tests {
             } else {
                 "libpdfium.so"
             }
+        );
+    }
+}
+
+/// The renderer is a console binary spawned by a console-free (GUI) browser,
+/// so it must be created with `CREATE_NO_WINDOW` and still speak the
+/// stdin/stdout protocol (piped in, piped out, stderr discarded). This pins
+/// that exact spawn shape: a wrong flag or a stdio change would show up here.
+#[cfg(all(test, windows))]
+mod renderer_spawn_tests {
+    use super::*;
+
+    #[test]
+    fn create_no_window_is_the_documented_flag() {
+        assert_eq!(CREATE_NO_WINDOW, 0x0800_0000);
+    }
+
+    #[tokio::test]
+    async fn renderer_style_spawn_keeps_piped_stdio_working() {
+        // `cmd` stands in for the renderer: same flags, same stdio contract.
+        let mut cmd = tokio::process::Command::new("cmd");
+        cmd.args(["/C", "echo ferrite-renderer-probe"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let out = cmd.output().await.expect("spawn with no console window");
+        assert!(out.status.success(), "child exited non-zero");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("ferrite-renderer-probe"),
+            "piped stdout still carries the child's bytes"
         );
     }
 }

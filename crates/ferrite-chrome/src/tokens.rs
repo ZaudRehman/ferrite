@@ -311,6 +311,13 @@ mod tests {
             "tokens inlined"
         );
         assert!(!html.contains("__FERRITE_THEME__"), "marker replaced");
+        // The theme layer owns scrollbars app-wide. A chrome-local
+        // `scrollbar-width` override would suppress the themed bar and bring
+        // back WebView2's light classic one on the dark tab strip.
+        assert!(
+            !CHROME_TEMPLATE.contains("scrollbar-width"),
+            "theme owns scrollbars"
+        );
         // Same trust class as privileged pages: inline scripts only, no
         // remote fetches, typed commands over window.ipc.
         assert!(html.contains("default-src 'none'"), "CSP locked");
@@ -334,54 +341,171 @@ mod tests {
         assert!(html.contains("id=\"tablist\""), "overflow chevron");
         assert!(html.contains("auxclick"), "middle-click close");
         assert!(html.contains("toggle_maximize"), "dblclick maximize");
-        // Toolbar spec: Rust-split display, nav dropdowns, combobox.
+        // Toolbar spec: Rust-split display, overlay-hosted nav drops, combobox.
         assert!(!html.contains("new URL("), "no JS URL parsing");
-        assert!(html.contains("__ferriteBackList"), "back dropdown");
+        assert!(
+            html.contains("navDrop('nav_back')") && html.contains("navDrop('nav_fwd')"),
+            "nav drops post overlay popover_open with their rect"
+        );
         assert!(html.contains("role=\"combobox\""), "aria combobox");
         assert!(html.contains("aria-activedescendant"), "active descendant");
         assert!(html.contains("role=\"toolbar\""), "aria toolbar");
-        // Zoom chip + popup: text percent, named step buttons, polite live.
+        // Zoom chip: text percent; the popup itself (and its polite live
+        // percent) is shell-overlay-hosted, so only chip + overlay wiring may
+        // appear here.
         assert!(html.contains("id=\"zoom\""), "zoom chip");
-        assert!(html.contains("id=\"zoompop\""), "zoom popup");
-        assert!(html.contains("zoom_in"), "zoom in post");
-        assert!(html.contains("aria-live=\"polite\""), "zoom announce");
+        assert!(
+            html.contains("cmd:'popover_open',kind:'zoom'"),
+            "chip posts its rect"
+        );
+        assert!(
+            !html.contains("zoompop"),
+            "no chrome-DOM zoom popup beside the overlay host"
+        );
+        // The zoom step posts (zoom_in/out/reset) are gone from chrome:
+        // rows act on the overlay's popover_activate, and the zoom arms
+        // reachable from chrome are through that channel plus the menu ids.
+        assert!(
+            !html.contains("cmd:'zoom_in'")
+                && !html.contains("cmd:'zoom_out'")
+                && !html.contains("cmd:'zoom_reset'"),
+            "chrome no longer posts zoom steps directly — the overlay rows do"
+        );
         // Bookmarks bar: row, popovers, DnD, menubar pattern.
         assert!(html.contains("id=\"bookbar\""), "bar row");
         assert!(html.contains("role=\"menubar\""), "aria menubar");
-        assert!(html.contains("__ferriteFolderList"), "folder dropdown");
-        assert!(html.contains("bookmark_all_tabs"), "bookmark-all");
         assert!(html.contains("bar_reorder"), "bar reorder");
+        // 3c-6: the bookmarks-bar overflow root, folder drill-in, empty-bar
+        // menu, star form, workspace switcher, profile switcher, group editor
+        // and every context menu are shell-hosted overlay surfaces. Chrome
+        // posts a typed `chrome_surface_open` (geometry + ids only) and the
+        // shell resolves each target against live state.
+        assert!(html.contains("chrome_surface_open"), "typed surface post");
+        for surf in [
+            "postSurface('bar_menu'",
+            "postSurface('star'",
+            "postSurface('workspaces'",
+            "postSurface('profiles'",
+            "postSurface('tab_context'",
+            "postSurface('tabs_context'",
+            "postSurface('group_context'",
+            "postSurface('bookmark_context'",
+        ] {
+            assert!(html.contains(surf), "missing surface post: {surf}");
+        }
+        // The chrome-DOM popovers are deleted, not merely hidden (the shell
+        // overlay is the only layer that paints above content).
+        for gone in [
+            "id=\"starpop\"",
+            "id=\"barmenu\"",
+            "id=\"barsub\"",
+            "id=\"ctxpop\"",
+            "id=\"gedit\"",
+            "id=\"wspop\"",
+            "id=\"profpop\"",
+        ] {
+            assert!(!html.contains(gone), "chrome-DOM popover left: {gone}");
+        }
+        for retired in ["hidePops", "showCtx", "openGedit", "__ferriteFolderList"] {
+            assert!(
+                !html.contains(retired),
+                "chrome-DOM pop machinery left: {retired}"
+            );
+        }
+        // ARCH-15: the overflow menu must survive the click that opened it.
+        // The click-away is a mousedown that ignores the surface's own owner,
+        // so a press already delivered for this gesture cannot retire it.
+        assert!(
+            html.contains("document.addEventListener('mousedown'"),
+            "click-away is a mousedown"
+        );
+        assert!(
+            html.contains("owner.contains(e.target)"),
+            "click-away excludes the surface owner"
+        );
+        assert!(
+            html.contains("surfOwner=el||null"),
+            "opening press records its owner"
+        );
         // Main menu rows live server-side now (shell `menu_static_rows`,
         // pinned by its own test): the chrome button only posts its rect.
         // What the template must still carry is the opener wiring.
         assert!(html.contains("menu_open"), "menu opener post");
         assert!(html.contains("getBoundingClientRect"), "menu anchor rect");
-        // History dropdowns anchor under their button and open on touch
-        // long-press as well as right-click; reload disables with no tab.
-        assert!(html.contains("r.left"), "navpop anchor");
+        // Omnibox dropdown: chrome keeps the same-document a11y listbox
+        // (#sugs) and the action owner, and mirrors the visible list into the
+        // overlay webview (chrome DOM is occluded below the content webview).
+        // The relay hooks replay overlay clicks back here.
+        assert!(html.contains("id=\"sugs\""), "a11y listbox mirror kept");
+        assert!(html.contains("syncPopover"), "overlay mirror sync");
+        assert!(html.contains("popover_open"), "popover open post");
+        assert!(html.contains("popover_highlight"), "popover highlight post");
+        assert!(html.contains("popover_close"), "popover close post");
+        assert!(html.contains("popover_clipboard"), "popover clipboard post");
+        // The clipboard row must outlive the blur the overlay click forces.
+        assert!(html.contains("clipHeld"), "clipboard text survives blur");
+        assert!(
+            html.contains("__ferriteSugActivate"),
+            "row activation relay"
+        );
+        assert!(html.contains("__ferriteSugDelete"), "row delete relay");
+        // History/nav drops anchor under their button and open on touch
+        // long-press as well as right-click (the long-press helper posts
+        // the same overlay popover_open); reload disables with no tab.
         assert!(html.contains("holdToList"), "touch long-press");
         assert!(html.contains("relBtn.disabled=!at"), "reload disabled");
         // Status bar: hover preview zone (fed by the Rust init script's
         // link_hover IPC), shared shield entry, mono readouts.
         assert!(html.contains("hover_mine"), "hover gating");
-        assert!(html.contains("openShield"), "shared shield entry");
-        // Shield honesty: session headline labeled as such, per-site row
-        // from pushed state, pause toggle posting a hostless command (the
-        // shell derives the host from the live tab).
-        assert!(html.contains("blocked this session"), "session headline");
-        assert!(html.contains("blocked on this site"), "per-site row");
-        assert!(html.contains("shield_pause"), "pause command");
-        assert!(html.contains("site_paused"), "pause state read");
-        assert!(html.contains("site_blocked"), "per-site count read");
+        assert!(
+            html.contains("kind:'shield'"),
+            "shield entry posts the overlay pop"
+        );
+        // Shield honesty moved with the card: the session headline, the
+        // per-site line and the pause command now live in the shell-hosted
+        // overlay pop (`PopKind::Shield`, 3c-3) and are pinned by
+        // ferrite-shell's `shield_pop_view_pins_rows_and_heights`. Chrome
+        // keeps only the two entry points that post the owner rect.
+        assert_eq!(
+            html.matches("kind:'shield'").count(),
+            2,
+            "toolbar pill and status-strip count both open the overlay card"
+        );
+        assert!(!html.contains("shield_pause"), "no chrome pause post");
         assert!(html.contains("tabular-nums"), "mono readouts");
-        // Toast primitive: queue-head renderer (shell owns the queue).
-        assert!(html.contains("id=\"toast\""), "toast mount");
-        assert!(html.contains("aria-live=\"polite\""), "toast live region");
-        assert!(html.contains("renderToast"), "toast renderer");
-        assert!(html.contains("toast_action"), "toast action post");
-        assert!(html.contains("toast_dismiss"), "toast dismiss post");
-        assert!(html.contains("toastSeq"), "toast frame tracking");
-        assert!(html.contains("pauseToastTimer"), "hover/focus pause");
+        // 3c-5: the desktop find card and toast are overlay windows now
+        // (`ferrite://find` / `ferrite://toast`). The chrome document must
+        // not keep a second copy that could paint under the page, and the
+        // shell state they read no longer travels in ChromeState.
+        assert!(!html.contains("id=\"toast\""), "desktop toast mount gone");
+        assert!(!html.contains("renderToast"), "toast renderer gone");
+        assert!(!html.contains("toast_action"), "no chrome toast post");
+        assert!(
+            !html.contains("S.status.toast"),
+            "toast frame not in chrome"
+        );
+        assert!(!html.contains("id=\"findbar\""), "find card gone");
+        assert!(!html.contains("id=\"findq\""), "find input gone");
+        assert!(!html.contains("find_open"), "find state not in chrome");
+        assert!(!html.contains("S.find_"), "find frame not in chrome");
+        assert!(!html.contains("toastEl"), "toast DOM handles gone");
+        // The load bar is fixed to the measured infobar bottom (which is the
+        // content slot's top edge) instead of flowing under the page.
+        assert!(html.contains("positionLoadbar"), "loadbar pinned in JS");
+        assert!(
+            html.contains("ib.getBoundingClientRect().bottom"),
+            "loadbar measured from the band edge"
+        );
+        assert!(
+            html.contains("if(e.propertyName==='max-height') positionLoadbar();"),
+            "loadbar follows the infobar slide"
+        );
+        // Status strip: border-box so its 26px include the 1px top rule and
+        // cannot drift from the shell's STATUS_H_PX content inset.
+        assert!(
+            html.contains("#status{box-sizing:border-box;"),
+            "status border-box"
+        );
         assert!(!html.contains("S.status.notice"), "notice pipeline retired");
         // Omnibox: tab-to-search provider mode (Tab commits a provider
         // row, Esc exits, Enter submits with the provider id).
@@ -679,33 +803,104 @@ mod tests {
 
     #[test]
     fn dropdown_dismiss_and_freshness_contract() {
-        // Snapshot pops (per-tab data, rendered once on open) hide on tab
-        // or URL change; live pops (menu/ws/prof) re-render instead.
+        // Tab-scoped surfaces (star, context menus) belong to the shell now
+        // (3c-6): it closes a card whose owning tab is no longer active, so
+        // chrome keeps no per-tab pop identity of its own. History, downloads,
+        // shield and permissions are overlay-hosted too (3c-2/3c-3/3c-4): the
+        // shell re-derives their rows from live stores on every refresh (and
+        // closes an emptied permission card), so no chrome-side fill-only guard
+        // or click-away is needed and none of them is in a snapshot list.
         assert!(
-            CHROME_TEMPLATE.contains("lastSnapKey"),
-            "tab-change identity tracking"
+            !CHROME_TEMPLATE.contains("lastSnapKey"),
+            "no chrome-side tab-scoped snapshot tracking: the shell retires tab-owned surfaces"
+        );
+        // Click-away for every shell-hosted pop is a mousedown that ignores
+        // the surface's own chrome owner, so the gesture that opened a
+        // press-driven surface cannot retire it (ARCH-15).
+        assert!(
+            CHROME_TEMPLATE.contains("document.addEventListener('mousedown'"),
+            "click-away is a mousedown, not a click"
         );
         assert!(
-            CHROME_TEMPLATE.contains(
-                "['shieldpop','histpop','navpop','zoompop','starpop','permpop','ctxpop']"
-            ),
-            "snapshot hide list"
-        );
-        // Click-away covers every toggle pop, zoom and permissions included.
-        assert!(
-            CHROME_TEMPLATE.contains("#zoompop')&&!e.target.closest('#zoom')"),
-            "zoom click-away"
+            CHROME_TEMPLATE.contains("owner.contains(e.target)"),
+            "click-away excludes the open surface's chrome owner"
         );
         assert!(
-            CHROME_TEMPLATE.contains("#permpop')&&!e.target.closest('#perm')"),
-            "permission click-away"
+            CHROME_TEMPLATE.contains("surfOwner=el||null"),
+            "the opening press records the surface's owner"
         );
-        // Async pops never dead-click and never pop back open after close.
-        assert!(CHROME_TEMPLATE.contains("Loading…"), "loading placeholder");
-        assert!(CHROME_TEMPLATE.contains("wasOpen"), "dl fill-only guard");
+        // Downloads/shield are shell-hosted (3c-3) with no async list round
+        // trip, so the loading placeholder and the fill-only re-open guard
+        // die with the chrome-DOM bubble.
         assert!(
-            CHROME_TEMPLATE.contains("histWasOpen"),
-            "history fill-only guard"
+            !CHROME_TEMPLATE.contains("Loading…"),
+            "no chrome-DOM async pop placeholder left"
+        );
+        assert!(
+            !CHROME_TEMPLATE.contains("histpop")
+                && !CHROME_TEMPLATE.contains("navpop")
+                && !CHROME_TEMPLATE.contains("history_recent")
+                && !CHROME_TEMPLATE.contains("hist_list")
+                && !CHROME_TEMPLATE.contains("__ferriteBackList")
+                && !CHROME_TEMPLATE.contains("__ferriteFwdList")
+                && !CHROME_TEMPLATE.contains("__ferriteHistoryRecent")
+                && !CHROME_TEMPLATE.contains("__ferriteClosedRecent")
+                && !CHROME_TEMPLATE.contains("closed_reopen")
+                && !CHROME_TEMPLATE.contains("closed_restore_all"),
+            "no chrome-DOM history/nav pop copy and no dead commands left"
+        );
+    }
+
+    #[test]
+    fn permissions_pop_is_overlay_hosted_and_chrome_dom_removed() {
+        // 3c-4: chrome keeps the chip (the affordance: icon, badge, attention
+        // bump, aria-label, live region) and posts only its rect. The shell
+        // owns the rows, the arming window and Not now, and closes the card
+        // when the pending list empties. The chrome-DOM popover, its per-row
+        // command vocabulary and its own arm timer are gone.
+        assert!(
+            CHROME_TEMPLATE.contains("post({cmd:'popover_open',kind:'permissions'"),
+            "the chip opens the shell-hosted card"
+        );
+        for dead in [
+            "#permpop",
+            "renderPermPop",
+            "permOpenedAt",
+            "data-pallow",
+            "data-palways",
+            "permnotnow",
+            "id=\"permwrap\"",
+            "perm_decide",
+            "pbtns",
+        ] {
+            assert!(
+                !CHROME_TEMPLATE.contains(dead),
+                "dead chrome-DOM permission surface left in desktop chrome: {dead}"
+            );
+        }
+        // The chip's own a11y contract survives the migration: live region,
+        // per-kind icon and the origin-bearing label.
+        assert!(
+            CHROME_TEMPLATE.contains("<span role=\"status\">"),
+            "chip live region"
+        );
+        assert!(
+            CHROME_TEMPLATE.contains("permission request"),
+            "chip accessible name"
+        );
+        assert!(CHROME_TEMPLATE.contains("permIcon"), "chip icon map");
+        assert!(
+            CHROME_TEMPLATE.contains("#perm.attn{animation:bump"),
+            "attention bump"
+        );
+        // The bundled mobile template has no overlay and still posts
+        // `perm_decide` (pinned by
+        // `mobile_template_shares_contract_and_stays_bundled`), so the IPC
+        // variant is not dead: desktop reaches it through the pop's action
+        // table instead of a chrome-DOM post.
+        assert!(
+            chrome_mobile_html(ThemePack::VolcanicObsidian).contains("perm_decide"),
+            "mobile keeps the permission command"
         );
     }
 
@@ -783,5 +978,548 @@ mod tests {
                 "mobile renders {used}"
             );
         }
+    }
+
+    // ---- Bar-row visibility contract ------------------------------------
+    //
+    // The bar row's two layouts (blurred crumb plus page actions, editing
+    // omnibox) have one owner, `paintBarRow`. Every control whose visibility
+    // the script owns is hidden by the inline `display:none` in the markup,
+    // never by a stylesheet rule: the script shows such a control by
+    // *clearing* that inline declaration, and a cleared inline falls back to
+    // the rule, so a rule there makes the control unreachable. That is what
+    // had happened to the bookmark star, reader, translate, the bookmarks-bar
+    // overflow chevron and the history filter row. The tests below derive
+    // both halves from the served asset, so re-introducing a rule, a second
+    // focus site or a second visibility owner fails here.
+
+    /// CSS `(selector, declarations)` pairs. At-rule preludes (`@media`,
+    /// `@keyframes`) are skipped, but their bodies are scanned: a
+    /// `display:none` inside a media query is just as unreachable.
+    fn css_rules(css: &str) -> Vec<(String, String)> {
+        let mut rules = Vec::new();
+        let mut open: Vec<String> = Vec::new();
+        let mut buf = String::new();
+        for ch in css.chars() {
+            match ch {
+                '{' => open.push(std::mem::take(&mut buf)),
+                '}' => {
+                    let decls = std::mem::take(&mut buf);
+                    if let Some(sel) = open.pop()
+                        && !sel.trim_start().starts_with('@')
+                    {
+                        rules.push((sel, decls));
+                    }
+                }
+                _ => buf.push(ch),
+            }
+        }
+        rules
+    }
+
+    /// Every `<style>` body in the document, concatenated.
+    fn stylesheets(html: &str) -> String {
+        let mut out = String::new();
+        let mut rest = html;
+        while let Some(open) = rest.find("<style") {
+            let after = &rest[open..];
+            let Some(head) = after.find('>') else { break };
+            let body = &rest[open + head + 1..];
+            let Some(end) = body.find("</style>") else {
+                break;
+            };
+            out.push_str(&body[..end]);
+            out.push('\n');
+            rest = &body[end + "</style>".len()..];
+        }
+        out
+    }
+
+    /// The variable name an assignment target ends with: `X=` and `X =`
+    /// both resolve to `X`, and a `.prop` write resolves to the variable it
+    /// was taken from. Empty when the text ends inside a call.
+    fn name_before(text: &str) -> String {
+        let head = text.trim_end();
+        let head = head.strip_suffix('=').unwrap_or(head);
+        head.chars()
+            .rev()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    }
+
+    /// The id an inline `document.getElementById('id')` in `text` ends with.
+    fn inline_id_before(text: &str) -> Option<String> {
+        let head = text.trim_end();
+        let call = head.rfind("document.getElementById('")?;
+        let after = &head[call + "document.getElementById('".len()..];
+        let quote = after.find('\'')?;
+        Some(after[..quote].to_string())
+    }
+
+    /// `variable -> element id`, from `name=document.getElementById('id')`.
+    fn id_bindings(html: &str) -> Vec<(String, String)> {
+        let needle = "document.getElementById('";
+        let mut binds = Vec::new();
+        let mut rest = html;
+        while let Some(at) = rest.find(needle) {
+            let after = &rest[at + needle.len()..];
+            if let Some(quote) = after.find('\'') {
+                let name = name_before(&rest[..at]);
+                if !name.is_empty() {
+                    binds.push((name, after[..quote].to_string()));
+                }
+            }
+            rest = after;
+        }
+        binds
+    }
+
+    /// Ids the script shows by clearing the inline display, i.e. those with
+    /// a `X.style.display` write whose value contains `''`, resolved through
+    /// [`id_bindings`] or an inline `getElementById` call.
+    fn cleared_ids(html: &str) -> Vec<String> {
+        let binds = id_bindings(html);
+        let mut ids: Vec<String> = Vec::new();
+        let mut rest = html;
+        while let Some(at) = rest.find(".style.display") {
+            let after = &rest[at + ".style.display".len()..];
+            // An assignment, not a read: `X.style.display!==''` is a probe.
+            let rhs = after.trim_start();
+            let Some(rhs) = rhs.strip_prefix('=').filter(|r| !r.starts_with('=')) else {
+                rest = after;
+                continue;
+            };
+            let rhs_end = rhs.find([';', '\n']).unwrap_or(rhs.len());
+            if rhs[..rhs_end].contains("''") {
+                // Only the statement holding the write, so an unrelated
+                // getElementById earlier in the file cannot be picked up.
+                let head = &rest[..at];
+                let stmt_end = head.trim_end().strip_suffix('=').unwrap_or(head.trim_end());
+                let stmt = stmt_end
+                    .rsplit([';', '{', '}', '\n'])
+                    .next()
+                    .unwrap_or(stmt_end);
+                let name = name_before(stmt);
+                let id = binds
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, id)| id.clone())
+                    .or_else(|| inline_id_before(stmt));
+                if let Some(id) = id
+                    && !ids.contains(&id)
+                {
+                    ids.push(id);
+                }
+            }
+            rest = after;
+        }
+        ids
+    }
+
+    /// Whether the subject compound of `selector` is exactly `#id` (so
+    /// `#star` never matches the `#starpop` rule).
+    fn selector_is_id(selector: &str, id: &str) -> bool {
+        let subject = selector
+            .rsplit([' ', '>', '+', '~'])
+            .next()
+            .unwrap_or(selector);
+        let needle = format!("#{id}");
+        let mut rest = subject;
+        while let Some(at) = rest.find(&needle) {
+            let tail = &rest[at + needle.len()..];
+            let next = tail.chars().next();
+            if !matches!(next, Some(c) if c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return true;
+            }
+            rest = tail;
+        }
+        false
+    }
+
+    /// CSS with `/* ... */` comments removed, so a comment can never be read
+    /// as part of a selector or of a declaration block.
+    fn strip_comments(css: &str) -> String {
+        let mut out = String::with_capacity(css.len());
+        let mut rest = css;
+        while let Some(open) = rest.find("/*") {
+            out.push_str(&rest[..open]);
+            let Some(close) = rest[open + 2..].find("*/") else {
+                return out; // unterminated: drop the tail
+            };
+            rest = &rest[open + 2 + close + 2..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The selector hiding `#id` with `display:none`, if there is one.
+    fn hidden_by_rule(css: &str, id: &str) -> Option<String> {
+        for (selector, decls) in css_rules(&strip_comments(css)) {
+            let flat: String = decls.chars().filter(|c| !c.is_whitespace()).collect();
+            if flat.contains("display:none") && selector.split(',').any(|s| selector_is_id(s, id)) {
+                return Some(selector.trim().to_string());
+            }
+        }
+        None
+    }
+
+    /// The opening tag carrying `id="id"`.
+    fn markup_tag<'a>(html: &'a str, id: &str) -> Option<&'a str> {
+        let needle = format!("id=\"{id}\"");
+        let mut from = 0;
+        while let Some(at) = html[from..].find(&needle) {
+            let pos = from + at;
+            if let (Some(start), Some(end)) = (html[..pos].rfind('<'), html[pos..].find('>')) {
+                return Some(&html[start..=pos + end]);
+            }
+            from = pos + needle.len();
+        }
+        None
+    }
+
+    /// The body of the first `function name(){...}` in the asset.
+    fn function_body<'a>(html: &'a str, name: &str) -> &'a str {
+        let head = format!("function {name}(){{");
+        let open = html
+            .find(&head)
+            .unwrap_or_else(|| panic!("{name} missing from template"));
+        let start = open + head.len();
+        let close = start
+            + html[start..]
+                .find("\n  }")
+                .unwrap_or_else(|| panic!("{name} body never closes"));
+        &html[start..close]
+    }
+
+    #[test]
+    fn detector_catches_the_stylesheet_hidden_clear_pattern() {
+        // The contract test above only shows that the shipped asset is clean,
+        // so the detector is pinned here on both sides: the trap must be
+        // reported, the inline-hidden form must pass, a sibling id must not
+        // implicate its prefix, and reading the property is not a write.
+        let binding = "var star=document.getElementById('star');";
+        let buggy = format!(
+            "<style>#star{{color:red;display:none;}}</style>\
+             <button id=\"star\"></button><script>{binding} star.style.display=show?'':'none';</script>"
+        );
+        assert_eq!(cleared_ids(&buggy), vec!["star".to_string()]);
+        assert_eq!(
+            hidden_by_rule(&stylesheets(&buggy), "star").as_deref(),
+            Some("#star"),
+            "a rule that hides a clear-to-show control must be reported"
+        );
+        let fixed = format!(
+            "<style>#star{{color:red;}}</style>\
+             <button id=\"star\" style=\"display:none\"></button>\
+             <script>{binding} star.style.display=show?'':'none';</script>"
+        );
+        assert_eq!(cleared_ids(&fixed), vec!["star".to_string()]);
+        assert_eq!(hidden_by_rule(&stylesheets(&fixed), "star"), None);
+        let sibling = format!("<style>#starpop{{display:none;}}</style><script>{binding}</script>");
+        assert_eq!(
+            hidden_by_rule(&stylesheets(&sibling), "star"),
+            None,
+            "#starpop is not #star"
+        );
+        assert!(
+            cleared_ids(
+                "<script>var open=v.style.display!=='none'&&v.style.display!=='';</script>"
+            )
+            .is_empty(),
+            "reading style.display is not a clear-to-show write"
+        );
+    }
+
+    #[test]
+    fn clear_to_show_controls_are_never_stylesheet_hidden() {
+        let ids = cleared_ids(CHROME_TEMPLATE);
+        // Completeness guard: a parse that stops finding controls would make
+        // the assertion below vacuous.
+        for must in [
+            "omni",
+            "clr",
+            "star",
+            "readbtn",
+            "transbtn",
+            "sharebtn",
+            "pipbtn",
+            "scopechip",
+            "perm",
+            "zoom",
+            "psearch",
+            "padd",
+            "barover",
+        ] {
+            assert!(
+                ids.iter().any(|id| id == must),
+                "#{must} is no longer derived as a clear-to-show control"
+            );
+        }
+        let css = stylesheets(CHROME_TEMPLATE);
+        assert!(
+            css.contains("display:none"),
+            "stylesheet parse found no display declarations"
+        );
+        for id in ids {
+            if let Some(rule) = hidden_by_rule(&css, &id) {
+                panic!(
+                    "#{id} is shown by clearing its inline display, so `{rule}` leaves it \
+                     permanently hidden; hide it with the markup's inline display:none instead"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn controls_hidden_at_first_paint_carry_inline_display_none() {
+        // The script's only hidden value is `none` and its only show gesture
+        // is clearing the inline declaration, so a control that must not be
+        // on screen before the first render has to declare that state in the
+        // served markup. #omni is deliberately absent: the bar starts
+        // visible and the first push hides it.
+        for id in [
+            "clr", "star", "readbtn", "transbtn", "sharebtn", "pipbtn", "barover", "psearch",
+        ] {
+            let tag = markup_tag(CHROME_TEMPLATE, id)
+                .unwrap_or_else(|| panic!("no markup tag with id={id}"));
+            assert!(
+                tag.contains("display:none"),
+                "#{id} must start hidden: {tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn omnibox_focus_has_a_single_entry_point() {
+        // The bar is display:none whenever it is blurred, and a hidden input
+        // cannot take the caret, so the un-hide and the focus have to stay
+        // together behind one name.
+        assert_eq!(
+            CHROME_TEMPLATE.matches("omni.focus()").count(),
+            1,
+            "omnibox focus belongs to focusOmnibox alone"
+        );
+        assert_eq!(
+            CHROME_TEMPLATE.matches("omni.select()").count(),
+            1,
+            "select-on-entry belongs to selectOmnibox alone"
+        );
+        assert!(
+            CHROME_TEMPLATE.contains("window.__ferriteFocusOmnibox=selectOmnibox;"),
+            "the shell drives the entry point through __ferriteFocusOmnibox"
+        );
+        let body = function_body(CHROME_TEMPLATE, "focusOmnibox");
+        let unhide = body
+            .find("omni.style.display=''")
+            .expect("focusOmnibox un-hides the bar");
+        let focus = body
+            .find("omni.focus()")
+            .expect("focusOmnibox focuses the bar");
+        assert!(
+            unhide < focus,
+            "un-hide must come first or the focus is lost"
+        );
+        assert!(
+            body.contains("paintBarRow();"),
+            "focus moves with no push behind it, so the row is repainted here"
+        );
+    }
+
+    #[test]
+    fn bar_row_visibility_has_exactly_one_owner() {
+        for id in ["star", "readbtn", "transbtn", "sharebtn", "pipbtn", "clr"] {
+            assert_eq!(
+                CHROME_TEMPLATE
+                    .matches(&format!("{id}.style.display"))
+                    .count(),
+                1,
+                "{id} visibility must have a single write site"
+            );
+        }
+        let row = function_body(CHROME_TEMPLATE, "paintBarRow");
+        for control in ["star", "readbtn", "transbtn", "sharebtn", "pipbtn"] {
+            assert!(
+                row.contains(&format!("{control}.style.display")),
+                "{control} visibility belongs to paintBarRow"
+            );
+        }
+        assert!(
+            function_body(CHROME_TEMPLATE, "syncClr").contains("clr.style.display"),
+            "the clear-× rule belongs to syncClr"
+        );
+        assert!(
+            CHROME_TEMPLATE.matches("paintBarRow();").count() >= 2,
+            "render and focusOmnibox both repaint the row"
+        );
+    }
+
+    #[test]
+    fn mobile_template_toggles_visibility_by_class_not_inline_display() {
+        // The mobile template cannot carry the desktop trap: it never writes
+        // `style.display` for visibility (it toggles classes). If that ever
+        // changes, the desktop contract above has to be extended to cover it
+        // rather than letting the clear-to-show pattern grow unguarded.
+        assert!(
+            !CHROME_MOBILE_TEMPLATE.contains(".style.display"),
+            "mobile toggles visibility by class; an inline-display write needs the desktop net"
+        );
+    }
+
+    #[test]
+    fn zoom_pop_is_overlay_hosted_and_chrome_dom_removed() {
+        // The zoom popup moved to the shell overlay (D1 of
+        // tasks/toolbar-overlay-3c.md): chrome posts only the chip rect; the
+        // DOM copy must be deleted, never re-added beside a live overlay.
+        assert!(
+            !CHROME_TEMPLATE.contains("zoompop"),
+            "#zoompop DOM/CSS beyond removal — the overlay owns this popup now"
+        );
+        assert!(
+            !CHROME_TEMPLATE.contains("renderZoomPop"),
+            "renderZoomPop is gone with its DOM copy"
+        );
+        assert!(
+            !CHROME_TEMPLATE.contains("data-zoom"),
+            "zoompop row actions are gone with the DOM copy"
+        );
+        // The chip posts the anchor rect; the shell toggles, sizes, and
+        // refreshes — chrome carries no toggle logic for this kind.
+        assert!(
+            CHROME_TEMPLATE.contains("cmd:'popover_open',kind:'zoom'"),
+            "the chip posts a zoom popover_open with its rect"
+        );
+        assert!(
+            CHROME_TEMPLATE.contains("window.__ferritePopState"),
+            "aria-expanded rides the shell push (D3)"
+        );
+        assert!(
+            CHROME_TEMPLATE.contains("cmd:'popover_close',kind:'*'"),
+            "chrome click-away/Esc dismiss the open shell pop"
+        );
+        assert!(
+            !CHROME_TEMPLATE.contains("zoompop.style.display"),
+            "chrome never shows/hides the migrated pop itself"
+        );
+    }
+
+    #[test]
+    fn nav_and_history_pops_are_overlay_hosted_and_chrome_dom_removed() {
+        // Slices 3c-2 of tasks/toolbar-overlay-3c.md: the back/forward drops
+        // and the history dropdown moved to the shell overlay. Chrome posts
+        // only anchor rects; the DOM copies, their CSS, and the hook feeds
+        // must be deleted, never re-added beside a live overlay.
+        assert!(
+            !CHROME_TEMPLATE.contains("navpop") && !CHROME_TEMPLATE.contains("histpop"),
+            "no nav/history DOM, CSS, or hide-list entries may remain"
+        );
+        assert!(
+            !CHROME_TEMPLATE.contains("histItems") && !CHROME_TEMPLATE.contains("closedItems"),
+            "the off-screen cache arrays die with the DOM render"
+        );
+        assert!(
+            !CHROME_TEMPLATE.contains("data-steps")
+                && !CHROME_TEMPLATE.contains("data-cidx")
+                && !CHROME_TEMPLATE.contains("data-hurl")
+                && !CHROME_TEMPLATE.contains("data-call=\"1\"")
+                && !CHROME_TEMPLATE.contains("data-hall"),
+            "DOM row action attributes die with the DOM render"
+        );
+        assert!(
+            !CHROME_TEMPLATE.contains("cmd:'hist_list'")
+                && !CHROME_TEMPLATE.contains("cmd:'history_recent'")
+                && !CHROME_TEMPLATE.contains("cmd:'closed_reopen'")
+                && !CHROME_TEMPLATE.contains("cmd:'closed_restore_all'"),
+            "the old hook commands are gone from chrome"
+        );
+        assert!(
+            !CHROME_TEMPLATE.contains("__ferriteBackList")
+                && !CHROME_TEMPLATE.contains("__ferriteFwdList")
+                && !CHROME_TEMPLATE.contains("__ferriteHistoryRecent")
+                && !CHROME_TEMPLATE.contains("__ferriteClosedRecent"),
+            "the hook feed functions die with the DOM render"
+        );
+        // The three owners post their rects by kind; the shell owns toggling.
+        assert!(
+            CHROME_TEMPLATE.contains("navDrop('nav_back')")
+                && CHROME_TEMPLATE.contains("navDrop('nav_fwd')")
+                && CHROME_TEMPLATE.contains("kind:'history'"),
+            "back, forward, and history buttons post overlay popover_open"
+        );
+        // aria-expanded fans out per kind's owner button (D3 generalization).
+        for owner in [
+            "zoom:'zoom'",
+            "nav_back:'back'",
+            "nav_fwd:'fwd'",
+            "history:'hist'",
+            "downloads:'dl'",
+            "shield:'sh'",
+        ] {
+            assert!(
+                CHROME_TEMPLATE.contains(owner),
+                "the owner map is the single aria-expanded driver: {owner}"
+            );
+        }
+        assert!(
+            !CHROME_TEMPLATE.contains("var popOpen=null"),
+            "the toolbar pop kind keeps its own variable, apart from the omnibox mirror's popOpen"
+        );
+        assert!(
+            CHROME_TEMPLATE.contains("var toolPop=null"),
+            "toolbar pop kind state is toolPop"
+        );
+    }
+
+    #[test]
+    fn downloads_and_shield_pops_are_overlay_hosted_and_chrome_dom_removed() {
+        // Task 3c-3: the desktop downloads bubble and shield card moved to
+        // the shell-hosted overlay. No chrome DOM copy, no data-feed hooks,
+        // no per-row command vocabulary may survive: chrome posts the owner
+        // rect and the shell renders rows from its own stores.
+        for dead in [
+            "dlpop",
+            "shieldpop",
+            "openShield",
+            "openDl",
+            "fmtDlSize",
+            "__ferriteDownloadsRecent",
+            "downloads_recent",
+            "dl_bubble_open",
+            "dl_bubble_folder",
+            "dl_bubble_retry",
+            "dl_bubble_remove",
+            "data-dlopen",
+            "data-dlfolder",
+            "data-dlretry",
+            "data-dlremove",
+            "data-dlall",
+            "data-manage",
+            "data-cert",
+            "data-site",
+            "#pausebtn",
+        ] {
+            assert!(
+                !CHROME_TEMPLATE.contains(dead),
+                "chrome-DOM downloads/shield copy must be gone: {dead}"
+            );
+        }
+        // Both owners post their rect; the shell owns open/toggle/content.
+        assert!(
+            CHROME_TEMPLATE.contains("kind:'downloads'"),
+            "downloads button posts the overlay pop"
+        );
+        assert_eq!(
+            CHROME_TEMPLATE.matches("kind:'shield'").count(),
+            2,
+            "toolbar pill and status-strip count both post the shield pop"
+        );
+        // They ride the same aria-expanded owner map as the other kinds.
+        assert!(CHROME_TEMPLATE.contains("downloads:'dl'"));
+        assert!(CHROME_TEMPLATE.contains("shield:'sh'"));
+        // The unwired mobile bundle keeps its own bubble vocabulary: this
+        // migration is the desktop asset only.
+        assert!(CHROME_MOBILE_TEMPLATE.contains("dl_bubble_open"));
     }
 }

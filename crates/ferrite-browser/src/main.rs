@@ -1,12 +1,12 @@
 //! Binary entry. Init tracing and panic hook, then run `ferrite-shell`.
 
-// Release builds on Windows are GUI-subsystem: no console window pops
-// up beside the browser. Debug/test builds keep the console for logs
-// (debug_assertions are on there, so this never silences a test run).
-#![cfg_attr(
-    all(target_os = "windows", not(debug_assertions)),
-    windows_subsystem = "windows"
-)]
+// Windows is GUI-subsystem in every profile, so starting Ferrite never opens a
+// console window beside the browser — not even in a debug build. Debug logs
+// still have somewhere to go: the standard handles a launching terminal handed
+// us, its console when we were given none, or a capped file when there is no
+// console at all (Explorer, a shortcut). Subsystem does not affect pipes, so
+// the updater's `--version` health gate keeps working headless.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use anyhow::Context;
 use ferrite_shell::{ShellConfig, run};
@@ -15,6 +15,14 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 const DEFAULT_LOG_FILTER: &str = "ferrite=debug,info";
 /// Crash-log file name (under the OS data root, never the launch dir).
 const CRASH_LOG_NAME: &str = "ferrite-crash.log";
+/// Debug-build log, used only when there is no console to print to. Debug
+/// builds are never shipped, so this adds no release privacy surface (the
+/// shipped GUI build keeps logging to the OS-provided streams and nothing else).
+#[cfg(all(target_os = "windows", debug_assertions))]
+const DEBUG_LOG_NAME: &str = "ferrite-debug.log";
+/// Truncate rather than grow unbounded (matches the crash-log cap intent).
+#[cfg(all(target_os = "windows", debug_assertions))]
+const DEBUG_LOG_CAP: u64 = 512 * 1024;
 // Truncated past 64 KB so a crash loop cannot fill disk.
 const CRASH_LOG_CAP: u64 = 64 * 1024;
 
@@ -95,15 +103,116 @@ fn main() -> anyhow::Result<()> {
 fn init_tracing() -> anyhow::Result<()> {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
-    let fmt_layer = fmt::layer()
-        .with_target(false)
-        .with_timer(fmt::time::uptime());
+    #[cfg(all(target_os = "windows", debug_assertions))]
+    {
+        // The process is GUI-subsystem: it owns no console. Join the console of
+        // a terminal that launched us so logs (and `--help`/`--version`) still
+        // print there; when there is none, keep the trail in a capped file
+        // beside the crash log instead of losing it.
+        if !attach_console_if_any() {
+            let path = ferrite_shell::profiles::data_root().join(DEBUG_LOG_NAME);
+            return tracing_subscriber::registry()
+                .with(filter)
+                .with(
+                    fmt::layer()
+                        .with_target(false)
+                        .with_timer(fmt::time::uptime())
+                        .with_writer(DebugLogWriter { path }),
+                )
+                .try_init()
+                .context("failed to initialise tracing subscriber");
+        }
+    }
     tracing_subscriber::registry()
         .with(filter)
-        .with(fmt_layer)
+        .with(
+            fmt::layer()
+                .with_target(false)
+                .with_timer(fmt::time::uptime()),
+        )
         .try_init()
         .context("failed to initialise tracing subscriber")?;
     Ok(())
+}
+
+/// Give this GUI-subsystem process somewhere to write its logs, and return
+/// whether it found one.
+///
+/// If a standard handle is already set (a pipe or a terminal that launched us),
+/// leave it alone. Otherwise join the console of the terminal that launched us
+/// and point the standard handles at it. Returns `false` when there is no
+/// console to join (Explorer, a shortcut) — the file-log fallback case.
+#[cfg(all(target_os = "windows", debug_assertions))]
+fn attach_console_if_any() -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+        STD_OUTPUT_HANDLE, SetStdHandle,
+    };
+    // SAFETY: plain Win32 calls, no memory of ours is borrowed. The console
+    // handles are leaked on purpose (`mem::forget`) so they stay valid for the
+    // whole process lifetime, exactly as OS-provided standard handles would.
+    unsafe {
+        // A standard handle already in place is a real sink: a pipe (the
+        // updater's `--version` health gate) or a terminal that launched us and
+        // handed its console down. Leave it untouched — replacing it here would
+        // send output to the console instead of the pipe reading it.
+        if let Ok(stdout) = GetStdHandle(STD_OUTPUT_HANDLE)
+            && !stdout.is_invalid()
+        {
+            return true;
+        }
+        // Attach only when we truly have nowhere to write. Fails when the
+        // creator had no console (the normal double-click case).
+        if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
+            return false;
+        }
+        // AttachConsole alone does not refresh std's cached handles; reopen the
+        // console devices and install them so `println!`/tracing reach the
+        // terminal rather than a stale (null) handle.
+        if let Ok(out) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
+            let handle = HANDLE(out.as_raw_handle());
+            let _ = SetStdHandle(STD_OUTPUT_HANDLE, handle);
+            let _ = SetStdHandle(STD_ERROR_HANDLE, handle);
+            std::mem::forget(out);
+        }
+        if let Ok(inp) = std::fs::OpenOptions::new().read(true).open("CONIN$") {
+            let _ = SetStdHandle(STD_INPUT_HANDLE, HANDLE(inp.as_raw_handle()));
+            std::mem::forget(inp);
+        }
+        true
+    }
+}
+
+/// Append-only, size-capped tracing sink for a debug build that has no console
+/// (see `init_tracing`). Reopened per event: debug-only, and it keeps lines
+/// from several threads in file order via the OS append guarantee.
+#[cfg(all(target_os = "windows", debug_assertions))]
+#[derive(Clone)]
+struct DebugLogWriter {
+    path: std::path::PathBuf,
+}
+
+#[cfg(all(target_os = "windows", debug_assertions))]
+impl<'a> fmt::MakeWriter<'a> for DebugLogWriter {
+    type Writer = Box<dyn std::io::Write + 'a>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        // Truncate past the cap so a log storm or crash loop stays bounded.
+        if std::fs::metadata(&self.path).is_ok_and(|m| m.len() > DEBUG_LOG_CAP) {
+            let _ = std::fs::write(&self.path, b"");
+        }
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            Ok(file) => Box::new(file),
+            // A failed open must never take the browser down: drop the line.
+            Err(_) => Box::new(std::io::sink()),
+        }
+    }
 }
 
 fn install_panic_hook() {
@@ -226,5 +335,53 @@ mod tests {
             scrub_urls("quoted \"https://e.test/p\" end".to_owned()),
             "quoted \"[url]\" end"
         );
+    }
+}
+
+/// The console-free Windows build has no stdout to lose: when it also has no
+/// console to attach to, these pin that the fallback log file still records
+/// output and stays capped.
+#[cfg(all(test, target_os = "windows", debug_assertions))]
+mod debug_log_tests {
+    use super::*;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[test]
+    fn writer_appends_then_truncates_past_the_cap() {
+        let dir = std::env::temp_dir().join(format!("ferrite-debug-log-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(DEBUG_LOG_NAME);
+        let _ = std::fs::remove_file(&path);
+        let writer = DebugLogWriter { path: path.clone() };
+
+        {
+            use std::io::Write;
+            let mut w = writer.make_writer();
+            writeln!(w, "first").unwrap();
+        }
+        {
+            use std::io::Write;
+            let mut w = writer.make_writer();
+            writeln!(w, "second").unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "first\nsecond\n",
+            "later events append rather than clobber"
+        );
+
+        std::fs::write(&path, vec![b'x'; (DEBUG_LOG_CAP + 1) as usize]).unwrap();
+        {
+            use std::io::Write;
+            let mut w = writer.make_writer();
+            writeln!(w, "after-cap").unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "after-cap\n",
+            "past the cap the file restarts instead of growing without bound"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

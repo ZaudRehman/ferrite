@@ -113,35 +113,6 @@ pub struct EngineRow {
     pub current: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToastAnchor {
-    Downloads,
-    Floating,
-}
-
-/// Labels render verbatim, never interpolated with untrusted text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ToastActionView {
-    Undo,
-    OpenDownloads { id: Option<String> },
-    SaveLogin,
-}
-
-/// Queue head only. Shell owns expiry and queueing. `seq` pairs clicks with
-/// the visible frame. Stale clicks are ignored shell side.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ToastView {
-    pub seq: u64,
-    pub icon: String,
-    pub text: String,
-    pub action_label: Option<String>,
-    pub action: Option<ToastActionView>,
-    pub anchor: ToastAnchor,
-    pub duration_ms: u64,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StatusRow {
     pub tabs: usize,
@@ -175,7 +146,6 @@ pub struct StatusRow {
     pub dl_failed: bool,
     /// Page reported count only. The engine console is not exposed.
     pub console_errors: u32,
-    pub toast: Option<ToastView>,
 }
 
 /// Split in Rust. Never parsed in JS (display is a trust surface).
@@ -230,11 +200,6 @@ pub struct ChromeState {
     pub panel_open: bool,
     pub panel_section: String,
     pub panel_w: u32,
-    pub find_open: bool,
-    pub find_query: String,
-    pub find_case: bool,
-    pub find_total: u32,
-    pub find_index: u32,
     pub crash_offer: bool,
     pub crash_tabs: u32,
     pub version: String,
@@ -295,7 +260,6 @@ impl ChromeState {
                 dl_flash: false,
                 dl_failed: false,
                 console_errors: 0,
-                toast: None,
             },
             accent: "#ffc670".to_owned(),
             pinned_view: false,
@@ -309,11 +273,6 @@ impl ChromeState {
             panel_open: false,
             panel_section: "bookmarks".to_owned(),
             panel_w: 320,
-            find_open: false,
-            find_query: String::new(),
-            find_case: false,
-            find_total: 0,
-            find_index: 0,
             crash_offer: false,
             crash_tabs: 0,
             version: String::new(),
@@ -394,49 +353,6 @@ mod tests {
         let script = push_script(&ChromeState::empty());
         assert!(script.starts_with("__ferriteChrome("));
         assert!(script.ends_with(')'));
-    }
-
-    #[test]
-    fn toast_view_serializes_for_chrome() {
-        let mut s = ChromeState::empty();
-        assert!(s.status.toast.is_none());
-        s.status.toast = Some(ToastView {
-            seq: 7,
-            icon: "dl".into(),
-            text: "3 downloads complete".into(),
-            action_label: Some("Open".into()),
-            action: Some(ToastActionView::OpenDownloads { id: None }),
-            anchor: ToastAnchor::Downloads,
-            duration_ms: 4000,
-        });
-        let json = state_json(&s);
-        assert!(json.contains("\"seq\":7"));
-        assert!(json.contains("3 downloads complete"));
-        assert!(json.contains("\"kind\":\"open_downloads\""));
-        assert!(json.contains("\"anchor\":\"downloads\""));
-        s.status.toast = Some(ToastView {
-            seq: 8,
-            icon: "check".into(),
-            text: "Bookmark deleted".into(),
-            action_label: Some("Undo".into()),
-            action: Some(ToastActionView::Undo),
-            anchor: ToastAnchor::Floating,
-            duration_ms: 6000,
-        });
-        let json = state_json(&s);
-        assert!(json.contains("\"kind\":\"undo\""));
-        assert!(json.contains("\"anchor\":\"floating\""));
-        s.status.toast = Some(ToastView {
-            seq: 9,
-            icon: "key".into(),
-            text: "Save login for example.com?".into(),
-            action_label: Some("Save".into()),
-            action: Some(ToastActionView::SaveLogin),
-            anchor: ToastAnchor::Floating,
-            duration_ms: 8000,
-        });
-        let json = state_json(&s);
-        assert!(json.contains("\"kind\":\"save_login\""));
     }
 
     #[test]

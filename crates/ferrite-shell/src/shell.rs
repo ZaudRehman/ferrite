@@ -19,7 +19,7 @@ use winit::{
     dpi::LogicalSize,
     event::{ElementState, KeyEvent, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    keyboard::{Key, NamedKey},
+    keyboard::PhysicalKey,
     window::{Fullscreen, Icon, Window, WindowAttributes, WindowId},
 };
 use zeroize::Zeroize;
@@ -28,11 +28,12 @@ use ferrite_chrome::{
     chrome::{
         ChromeState, EngineRow, GroupRow, ProfileRow, StatusRow, SugRow, TabRow, WsRow, push_script,
     },
-    ipc::ChromeCommand,
+    ipc::{ChromeCommand, ChromeSurface, PopValues},
     tokens::ThemePack,
 };
 use ferrite_tabs::{
     IpcBridge, LogicalRect, NavigationHistory, TabState, WebViewHandle, WryFactory,
+    shortcuts::{self, Action},
 };
 
 use crate::{
@@ -52,6 +53,19 @@ pub const CHROME_TOP_VTAB_PX: f64 = 48.0;
 pub const BAR_H_PX: f64 = 30.0;
 /// Crash infobar height when visible. Must match the template.
 pub const INFOBAR_H_PX: f64 = 40.0;
+/// Status strip height, reserved from the bottom of the content slot so the
+/// strip is visible instead of painting under the page (3c-5). Must match the
+/// template's `#status` height (it declares `box-sizing:border-box`).
+pub const STATUS_H_PX: f64 = 26.0;
+/// Find bar card size. The `ferrite://find` window is exactly this card.
+pub const FIND_W_PX: f64 = 360.0;
+pub const FIND_H_PX: f64 = 36.0;
+/// Toast card size clamp. The page measures itself and posts `toast_size`;
+/// the clamp bounds what a hostile page could swallow with its window.
+pub const TOAST_MIN_W_PX: f64 = 220.0;
+pub const TOAST_MAX_W_PX: f64 = 360.0;
+pub const TOAST_MIN_H_PX: f64 = 32.0;
+pub const TOAST_MAX_H_PX: f64 = 84.0;
 /// Archive gold, constant across packs.
 const ARCHIVE_GOLD: &str = "#f0c75e";
 /// Tick: drain IPC and push dirty chrome state.
@@ -124,38 +138,28 @@ impl Default for ShellConfig {
     }
 }
 impl ShellConfig {
-    /// Raw RGBA pixels of the brand favicon (pure: no platform calls,
-    /// unit-tested against the real file).
-    fn window_icon_pixels() -> Option<(Vec<u8>, u32, u32)> {
-        use png::{BitDepth, ColorType};
-        let bytes = include_bytes!("../../../brand/favicon.png");
-        let decoder = png::Decoder::new(std::io::Cursor::new(bytes.as_slice()));
-        let mut reader = decoder.read_info().ok()?;
-        let mut buf = vec![0; reader.output_buffer_size()?];
-        let info = reader.next_frame(&mut buf).ok()?;
-        let rgba = match (info.color_type, info.bit_depth) {
-            (ColorType::Rgba, BitDepth::Eight) => buf,
-            (ColorType::Rgb, BitDepth::Eight) => {
-                let mut out = Vec::with_capacity(buf.len() / 3 * 4);
-                for px in buf.chunks_exact(3) {
-                    out.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
-                }
-                out
-            }
-            (ct, bd) => {
-                debug!(?ct, ?bd, "window icon skipped: unsupported png form");
-                return None;
-            }
-        };
-        Some((rgba, info.width, info.height))
-    }
-
-    /// Window icon from the brand kit (`brand/favicon.png`, baked into
-    /// the binary). Decoded once per window via the already-vendored
-    /// `png` crate (no new supply-chain edge). None on any failure:
-    /// a missing titlebar glyph never blocks boot.
+    /// Window icon for the platforms that take one from the app.
+    ///
+    /// The pixels are the brand mark from `brand/ferrite.ico` (see `app_icon`).
+    /// Windows deliberately gets `None`: Windows binds a taskbar button to the
+    /// running executable's embedded icon — the `brand/ferrite.ico` that
+    /// `ferrite-app`'s build script embeds, which is also the mark the
+    /// installer, Start-menu shortcut and Explorer draw — while a window icon
+    /// reaches Windows as a single `ICON_SMALL` bitmap whose documented effect
+    /// is the caption (`winit` 0.30 `platform_impl/windows/window.rs`). Passing
+    /// one would therefore replace that multi-size mark with one scaled bitmap:
+    /// the icon this replaced was `brand/favicon.png`, 157x166, non-square, and
+    /// the gradient treatment of the mark — visibly not the brand in the
+    /// taskbar. X11/Wayland take the window icon from the app
+    /// (`_NET_WM_ICON`); macOS ignores it (the bundle icon governs). None on
+    /// any failure: a missing titlebar glyph never blocks boot.
     fn window_icon() -> Option<Icon> {
-        let (rgba, w, h) = Self::window_icon_pixels()?;
+        let pixels = if cfg!(target_os = "windows") {
+            None
+        } else {
+            app_icon::pixels()
+        };
+        let (rgba, w, h) = pixels?;
         match Icon::from_rgba(rgba, w, h) {
             Ok(icon) => Some(icon),
             Err(e) => {
@@ -168,6 +172,8 @@ impl ShellConfig {
     fn window_attributes(&self) -> WindowAttributes {
         let mut attrs = Window::default_attributes()
             .with_title(self.title.clone())
+            // The brand mark; None on Windows, where the executable's embedded
+            // `brand/ferrite.ico` is the taskbar and caption icon instead.
             .with_window_icon(Self::window_icon())
             .with_inner_size(self.initial_size)
             .with_active(true)
@@ -188,6 +194,143 @@ impl ShellConfig {
                 .with_fullsize_content_view(true);
         }
         attrs
+    }
+}
+
+/// The app icon's pixels, read from `brand/ferrite.ico`.
+///
+/// That file is the single app-icon source of truth: `ferrite-app`'s build
+/// script embeds it into `ferrite.exe`, and the installer, Start-menu shortcut
+/// and Explorer all draw it. Its frames are PNG-compressed, so the already
+/// vendored `png` decoder reads them directly — no second baked asset to keep
+/// in sync with the mark, and no new supply-chain edge. Pure (no platform
+/// calls), so it compiles and unit-tests on every target.
+mod app_icon {
+    use tracing::debug;
+
+    /// Largest frame of the brand `.ico`, decoded to RGBA8.
+    pub(super) fn pixels() -> Option<(Vec<u8>, u32, u32)> {
+        decode_png_rgba(largest_frame(include_bytes!("../../../brand/ferrite.ico"))?)
+    }
+
+    /// Every frame of an `.ico` as `(width, height, bytes)`, in file order.
+    ///
+    /// Bounds-checked throughout: a hand-edited or re-exported icon must never
+    /// panic a boot, so anything unexpected yields an empty list and the caller
+    /// boots without a window icon.
+    fn frames(bytes: &[u8]) -> Vec<(u32, u32, &[u8])> {
+        // ICONDIR: reserved(2) = 0, type(2) = 1 for an icon (2 is a cursor),
+        // count(2), then one 16-byte ICONDIRENTRY per frame. An entry's
+        // width/height byte of 0 means 256, the format's ceiling.
+        let count = match bytes.get(..6) {
+            Some([0, 0, 1, 0, lo, hi]) => usize::from(u16::from_le_bytes([*lo, *hi])),
+            _ => return Vec::new(),
+        };
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let Some(entry) = bytes.get(6 + i * 16..6 + i * 16 + 16) else {
+                return Vec::new();
+            };
+            let side = |b: u8| if b == 0 { 256u32 } else { u32::from(b) };
+            let (Ok(len), Ok(off)) = (entry[8..12].try_into(), entry[12..16].try_into()) else {
+                return Vec::new();
+            };
+            let (len, off) = (u32::from_le_bytes(len), u32::from_le_bytes(off));
+            let (Ok(len), Ok(off)) = (usize::try_from(len), usize::try_from(off)) else {
+                return Vec::new();
+            };
+            // A frame that runs past the end of the file is not a frame.
+            let Some(frame) = off.checked_add(len).and_then(|end| bytes.get(off..end)) else {
+                return Vec::new();
+            };
+            out.push((side(entry[0]), side(entry[1]), frame));
+        }
+        out
+    }
+
+    /// Largest frame of an `.ico`, as a byte slice.
+    fn largest_frame(bytes: &[u8]) -> Option<&[u8]> {
+        frames(bytes)
+            .into_iter()
+            .max_by_key(|&(w, h, _)| w * h)
+            .map(|(_, _, frame)| frame)
+    }
+
+    /// Decode PNG bytes to RGBA8 (the window-icon pixel format).
+    fn decode_png_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+        use png::{BitDepth, ColorType};
+        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        let mut reader = decoder.read_info().ok()?;
+        let mut buf = vec![0; reader.output_buffer_size()?];
+        let info = reader.next_frame(&mut buf).ok()?;
+        let rgba = match (info.color_type, info.bit_depth) {
+            (ColorType::Rgba, BitDepth::Eight) => buf,
+            (ColorType::Rgb, BitDepth::Eight) => {
+                let mut out = Vec::with_capacity(buf.len() / 3 * 4);
+                for px in buf.chunks_exact(3) {
+                    out.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
+                }
+                out
+            }
+            (ct, bd) => {
+                debug!(?ct, ?bd, "app icon skipped: unsupported png form");
+                return None;
+            }
+        };
+        Some((rgba, info.width, info.height))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The window and taskbar mark is the brand `.ico`, never the
+        /// `brand/favicon.png` that shipped in the taskbar instead of the mark:
+        /// that file is the gradient treatment of the mark, 157x166, so this
+        /// assertion (square 256) fails the moment the source drifts back.
+        #[test]
+        fn pixels_are_the_brand_mark() {
+            let (rgba, w, h) = pixels().expect("brand/ferrite.ico must decode");
+            assert_eq!((w, h), (256, 256), "square 256 frame, not the 157x166 PNG");
+            assert_eq!(rgba.len(), (w * h * 4) as usize, "rgba buffer matches");
+            assert!(
+                rgba.chunks_exact(4).any(|p| p[3] > 0),
+                "carries real pixels"
+            );
+        }
+
+        /// A re-export must keep every size an OS draws the mark at: taskbar 16,
+        /// alt-tab 32, Explorer 48, store preview 256.
+        #[test]
+        fn reexport_keeps_every_frame_size() {
+            let mut sides: Vec<u32> = frames(include_bytes!("../../../brand/ferrite.ico"))
+                .into_iter()
+                .map(|(w, _, _)| w)
+                .collect();
+            sides.sort_unstable();
+            assert_eq!(sides, vec![16, 32, 48, 256]);
+        }
+
+        /// A malformed icon is refused, never panicked on: the file is a build
+        /// input, but boot must not depend on its integrity.
+        #[test]
+        fn malformed_icons_are_refused_not_panicked() {
+            assert!(frames(&[]).is_empty(), "no header");
+            assert!(frames(&[0, 0, 1, 0]).is_empty(), "truncated header");
+            assert!(
+                frames(&[0, 0, 1, 0, 9, 0]).is_empty(),
+                "count without entries"
+            );
+            assert!(frames(&[0, 0, 2, 0, 0, 0]).is_empty(), "cursor, not icon");
+            // One well-formed entry whose payload runs past the end of the file.
+            let mut truncated = vec![0, 0, 1, 0, 1, 0];
+            truncated.extend_from_slice(&[16, 16, 0, 0, 1, 0, 32, 0, 4, 0, 0, 0, 20, 0, 0, 0]);
+            assert!(frames(&truncated).is_empty(), "payload beyond the file");
+            assert!(
+                largest_frame(&[0, 0, 2, 0, 0, 0]).is_none(),
+                "largest of none"
+            );
+        }
     }
 }
 
@@ -361,6 +504,11 @@ pub(crate) struct ShellApp {
     /// against the stored payload, never later page-supplied data.
     ctx_menu: Option<CtxPayload>,
     ctx_overlay: Option<Rc<dyn WebViewHandle>>,
+    /// Last renderer script presented on the shared overlay. The overlay page
+    /// reports `ctx_ready` once its hooks exist; the first presentation can
+    /// race that load and be evaluated against an empty document, so the
+    /// shell replays this exact script when readiness arrives.
+    ctx_last_js: Option<String>,
     /// Latest scanner fields per tab (fill-offer hit testing).
     scan_cache: std::collections::HashMap<Uuid, Vec<ScanField>>,
     /// Fill offers for the open menu (rebuilt per open, cleared on hide).
@@ -463,6 +611,23 @@ pub(crate) struct ShellApp {
     /// (superseded frames, guessed ids) are ignored.
     dlg_overlay: Option<Rc<dyn WebViewHandle>>,
     dlg_shown: Option<(Uuid, u64)>,
+    /// Find-in-page overlay (`ferrite://find`, lazy): the floating card above
+    /// the content slot. Shell owns the find state; `find_sig` is the last
+    /// frame pushed (echo pushes are skipped) and `find_focus` marks the one
+    /// push that may move the caret (open / Ctrl+F while open).
+    find_overlay: Option<Rc<dyn WebViewHandle>>,
+    find_sig: String,
+    find_focus: bool,
+    find_ready: bool,
+    /// Toast overlay (`ferrite://toast`, lazy): one floating card sized to
+    /// itself. `toast_seq` is the head currently pushed, `toast_size` the
+    /// size the page measured for it, `toast_visible` the seq whose window
+    /// is on screen (None while the card is being measured or after expiry).
+    toast_overlay: Option<Rc<dyn WebViewHandle>>,
+    toast_seq: Option<u64>,
+    toast_size: (f64, f64),
+    toast_visible: Option<u64>,
+    toast_ready: bool,
     /// Interception sink for deferral completions plus suppression updates.
     /// `None` without factory interception (always, off-Windows).
     #[cfg(target_os = "windows")]
@@ -478,6 +643,10 @@ pub(crate) struct ShellApp {
     /// Ask-every-time flag, shared with the factory sync handler
     /// (persisted as `ask_downloads`, default off).
     ask_downloads: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Engine parallel-download setting (persisted as `parallel_downloads`,
+    /// default on). The factory copies this at boot: WebView2 requires one
+    /// argument set per data directory, so a change applies after restart.
+    parallel_downloads: bool,
     /// Last-used save directory (explicit Save-As only, never the
     /// passive-download default).
     save_last_dir: Option<std::path::PathBuf>,
@@ -651,6 +820,20 @@ pub(crate) struct ShellApp {
     /// which chrome DOM can never be). Opening either dismisses the other;
     /// hide_ctx_menu clears this flag too since it hides the shared view.
     menu_open: bool,
+    /// Omnibox suggestion popover on the same shared overlay. `Some` while
+    /// open; chrome owns the field focus and the a11y listbox, the overlay
+    /// only paints and reports clicks back. Cleared by hide_ctx_menu like
+    /// the other users of the shared view.
+    omni_pop: Option<OmniPop>,
+    /// Shell-hosted toolbar popover (zoom is the first migrated kind, the
+    /// rest of the family lands per tasks/toolbar-overlay-3c.md). `Some`
+    /// while open; owns geometry, frame data, and the keep-open semantics
+    /// the chrome-DOM versions had. Cleared by hide_ctx_menu cleanup like
+    /// the other users of the shared overlay view.
+    toolbar_pop: Option<ToolbarPop>,
+    /// Last suggestion list pushed to chrome: kept so the overlay rows can
+    /// be rebuilt when only the highlight or clipboard row changed.
+    last_sugs: Vec<SugRow>,
     modifiers: winit::keyboard::ModifiersState,
     window: Option<Arc<Window>>,
     app: AppContext,
@@ -726,6 +909,22 @@ impl ClosedTab {
 
 /// Recently-closed cap (Chrome/Firefox parity: 25 per window).
 const CLOSED_CAP: usize = 25;
+
+/// Tab index selected by Ctrl+1..9. 1..8 select that position and are inert
+/// when the window has fewer tabs (Chrome does not clamp them); 9 always
+/// selects the last tab. `None` means "do not switch".
+fn switch_tab_index(digit: u8, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    if digit == 9 {
+        Some(len - 1)
+    } else if (digit as usize) <= len {
+        Some(digit as usize - 1)
+    } else {
+        None
+    }
+}
 
 impl ShellApp {
     fn new(
@@ -1283,6 +1482,16 @@ impl ShellApp {
                 .and_then(|x| x.as_bool())
                 .unwrap_or(false),
         ));
+        // Engine parallel downloads are on by default: the feature only
+        // changes the transfer shape when the server offers ranges, and
+        // the engine falls back to one stream otherwise. Settings can turn
+        // it off for a server that behaves badly. This is a boot-time
+        // choice: WebView2 requires one browser-argument set per data
+        // directory, so changing it cannot affect live webviews.
+        let parallel_downloads = settings_json
+            .get("parallel_downloads")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(true);
         // Permission broker: fail-closed sync decisions, pending rows
         // surface as the omnibox chip (never a banner). Truth lives in the
         // Vault `site_permissions` table (SQLCipher). The legacy plaintext
@@ -1450,6 +1659,7 @@ impl ShellApp {
                 f = f.with_private_download_dir(dir.clone());
             }
             f = f.with_download_ask(dlask_tx, std::sync::Arc::clone(&ask_downloads));
+            f = f.with_parallel_downloads(parallel_downloads);
             f = f.with_pdf_intercept(
                 pdf_intercept_tx.clone(),
                 std::sync::Arc::clone(&pdf_intercept_on),
@@ -1651,6 +1861,7 @@ impl ShellApp {
             last_find: String::new(),
             ctx_menu: None,
             ctx_overlay: None,
+            ctx_last_js: None,
             scan_cache: std::collections::HashMap::new(),
             fill_options: Vec::new(),
             af_open: false,
@@ -1730,12 +1941,22 @@ impl ShellApp {
             dialogs: ferrite_tabs::DialogStore::new(),
             dlg_overlay: None,
             dlg_shown: None,
+            find_overlay: None,
+            find_sig: String::new(),
+            find_focus: false,
+            find_ready: false,
+            toast_overlay: None,
+            toast_seq: None,
+            toast_size: (TOAST_MIN_W_PX, TOAST_MIN_H_PX + 8.0),
+            toast_visible: None,
+            toast_ready: false,
             #[cfg(target_os = "windows")]
             dialog_sink,
             notice_tx,
             notice_rx,
             dlask_rx,
             ask_downloads: std::sync::Arc::clone(&ask_downloads),
+            parallel_downloads,
             save_last_dir,
             pending_export: None,
             pending_blob: None,
@@ -1786,6 +2007,9 @@ impl ShellApp {
             overlay: None,
             overlay_open: false,
             menu_open: false,
+            omni_pop: None,
+            toolbar_pop: None,
+            last_sugs: Vec::new(),
             modifiers: winit::keyboard::ModifiersState::default(),
             window: None,
             app,
@@ -1862,31 +2086,21 @@ impl ShellApp {
 
     /// Content slot: full window minus the chrome bars (plus the bookmarks
     /// bar and crash infobar when visible) on top, minus the open side
-    /// panel on the right. Vertical tabs dock the strip left at
-    /// `VTAB_W_PX`, so the slot shifts right and the top shrinks to the
-    /// omnibar row (`CHROME_TOP_VTAB_PX`).
+    /// panel on the right, minus the status strip at the bottom when it is
+    /// shown. Vertical tabs dock the strip left at `VTAB_W_PX`, so the slot
+    /// shifts right and the top shrinks to the omnibar row
+    /// (`CHROME_TOP_VTAB_PX`).
     fn content_rect(&self) -> Option<LogicalRect> {
         let (w, h) = self.window_logical()?;
-        // Parenthesized: `else EXPR + ...` would bind the additions into
-        // the else branch and drop them in vertical mode.
-        let chrome_top = if self.tabs_vertical {
-            CHROME_TOP_VTAB_PX
-        } else {
-            CHROME_TOP_PX
-        };
-        let top = chrome_top
-            + if self.bar_visible() { BAR_H_PX } else { 0.0 }
-            + if self.crash_offer { INFOBAR_H_PX } else { 0.0 };
-        let left = if self.tabs_vertical { VTAB_W_PX } else { 0.0 };
-        let pw = if self.panel_open {
-            self.panel_w as f64
-        } else {
-            0.0
-        };
-        if w <= left + pw || h <= top {
-            return None;
-        }
-        Some(LogicalRect::new(left, top, w - left - pw, h - top))
+        content_slot(
+            w,
+            h,
+            self.tabs_vertical,
+            self.bar_visible(),
+            self.crash_offer,
+            self.panel_open.then_some(self.panel_w as f64),
+            self.status_visible,
+        )
     }
 
     fn content_wry(&self) -> Option<wry::Rect> {
@@ -1916,6 +2130,21 @@ impl ShellApp {
             && let Err(e) = ov.set_bounds(bounds)
         {
             debug!(error = %e, "dialog reposition failed");
+        }
+        // The find card and a visible toast anchor to the content slot too:
+        // panel, bar, infobar, status strip and rail changes all move them.
+        if self.find_open
+            && let (Some(ov), Some(bounds)) = (self.find_overlay.as_ref(), self.find_overlay_rect())
+            && let Err(e) = ov.set_bounds(bounds)
+        {
+            debug!(error = %e, "find reposition failed");
+        }
+        if let Some(seq) = self.toast_visible
+            && let (Some(ov), Some(bounds)) =
+                (self.toast_overlay.as_ref(), self.toast_overlay_rect(seq))
+            && let Err(e) = ov.set_bounds(bounds)
+        {
+            debug!(error = %e, "toast reposition failed");
         }
     }
 
@@ -2357,6 +2586,132 @@ impl ShellApp {
         }
     }
 
+    /// Pending permission rows for the active tab, shared by the chrome push
+    /// (the chip) and the permission card, so the two can never disagree.
+    /// Dead tabs are swept here: a closed tab must never leave rows behind.
+    fn perm_rows(&self) -> Vec<ferrite_chrome::chrome::PermRow> {
+        let live: std::collections::HashSet<Uuid> = self.app.tabs.iter().map(|t| t.id).collect();
+        self.permissions.retain_tabs(&live);
+        self.app
+            .tabs
+            .active_id()
+            .map(|id| {
+                self.permissions
+                    .pending_for(id)
+                    .iter()
+                    .map(|p| ferrite_chrome::chrome::PermRow {
+                        kind: p.kind.clone(),
+                        label: ferrite_tabs::kind_label(&p.kind).to_owned(),
+                        origin: p.origin.clone(),
+                        quiet: self
+                            .permissions
+                            .quiet(&p.origin, ferrite_tabs::now_millis()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Status-strip data: session-wide verdict counters, the active page's
+    /// attribution, and the in-flight download summary. One builder so the
+    /// strip, the toolbar shield badge and the shield popover can never
+    /// disagree about a number.
+    fn status_row(&self) -> StatusRow {
+        // Real verdict data: blocked is ad+tracker+fingerprint+malware+mixed,
+        // never the raw request counter. The badge headline stays
+        // session-wide; `site_*` below attributes the ACTIVE page so
+        // the dropdown can promise "on this site" honestly.
+        let (allow, ad, tracker, fingerprint, malware, mixed) = self.privacy.verdict_counts();
+        let _ = allow;
+        let site_host = self
+            .app
+            .tabs
+            .active_tab()
+            .map(|t| t.url.clone())
+            .and_then(|u| page_host_for_shield(&u));
+        let (site_blocked, site_paused) = match site_host.as_deref() {
+            Some(host) => {
+                let (_, ad, tracker, _, malware, mixed) = self.privacy.origin_breakdown(host);
+                (ad + tracker + malware + mixed, self.privacy.is_paused(host))
+            }
+            None => (0, false),
+        };
+        // Latest in-flight download: a later terminal event for the same
+        // id retires it.
+        let mut terminal: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut dl_active = false;
+        let mut dl_frac = 0.0f32;
+        for e in self.download_log.iter().rev() {
+            use ferrite_tabs::DownloadStateKind as S;
+            match e.state {
+                S::Completed | S::Failed | S::Cancelled => {
+                    terminal.insert(e.id.as_str());
+                }
+                S::Started | S::Progress | S::Paused | S::Interrupted => {
+                    if !terminal.contains(e.id.as_str()) && !dl_active {
+                        dl_active = true;
+                        dl_frac = match e.bytes_total {
+                            Some(t) if t > 0 => {
+                                (e.bytes_received as f32 / t as f32).clamp(0.0, 1.0)
+                            }
+                            _ => 0.0,
+                        };
+                    }
+                }
+            }
+            if dl_active {
+                break;
+            }
+        }
+        let dl_failed = self
+            .download_log
+            .iter()
+            .rev()
+            .find_map(|e| {
+                use ferrite_tabs::DownloadStateKind as S;
+                match e.state {
+                    S::Started | S::Progress | S::Paused | S::Interrupted => None,
+                    S::Completed | S::Cancelled => Some(false),
+                    S::Failed => Some(true),
+                }
+            })
+            .unwrap_or(false);
+        StatusRow {
+            tabs: self.app.tabs.len(),
+            proxy_alive: self.proxy.is_some(),
+            blocked: ad + tracker + fingerprint + malware + mixed,
+            blocked_ad: ad,
+            blocked_tracker: tracker,
+            blocked_fingerprinting: fingerprint,
+            blocked_malware: malware,
+            blocked_mixed: mixed,
+            recent_trackers: self.privacy.recent_tracker_hosts(8),
+            fail_open: self.privacy.fail_open_count(),
+            site_blocked,
+            site_paused,
+            downloads: self.download_log.len(),
+            last_download: self
+                .download_log
+                .back()
+                .map(|e| format!("{} {:?}", e.filename, e.state)),
+            last_download_id: self.download_log.back().map(|e| e.id.clone()),
+            show: self.status_visible,
+            dl_active,
+            dl_frac,
+            dl_flash: self
+                .last_dl_done
+                .map(|t| t.elapsed() < Duration::from_secs(4))
+                .unwrap_or(false),
+            dl_failed,
+            console_errors: self
+                .app
+                .tabs
+                .active_tab()
+                .map(|t| t.console_errors)
+                .unwrap_or(0),
+        }
+    }
+
     fn chrome_state(&self) -> ChromeState {
         let active_id = self.app.tabs.active_id();
         let tabs: Vec<TabRow> = self
@@ -2726,29 +3081,8 @@ impl ShellApp {
             })
             .collect();
         // Permission chip: pending rows for the active tab only (it
-        // disappears on switch-away and returns as left). Dead tabs are
-        // swept here so closes never leave stale rows.
-        let live: std::collections::HashSet<Uuid> = self.app.tabs.iter().map(|t| t.id).collect();
-        self.permissions.retain_tabs(&live);
-        let perm: Vec<ferrite_chrome::chrome::PermRow> = self
-            .app
-            .tabs
-            .active_id()
-            .map(|id| {
-                self.permissions
-                    .pending_for(id)
-                    .iter()
-                    .map(|p| ferrite_chrome::chrome::PermRow {
-                        kind: p.kind.clone(),
-                        label: ferrite_tabs::kind_label(&p.kind).to_owned(),
-                        origin: p.origin.clone(),
-                        quiet: self
-                            .permissions
-                            .quiet(&p.origin, ferrite_tabs::now_millis()),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // disappears on switch-away and returns as left).
+        let perm: Vec<ferrite_chrome::chrome::PermRow> = self.perm_rows();
         ChromeState {
             tabs,
             groups,
@@ -2795,105 +3129,7 @@ impl ShellApp {
             pip_eligible: self.app.tabs.active_tab().is_some_and(|t| t.pip_eligible),
             pip_active: self.app.tabs.active_tab().is_some_and(|t| t.is_pip_active),
             engines,
-            status: {
-                // Real verdict data: blocked is ad+tracker+fingerprint+malware+mixed,
-                // never the raw request counter. The badge headline stays
-                // session-wide; `site_*` below attributes the ACTIVE page so
-                // the dropdown can promise "on this site" honestly.
-                let (allow, ad, tracker, fingerprint, malware, mixed) =
-                    self.privacy.verdict_counts();
-                let _ = allow;
-                let site_host = self
-                    .app
-                    .tabs
-                    .active_tab()
-                    .map(|t| t.url.clone())
-                    .and_then(|u| page_host_for_shield(&u));
-                let (site_blocked, site_paused) = match site_host.as_deref() {
-                    Some(host) => {
-                        let (_, ad, tracker, _, malware, mixed) =
-                            self.privacy.origin_breakdown(host);
-                        (ad + tracker + malware + mixed, self.privacy.is_paused(host))
-                    }
-                    None => (0, false),
-                };
-                // Latest in-flight download: a later terminal event for the
-                // same id retires it.
-                let mut terminal: std::collections::HashSet<&str> =
-                    std::collections::HashSet::new();
-                let mut dl_active = false;
-                let mut dl_frac = 0.0f32;
-                for e in self.download_log.iter().rev() {
-                    use ferrite_tabs::DownloadStateKind as S;
-                    match e.state {
-                        S::Completed | S::Failed | S::Cancelled => {
-                            terminal.insert(e.id.as_str());
-                        }
-                        S::Started | S::Progress | S::Paused | S::Interrupted => {
-                            if !terminal.contains(e.id.as_str()) && !dl_active {
-                                dl_active = true;
-                                dl_frac = match e.bytes_total {
-                                    Some(t) if t > 0 => {
-                                        (e.bytes_received as f32 / t as f32).clamp(0.0, 1.0)
-                                    }
-                                    _ => 0.0,
-                                };
-                            }
-                        }
-                    }
-                    if dl_active {
-                        break;
-                    }
-                }
-                let dl_failed = self
-                    .download_log
-                    .iter()
-                    .rev()
-                    .find_map(|e| {
-                        use ferrite_tabs::DownloadStateKind as S;
-                        match e.state {
-                            S::Started | S::Progress | S::Paused | S::Interrupted => None,
-                            S::Completed | S::Cancelled => Some(false),
-                            S::Failed => Some(true),
-                        }
-                    })
-                    .unwrap_or(false);
-                StatusRow {
-                    tabs: self.app.tabs.len(),
-                    proxy_alive: self.proxy.is_some(),
-                    blocked: ad + tracker + fingerprint + malware + mixed,
-                    blocked_ad: ad,
-                    blocked_tracker: tracker,
-                    blocked_fingerprinting: fingerprint,
-                    blocked_malware: malware,
-                    blocked_mixed: mixed,
-                    recent_trackers: self.privacy.recent_tracker_hosts(8),
-                    fail_open: self.privacy.fail_open_count(),
-                    site_blocked,
-                    site_paused,
-                    downloads: self.download_log.len(),
-                    last_download: self
-                        .download_log
-                        .back()
-                        .map(|e| format!("{} {:?}", e.filename, e.state)),
-                    last_download_id: self.download_log.back().map(|e| e.id.clone()),
-                    show: self.status_visible,
-                    dl_active,
-                    dl_frac,
-                    dl_flash: self
-                        .last_dl_done
-                        .map(|t| t.elapsed() < Duration::from_secs(4))
-                        .unwrap_or(false),
-                    dl_failed,
-                    console_errors: self
-                        .app
-                        .tabs
-                        .active_tab()
-                        .map(|t| t.console_errors)
-                        .unwrap_or(0),
-                    toast: self.toasts.current_view(),
-                }
-            },
+            status: self.status_row(),
             accent: match self.app.theme.accent_context {
                 // Archive gold is constant across packs. The pack flare
                 // covers the standard context.
@@ -2925,11 +3161,6 @@ impl ShellApp {
             panel_open: self.panel_open,
             panel_section: self.panel_section.clone(),
             panel_w: self.panel_w,
-            find_open: self.find_open,
-            find_query: self.find_query.clone(),
-            find_case: self.find_case,
-            find_total: self.find_total,
-            find_index: self.find_index,
             crash_offer: self.crash_offer,
             crash_tabs: self.crash_tabs,
             version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -3017,10 +3248,27 @@ impl ShellApp {
             debug!(shown, hidden, "visibility sweep counts changed");
             self.last_vis = (shown, hidden);
         }
+        // Showing the active content webview just put it above every sibling
+        // (ShowWindow activates child windows). An open overlay belongs on
+        // top of that page, not behind it.
+        self.raise_open_overlays();
         if let Some(chrome) = self.chrome.as_ref()
             && let Err(e) = chrome.evaluate_script(&push_script(&state))
         {
             debug!(error = %e, "chrome push failed");
+        }
+        // Keep the omnibox overlay in sync with the live suggestion list. The
+        // shell owns this copy because chrome cannot post the rows (2048B IPC
+        // cap); an open popover re-shows here.
+        self.last_sugs = std::mem::take(&mut state.suggestions);
+        if self.omni_pop.is_some() {
+            self.omni_pop_repush();
+        }
+        // An open toolbar pop refreshes off the same state push (e.g. the
+        // zoom percent after a zoom step); empty-frame kinds close here in
+        // their slice.
+        if self.toolbar_pop.is_some() {
+            self.refresh_toolbar_pop();
         }
         self.layout_tabs();
     }
@@ -3030,6 +3278,37 @@ impl ShellApp {
             && let Err(e) = chrome.evaluate_script(js)
         {
             debug!(error = %e, js, "chrome eval failed");
+        }
+    }
+
+    /// Put the caret in the chrome webview's omnibox and open it.
+    ///
+    /// The chrome overlay and the content webviews share one parent and do
+    /// not yield focus on their own ([`WebViewHandle::focus`]), so an entry
+    /// point that only evals the page hook is a no-op whenever a page holds
+    /// the OS focus: the caret never moves and Ctrl+L looks dead. Chrome is
+    /// the semantic owner of the omnibox, so claim the keyboard focus for it
+    /// first, then drive the page hook (which un-hides the bar, seeds the
+    /// URL and repaints the row).
+    fn focus_omnibox(&self) {
+        if let Some(chrome) = self.chrome.as_ref()
+            && let Err(e) = chrome.focus()
+        {
+            debug!(error = %e, "omnibox focus failed");
+        }
+        self.eval_chrome("__ferriteFocusOmnibox()");
+    }
+
+    /// Shift+F6: return keyboard focus from chrome to the active page. The
+    /// shell cannot observe which webview owns the OS focus, so this is the
+    /// return leg of an explicit F6/Shift+F6 pair rather than a full four-stop
+    /// cycle (address bar, tab strip, bookmarks, page).
+    fn focus_content(&self) {
+        if let Some(tab) = self.app.tabs.active_tab()
+            && let Some(handle) = tab.webview.as_ref()
+            && let Err(e) = handle.focus()
+        {
+            debug!(error = %e, "content focus failed");
         }
     }
 
@@ -3315,8 +3594,8 @@ impl ShellApp {
     }
 
     /// Closed stack in display order (most recent first) for the history
-    /// dropdown. Pure view over the stack: indices here are what
-    /// `ClosedReopen` carries back.
+    /// dropdown. Pure view over the stack: indices here are what the
+    /// history pop's `reopen` rows carry back.
     fn closed_display(&self) -> Vec<(String, String)> {
         self.closed_tabs
             .iter()
@@ -3470,6 +3749,27 @@ impl ShellApp {
         }
     }
 
+    /// Save an edit to the bookmark the star card opened: rename the row in
+    /// place and move it to the chosen folder. Edit-save must never insert —
+    /// the pre-3c-6 `#starpop` posted `bookmark_add` on both modes, so
+    /// renaming a bookmark silently produced a second copy of the same page.
+    fn update_starred_bookmark(&mut self, url: &str, title: &str, parent: Option<&str>) -> bool {
+        let Some(vault) = self.vault.clone() else {
+            debug!("bookmark edit ignored: vault unavailable");
+            return false;
+        };
+        let Some((id, _, _)) = vault.bookmark_row(url) else {
+            return false;
+        };
+        if vault.rename_bookmark(&id, title).is_err() || vault.move_bookmark(&id, parent).is_err() {
+            return false;
+        }
+        self.push_chrome(true);
+        self.push_panel_section();
+        self.push_bookmarks_tabs();
+        true
+    }
+
     /// First-save auto-reveal: a hidden bar appears once with the new
     /// bookmark on it. Whatever the user does with the toggle after that
     /// sticks (the `bar_seen` flag records the reveal, not consent).
@@ -3574,13 +3874,29 @@ impl ShellApp {
     }
 
     /// Drop find flags without touching the page. Navigation and reload
-    /// kill the document, so its highlights die on their own.
+    /// kill the document, so its highlights die on their own. The card is a
+    /// separate window and must not outlive the state, but focus is left
+    /// alone here: a navigation reset must not pull focus out of the omnibox.
     fn find_reset(&mut self) {
+        let was_open = self.find_open;
         self.find_open = false;
         self.find_query.clear();
         self.find_total = 0;
         self.find_index = 0;
         self.find_tab = None;
+        if was_open {
+            self.hide_find_overlay_silent();
+        }
+    }
+
+    /// Move keyboard focus to the active page.
+    fn focus_active_content(&mut self) {
+        if let Some(tab) = self.app.tabs.active_tab()
+            && let Some(h) = tab.webview.as_ref()
+            && let Err(e) = h.focus()
+        {
+            debug!(error = %e, "content focus failed");
+        }
     }
 
     /// Open the engine inspector on the active tab (thin launch
@@ -4314,10 +4630,53 @@ impl ShellApp {
         if !self.find_query.is_empty() {
             let q = self.find_query.clone();
             if !self.find_eval("search", &q, false) {
+                // No page to search: the bar has nothing to report. State
+                // and card both drop (find_reset hides it).
                 self.find_reset();
+                return;
             }
         }
-        self.push_chrome(true);
+        // The bar is its own window: opening it also gives it keyboard
+        // ownership and selects the prefilled term (Ctrl+F while open
+        // re-selects). Nothing else in the chrome moves.
+        self.show_find_overlay();
+    }
+
+    /// Apply a query/case edit from the find card and run it on the scoped
+    /// tab. The page caps at 500 chars; the cap is enforced here too, since
+    /// the post is unprivileged overlay traffic. Only a live card can call
+    /// this (the IPC arm gates on `find_open`).
+    fn find_set_query(&mut self, query: String, case: bool) {
+        let query: String = query.chars().take(500).collect();
+        self.find_query = query.clone();
+        self.find_case = case;
+        if !query.trim().is_empty() {
+            self.last_find = query.clone();
+        }
+        if !self.find_eval("search", &query, case) {
+            self.find_total = 0;
+            self.find_index = 0;
+            self.push_find_frame();
+        }
+    }
+
+    /// Step to the next/previous match on the scoped tab.
+    fn find_step(&mut self, dir: &'static str) {
+        let (q, case) = (self.find_query.clone(), self.find_case);
+        if !self.find_eval(dir, &q, case) {
+            self.find_total = 0;
+            self.find_index = 0;
+            self.push_find_frame();
+        }
+    }
+
+    /// Close the bar: clear the page highlights, drop the find state, hide
+    /// the card, and hand keyboard focus back to the page (the card had it).
+    fn close_find(&mut self) {
+        let (q, case) = (self.find_query.clone(), self.find_case);
+        self.find_eval("clear", &q, case);
+        self.find_reset();
+        self.focus_active_content();
     }
 
     /// Copy text to the OS clipboard (plain path: links, URLs, usernames).
@@ -4644,7 +5003,14 @@ impl ShellApp {
         }
         // Shared view: hiding it hides any menu too, so the toggle flag
         // must not survive (next menu click would close-then-require-reopen).
+        // The omnibox suggestion popover shares the view and clears with it.
         self.menu_open = false;
+        self.omni_pop = None;
+        // The toolbar pop shares the view too, but it also owns content-page
+        // dismissal flags: dropping the state alone would leave the next
+        // content press reporting a dead popup (and clearing its own state
+        // back to nothing first). Full hide, chrome refocus included.
+        self.hide_toolbar_pop();
     }
 
     /// Main-menu rows for the overlay: the same table the chrome popup used
@@ -4772,6 +5138,8 @@ impl ShellApp {
             return;
         }
         self.hide_ctx_menu();
+        Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
+        self.hide_toolbar_pop();
         let items = self.menu_rows();
         let mut h = 16.0;
         for it in &items {
@@ -4808,8 +5176,16 @@ impl ShellApp {
             if let Err(e) = ov.set_bounds(bounds) {
                 debug!(error = %e, "menu bounds failed");
             }
+            // Mark the menu open before the first script eval: a freshly
+            // created overlay may finish loading and post `ctx_ready` while
+            // that eval is in flight, and the readiness replay must see an
+            // owner.
+            self.menu_open = true;
             if let Err(e) = ov.set_visible(true) {
                 debug!(error = %e, "menu show failed");
+            }
+            if let Err(e) = ov.raise() {
+                debug!(error = %e, "menu raise failed");
             }
             if let Err(e) = ov.focus() {
                 debug!(error = %e, "menu focus failed");
@@ -4817,7 +5193,9 @@ impl ShellApp {
             let json = serde_json::to_string(&items)
                 .unwrap_or_else(|_| "[]".to_owned())
                 .replace("</", "<\\/");
-            if let Err(e) = ov.evaluate_script(&format!("__ferriteMenu({json})")) {
+            let js = format!("__ferriteMenu({json})");
+            self.ctx_last_js = Some(js.clone());
+            if let Err(e) = ov.evaluate_script(&js) {
                 debug!(error = %e, "menu push failed");
             }
         }
@@ -4840,6 +5218,79 @@ impl ShellApp {
         }
     }
 
+    /// Dismiss the menu-shaped surfaces that belong to the interaction that
+    /// is starting (a shortcut, a new tab, a page-opened tab). Chrome applies
+    /// the same rule to every toolbar command; the shell-side shortcut
+    /// dispatcher has to do it itself because those keys never reach chrome.
+    /// Toolbar popovers are deliberately excluded: history/downloads/shield
+    /// are session-wide and stay up across navigation and tab switches.
+    fn dismiss_open_menus(&mut self) {
+        if self.menu_open {
+            self.hide_menu_overlay();
+        }
+        if self.omni_pop.is_some() {
+            self.hide_omni_pop();
+        }
+        if self.ctx_menu.is_some() {
+            self.hide_ctx_menu();
+        }
+        // 3c-6 surfaces are transient chrome UI: any bound shortcut retires
+        // them, exactly as the "any command dismisses the menu" rule does.
+        // Session-wide toolbar cards keep their old behavior.
+        if self
+            .toolbar_pop
+            .as_ref()
+            .is_some_and(|p| p.kind.closes_on_shortcut())
+        {
+            self.hide_toolbar_pop();
+        }
+    }
+
+    /// Keep every open overlay above the content webviews. Wry creates each
+    /// child webview at `HWND_TOP` and later only moves/resizes with
+    /// `SWP_NOZORDER`, so creating or showing a tab's content after an
+    /// overlay was opened silently buries the overlay under the page. Every
+    /// path that creates or shows content calls this; paint paths also raise
+    /// instead of relying on a hidden-to-visible transition.
+    fn raise_open_overlays(&self) {
+        // A toast sits lowest (a menu or dialog above it must win), then the
+        // shared ctx/menu/suggestion/toolbar-pop view, tab search, and the
+        // modal dialog last (it must own the top of the stack).
+        if self.toast_visible.is_some()
+            && let Some(ov) = self.toast_overlay.as_ref()
+            && let Err(e) = ov.raise()
+        {
+            debug!(error = %e, "toast overlay raise failed");
+        }
+        if self.find_open
+            && let Some(ov) = self.find_overlay.as_ref()
+            && let Err(e) = ov.raise()
+        {
+            debug!(error = %e, "find overlay raise failed");
+        }
+        if let Some(ov) = self.ctx_overlay.as_ref()
+            && (self.menu_open
+                || self.omni_pop.is_some()
+                || self.ctx_menu.is_some()
+                || self.toolbar_pop.is_some())
+            && let Err(e) = ov.raise()
+        {
+            debug!(error = %e, "ctx overlay raise failed");
+        }
+        if self.overlay_open
+            && let Some(ov) = self.overlay.as_ref()
+            && let Err(e) = ov.raise()
+        {
+            debug!(error = %e, "tabsearch overlay raise failed");
+        }
+        if self.dlg_shown.is_some()
+            && let Some(ov) = self.dlg_overlay.as_ref()
+            && let Err(e) = ov.raise()
+        {
+            debug!(error = %e, "dialog overlay raise failed");
+        }
+    }
+
     /// Re-push fresh rows into the open menu (toggle rows stay open for
     /// trial: theme picks, bar/panel switches). No-op unless open.
     fn refresh_menu_rows(&mut self) {
@@ -4849,11 +5300,2568 @@ impl ShellApp {
         let json = serde_json::to_string(&self.menu_rows())
             .unwrap_or_else(|_| "[]".to_owned())
             .replace("</", "<\\/");
+        let js = format!("__ferriteMenu({json})");
+        // The refresh can beat the page's first load just like the open can;
+        // keep the replay buffer current so readiness never paints stale checks.
+        self.ctx_last_js = Some(js.clone());
         if let Some(ov) = self.ctx_overlay.as_ref()
-            && let Err(e) = ov.evaluate_script(&format!("__ferriteMenu({json})"))
+            && let Err(e) = ov.evaluate_script(&js)
         {
             debug!(error = %e, "menu refresh failed");
         }
+        if let Some(ov) = self.ctx_overlay.as_ref()
+            && let Err(e) = ov.raise()
+        {
+            debug!(error = %e, "menu refresh raise failed");
+        }
+    }
+
+    // ── Omnibox suggestion popover (shared overlay, field focus stays in chrome) ──
+
+    /// Show/refresh the omnibox suggestion overlay from `last_sugs`: size
+    /// from the row count, paint the visual mirror, mark the highlight.
+    /// Chrome keeps keyboard focus and the a11y listbox; this is only the
+    /// visible surface. An empty row set hides the view without clearing the
+    /// state, so the next suggestion push re-shows it.
+    fn omni_pop_repush(&mut self) {
+        let Some(pop) = self.omni_pop.clone() else {
+            return;
+        };
+        let rows = Self::omni_pop_rows(&self.last_sugs, pop.clip.as_deref());
+        if rows.is_empty() {
+            if let Some(ov) = self.ctx_overlay.as_ref()
+                && let Err(e) = ov.set_visible(false)
+            {
+                debug!(error = %e, "popover empty hide failed");
+            }
+            return;
+        }
+        let h = rows.len() as f64 * OMNI_ROW_PX + OMNI_PAD_PX;
+        let y_top = pop.y + pop.h + 4.0;
+        let bounds = self.popover_overlay_rect(pop.x, y_top, pop.w, h);
+        self.overlay_present(bounds, &rows, false, pop.hl, "__ferriteSugs");
+    }
+
+    /// Hide the omnibox suggestion overlay and drop its state. Idempotent.
+    /// Hides the shared view; the other users of it (menu/ctx/af) are
+    /// mutually exclusive by construction, so this never fights them.
+    fn hide_omni_pop(&mut self) {
+        if self.omni_pop.is_none() {
+            return;
+        }
+        self.omni_pop = None;
+        if let Some(ov) = self.ctx_overlay.as_ref()
+            && let Err(e) = ov.set_visible(false)
+        {
+            debug!(error = %e, "popover hide failed");
+        }
+    }
+
+    /// Display rows for the omnibox overlay from the shell's own suggestion
+    /// list: title (url when the title is blank), url, kind, and a delete
+    /// flag for history rows. An optional clipboard row is appended last,
+    /// labelled from the same URL test chrome uses. Pure for tests.
+    fn omni_pop_rows(suggestions: &[SugRow], clip: Option<&str>) -> Vec<serde_json::Value> {
+        let mut rows: Vec<serde_json::Value> = suggestions
+            .iter()
+            .map(|s| {
+                let title = if s.title.trim().is_empty() {
+                    s.url.clone()
+                } else {
+                    s.title.clone()
+                };
+                serde_json::json!({
+                    "t": title,
+                    "u": s.url,
+                    "k": s.kind,
+                    "del": s.kind == "history",
+                })
+            })
+            .collect();
+        if let Some(c) = clip
+            && !c.is_empty()
+        {
+            let go = if clip_looks_url(c) {
+                "Paste and go"
+            } else {
+                "Paste and search"
+            };
+            rows.push(serde_json::json!({"clip": true, "u": c, "go": go}));
+        }
+        rows
+    }
+
+    // ── Toolbar popovers (shell-owned button-anchored popups; zoom first) ──
+    //
+    // The chrome-DOM popups cannot paint above the page (sibling webviews
+    // share no stacking context), so the family migrates one kind at a time
+    // onto the shared overlay that already hosts the menu and the suggestion
+    // mirror. Design decisions D1-D6 live in tasks/toolbar-overlay-3c.md:
+    // chrome posts only geometry (2048-byte cap makes rows impossible), the
+    // shell builds the framework the page renders, dismissal is the gated
+    // `pointerdown` reporter plus the chrome click-away/Esc posts, and the
+    // chrome-DOM copy of a migrated kind is deleted, not hidden.
+
+    /// Zoom percentage for the popover frame: the active tab's applied pair,
+    /// else the origin want, else 100 (the chip hides at 100, so 100 is the
+    /// neutral that never shows).
+    fn zoom_pop_pct(&mut self) -> u32 {
+        match self.zoom_current() {
+            Some((_, _, f)) => (f * 100.0).round() as u32,
+            None => 100,
+        }
+    }
+
+    /// Overlay frame for the zoom kind. Pure for tests: the page renders
+    /// exactly this (out / percent-reset / in), every other kind has a
+    /// frame-builder spike it owns too.
+    fn zoom_pop_frame(pct: u32) -> serde_json::Value {
+        serde_json::json!({"kind": "zoom", "pct": pct})
+    }
+
+    /// Nav back/forward frame. Pure for tests: one single-line URL row per
+    /// entry, row `i` jumps `i+1` steps in one go; an empty list renders
+    /// the muted "No history here" row (old DOM parity).
+    fn nav_pop_view(back: bool, urls: &[String]) -> PopView {
+        let mut rows = Vec::with_capacity(urls.len().max(1));
+        let mut actions = Vec::with_capacity(urls.len());
+        for (i, u) in urls.iter().enumerate() {
+            rows.push(serde_json::json!({"t": u, "i": i, "a": "nav"}));
+            actions.push(PopAction::Nav {
+                fwd: !back,
+                steps: i + 1,
+            });
+        }
+        if rows.is_empty() {
+            rows.push(serde_json::json!({"t": "No history here", "m": 1}));
+        }
+        PopView {
+            frame: serde_json::json!({
+                "kind": if back { "nav_back" } else { "nav_fwd" },
+                "rows": rows,
+            }),
+            actions,
+            w: NAV_POP_W,
+            h: POP_LIST_PAD_PX + rows.len() as f64 * POP_ROW_PX + POP_BORDER_PX,
+        }
+    }
+
+    /// History frame. Pure for tests: recently-closed stack first (reopen
+    /// by display index), then "Restore all N tabs", then up to 8 recent
+    /// history entries, then the "See all history" footer. The "Recent
+    /// history" header appears only when a "Recently closed" section
+    /// precedes it (old renderHist parity). An all-empty store renders the
+    /// muted "Nothing here yet" row above the footer. Height sums the same
+    /// block heights the overlay page CSS pins (`POP_*_PX` + border).
+    fn history_pop_view_impl(hist: &[(String, String)], closed: &[(String, String)]) -> PopView {
+        let mut rows = Vec::new();
+        let mut actions = Vec::new();
+        let mut h = POP_LIST_PAD_PX;
+        if !closed.is_empty() {
+            h += POP_SEC_PX;
+            rows.push(serde_json::json!({"sec": "Recently closed"}));
+            for (i, (u, t)) in closed.iter().enumerate() {
+                rows.push(serde_json::json!({
+                    "t": if t.is_empty() { u } else { t },
+                    "u": u, "i": i, "a": "reopen",
+                }));
+                actions.push(PopAction::Reopen(i));
+                h += POP_ROW2_PX;
+            }
+            rows.push(serde_json::json!({
+                "t": format!("Restore all {} tabs", closed.len()),
+                "i": actions.len(),
+                "a": "restore_all",
+                // The old DOM painted this row's title with the accent
+                // (`#histpop .m.restore span.t`); the tag rides the frame so
+                // the page keeps that hierarchy.
+                "k": "acc",
+            }));
+            actions.push(PopAction::RestoreAll);
+            h += POP_ROW_PX;
+        }
+        if !hist.is_empty() {
+            if !closed.is_empty() {
+                h += POP_SEC_PX;
+                rows.push(serde_json::json!({"sec": "Recent history"}));
+            }
+            for (u, t) in hist {
+                rows.push(serde_json::json!({
+                    "t": if t.is_empty() { u } else { t },
+                    "u": u, "i": actions.len(), "a": "go",
+                }));
+                actions.push(PopAction::Go(u.clone()));
+                h += POP_ROW2_PX;
+            }
+        }
+        if actions.is_empty() {
+            rows.push(serde_json::json!({"t": "Nothing here yet", "m": 1}));
+            h += POP_ROW_PX;
+        }
+        rows.push(serde_json::json!({
+            "t": "See all history",
+            "i": actions.len(),
+            "a": "all",
+            // Old DOM parity: `#histpop .all` was accent and centred.
+            "k": "acc",
+            "foot": 1,
+        }));
+        actions.push(PopAction::AllHistory);
+        h += POP_ROW_PX + POP_BORDER_PX;
+        PopView {
+            frame: serde_json::json!({"kind": "history", "rows": rows}),
+            actions,
+            w: HIST_POP_W,
+            h,
+        }
+    }
+
+    /// Live history frame: the vault store (latest 8) plus the
+    /// recently-closed stack (most-recent-first), the two sources the old
+    /// chrome-DOM hooks were fed from.
+    fn history_pop_view(&self) -> PopView {
+        let hist: Vec<(String, String)> = self
+            .history_json("")
+            .into_iter()
+            .take(8)
+            .filter_map(|v| {
+                Some((
+                    v.get("url")?.as_str().unwrap_or("").to_owned(),
+                    v.get("title")?.as_str().unwrap_or("").to_owned(),
+                ))
+            })
+            .collect();
+        let closed = self.closed_display();
+        Self::history_pop_view_impl(&hist, &closed)
+    }
+
+    /// One `.pdl` button entry: records the action and returns the row
+    /// entry the page renders. `i` is the action-table index the post names
+    /// back, so every button of every download row is individually
+    /// validated (never the row's index).
+    fn dl_btn(actions: &mut Vec<PopAction>, label: &str, act: PopAction) -> serde_json::Value {
+        let i = actions.len();
+        let tag = act.tag();
+        actions.push(act);
+        serde_json::json!({"t": label, "a": tag, "i": i})
+    }
+
+    /// One single-line text row of a card. `col` selects the colour variant
+    /// (`head`, `warn`, `danger`, `faint`), `""` keeps the default fg.
+    /// Single line is the contract: the row height is pinned and the text
+    /// ellipsizes, so a long host can never grow the card.
+    fn tx_row(t: String, col: &str) -> serde_json::Value {
+        let mut v = serde_json::json!({"k": "tx", "t": t});
+        if !col.is_empty() {
+            v["col"] = serde_json::Value::String(col.to_owned());
+        }
+        v
+    }
+
+    /// Downloads frame. Pure for tests: one `.pdl` row per recent item
+    /// (filename, `state · size`, then its own button strip), then the
+    /// accent "See all downloads" footer. Retry shows only for a
+    /// Failed/Cancelled row (old `__ferriteDownloadsRecent` parity); an
+    /// empty store renders the muted "No downloads yet" row above the
+    /// footer. Height sums the pinned row heights, so the card never
+    /// scrolls.
+    fn downloads_pop_view_impl(items: &[serde_json::Value]) -> PopView {
+        let mut rows = Vec::new();
+        let mut actions = Vec::new();
+        let mut h = POP_LIST_PAD_PX;
+        for it in items {
+            let id = it
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            let filename = it.get("filename").and_then(|v| v.as_str()).unwrap_or("");
+            let url = it.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            let state = it.get("state").and_then(|v| v.as_str()).unwrap_or("");
+            let size = it.get("size").and_then(|v| v.as_u64());
+            let mut btns = vec![
+                Self::dl_btn(&mut actions, "Open", PopAction::DlOpen(id.clone())),
+                Self::dl_btn(
+                    &mut actions,
+                    "Show in folder",
+                    PopAction::DlFolder(id.clone()),
+                ),
+            ];
+            if state == "Failed" || state == "Cancelled" {
+                btns.push(Self::dl_btn(
+                    &mut actions,
+                    "Retry",
+                    PopAction::DlRetry(id.clone()),
+                ));
+            }
+            btns.push(Self::dl_btn(
+                &mut actions,
+                "Remove",
+                PopAction::DlRemove(id.clone()),
+            ));
+            let meta = match size {
+                Some(n) => format!("{state} · {}", fmt_dl_size(n)),
+                None => state.to_owned(),
+            };
+            rows.push(serde_json::json!({
+                "k": "dl",
+                "t": if filename.is_empty() {
+                    if url.is_empty() { "download" } else { url }
+                } else {
+                    filename
+                },
+                "s": meta,
+                "btns": btns,
+            }));
+            h += POP_DL_ROW_PX;
+        }
+        if items.is_empty() {
+            rows.push(serde_json::json!({"t": "No downloads yet", "m": 1}));
+            h += POP_ROW_PX;
+        }
+        let fi = actions.len();
+        actions.push(PopAction::Go("ferrite://downloads".to_owned()));
+        rows.push(serde_json::json!({
+            "t": "See all downloads",
+            "i": fi,
+            "a": "go",
+            "k": "acc",
+            "foot": 1,
+        }));
+        h += POP_ROW_PX + POP_BORDER_PX;
+        PopView {
+            frame: serde_json::json!({"kind": "downloads", "rows": rows}),
+            actions,
+            w: DL_POP_W,
+            h,
+        }
+    }
+
+    /// Live downloads frame: the same shell-side builder the downloads page
+    /// reads from (vault rows first, then unresolved in-flight events),
+    /// capped at the 8 the old `downloads_recent` push carried. No async
+    /// round trip: the shell owns the data, so an open is one frame build.
+    fn downloads_pop_view(&self) -> PopView {
+        let items = Self::downloads_pop_items(self.downloads_json("", ""));
+        Self::downloads_pop_view_impl(&items)
+    }
+
+    /// The visible slice of the store: in-flight transfers first, then the
+    /// newest completed rows, capped at the 8 the old `downloads_recent`
+    /// push carried. The vault half of `downloads_json` is newest-first and
+    /// capped, so ordering it verbatim would let eight finished downloads
+    /// hide the transfer the user just started.
+    fn downloads_pop_items(items: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+        let (live, done): (Vec<_>, Vec<_>) = items.into_iter().partition(|it| {
+            matches!(
+                it.get("state").and_then(|v| v.as_str()).unwrap_or(""),
+                "Started" | "Progress" | "Paused" | "Interrupted"
+            )
+        });
+        live.into_iter().chain(done).take(8).collect()
+    }
+
+    /// Permission card frame. Pure for tests: one `perm` row per pending
+    /// request (bold label line, origin line, "Allow once"/"Always" strip),
+    /// the fixed two-line note, then the "Not now" button. `arm_until` is the
+    /// shell's open-time clickjacking deadline, republished verbatim so a
+    /// refresh keeps the same window instead of restarting it.
+    fn permissions_pop_view_impl(
+        rows: &[ferrite_chrome::chrome::PermRow],
+        arm_until: i64,
+    ) -> PopView {
+        let mut out = Vec::new();
+        let mut actions = Vec::new();
+        let mut h = POP_LIST_PAD_PX;
+        if rows.is_empty() {
+            // No pending request, no card: an empty frame is the close signal
+            // (`PopKind::closes_when_empty`), never a note with nothing to ask.
+            return PopView {
+                frame: serde_json::json!({
+                    "kind": "permissions",
+                    "arm_until": arm_until,
+                    "rows": [],
+                }),
+                actions: Vec::new(),
+                w: PERM_POP_W,
+                h: POP_LIST_PAD_PX + POP_BORDER_PX,
+            };
+        }
+        for p in rows {
+            let mut btns = Vec::new();
+            for (label, always) in [("Allow once", false), ("Always", true)] {
+                let i = actions.len();
+                let act = PopAction::PermDecide {
+                    origin: p.origin.clone(),
+                    kind: p.kind.clone(),
+                    always,
+                };
+                let tag = act.tag();
+                actions.push(act);
+                btns.push(serde_json::json!({"t": label, "a": tag, "i": i, "arm": 1}));
+            }
+            out.push(serde_json::json!({
+                "k": "perm",
+                "t": p.label.clone(),
+                "s": p.origin.clone(),
+                "btns": btns,
+            }));
+            h += POP_PERM_ROW_PX;
+        }
+        out.push(serde_json::json!({"k": "note", "t": PERM_NOTE}));
+        h += POP_NOTE_PX;
+        let ni = actions.len();
+        actions.push(PopAction::PermNotNow);
+        out.push(serde_json::json!({
+            "t": "Not now",
+            "a": "notnow",
+            "i": ni,
+            "k": "btn",
+            "arm": 1,
+            "def": 1,
+        }));
+        h += POP_BTN_PX + POP_BORDER_PX;
+        PopView {
+            frame: serde_json::json!({
+                "kind": "permissions",
+                "arm_until": arm_until,
+                "rows": out,
+            }),
+            actions,
+            w: PERM_POP_W,
+            h,
+        }
+    }
+
+    /// Live permission frame from the same rows the chip renders, so the badge
+    /// count and the card can never disagree.
+    fn permissions_pop_view(&self, arm_until: i64) -> PopView {
+        Self::permissions_pop_view_impl(&self.perm_rows(), arm_until)
+    }
+
+    /// Append one plain menu row and its validated action. Returns the row
+    /// height so callers sum the card exactly.
+    fn pop_menu_row(
+        rows: &mut Vec<serde_json::Value>,
+        actions: &mut Vec<PopAction>,
+        label: impl Into<String>,
+        act: PopAction,
+    ) -> f64 {
+        let i = actions.len();
+        let tag = act.tag();
+        actions.push(act);
+        rows.push(serde_json::json!({"t": label.into(), "i": i, "a": tag}));
+        POP_ROW_PX
+    }
+
+    fn pop_sep(rows: &mut Vec<serde_json::Value>) -> f64 {
+        rows.push(serde_json::json!({"sep": true}));
+        POP_SEP_PX
+    }
+
+    /// Star card: the page's current name, its folder, and the three actions
+    /// the old `#starpop` carried. Save/Remove/Manage are form submissions;
+    /// the shell rejects an empty name instead of letting `save_bookmark`
+    /// fall back to the URL.
+    fn star_pop_view(&self) -> Option<PopView> {
+        let state = self.chrome_state();
+        let active = state.tabs.iter().find(|t| t.active)?;
+        let title = if active.title.trim().is_empty() {
+            active.url.clone()
+        } else {
+            active.title.clone()
+        };
+        let mut actions = Vec::new();
+        // One strip for the whole button row (FORM_BTN_PX already includes
+        // the 8px gap above it). Charging the strip per button used to leave
+        // 36px of dead card under a two- or three-button row.
+        let h = FORM_PAD_PX + FORM_TITLE_PX + FORM_FIELD_PX * 2.0 + FORM_BTN_PX;
+        let mut buttons = Vec::new();
+        let mut add_btn = |label: &str, aria: &str, act: PopAction, primary: bool| {
+            let i = actions.len();
+            let tag = act.tag();
+            actions.push(act);
+            let mut b = serde_json::json!({"t": label, "aria": aria, "a": tag, "i": i});
+            if primary {
+                b["def"] = serde_json::json!(1);
+            }
+            buttons.push(b);
+        };
+        add_btn(
+            "Save",
+            if state.starred {
+                "Save changes to this bookmark"
+            } else {
+                "Bookmark this page"
+            },
+            PopAction::StarSave {
+                url: active.url.clone(),
+                title,
+            },
+            true,
+        );
+        if state.starred {
+            add_btn(
+                "Remove",
+                "Remove bookmark",
+                PopAction::StarRemove {
+                    url: active.url.clone(),
+                    title: active.title.clone(),
+                },
+                false,
+            );
+        }
+        add_btn(
+            "Manage",
+            "Manage bookmarks",
+            PopAction::StarManage {
+                url: active.url.clone(),
+                title: active.title.clone(),
+            },
+            false,
+        );
+        let folders = state
+            .folders
+            .iter()
+            .map(|f| serde_json::json!({"id": f.id, "name": f.name}))
+            .collect::<Vec<_>>();
+        // Edit mode pre-fills the bookmark's stored name, not the page's live
+        // title: after a rename those differ, and showing the page title would
+        // silently revert the custom name on the next save.
+        let stored_name = if state.starred {
+            self.vault
+                .as_ref()
+                .and_then(|v| v.bookmark_row(&active.url))
+                .map(|(_, stored, _)| stored)
+                .filter(|stored| !stored.trim().is_empty())
+        } else {
+            None
+        };
+        Some(PopView {
+            frame: serde_json::json!({
+                "kind": "star",
+                "title": if state.starred { "Edit bookmark" } else { "Bookmark this page" },
+                "name": stored_name.unwrap_or_else(|| active.title.clone()),
+                "folder": state.starred_folder.clone().unwrap_or_default(),
+                "folders": folders,
+                "buttons": buttons,
+            }),
+            actions,
+            w: STAR_POP_W,
+            h,
+        })
+    }
+
+    /// Workspace switcher: Default plus every stored workspace, with Rename
+    /// and Delete as sibling actions (never nested inside a menu row), and an
+    /// inline create field. The active workspace is marked, not disabled.
+    fn workspaces_pop_view(&self) -> PopView {
+        let state = self.chrome_state();
+        let mut rows = Vec::new();
+        let mut actions = Vec::new();
+        let mut h = FORM_PAD_PX;
+        let mut row = |label: &str,
+                       sub: &str,
+                       cur: bool,
+                       act: PopAction,
+                       ops: &[(String, PopAction)],
+                       actions: &mut Vec<PopAction>| {
+            let i = actions.len();
+            let tag = act.tag();
+            actions.push(act);
+            let mut opv = Vec::new();
+            for (label, act) in ops {
+                let oi = actions.len();
+                let tag = act.tag();
+                actions.push(act.clone());
+                opv.push(serde_json::json!({"t": label, "a": tag, "i": oi}));
+            }
+            rows.push(serde_json::json!({
+                "t": label, "s": sub, "cur": cur, "i": i, "a": tag, "ops": opv,
+            }));
+        };
+        row(
+            "Default",
+            &format!("{} tabs", state.tabs.len()),
+            state.workspace.is_none(),
+            PopAction::Chrome {
+                cmd: ChromeCommand::WsDefault,
+                clear_selection: false,
+            },
+            &[],
+            &mut actions,
+        );
+        h += WS_ROW_PX;
+        for w in &state.workspaces {
+            let ops = vec![
+                (
+                    "Rename".to_owned(),
+                    PopAction::WsRenameForm {
+                        id: w.id.clone(),
+                        name: w.name.clone(),
+                    },
+                ),
+                (
+                    "Delete".to_owned(),
+                    PopAction::Chrome {
+                        cmd: ChromeCommand::WsDelete { id: w.id.clone() },
+                        clear_selection: false,
+                    },
+                ),
+            ];
+            row(
+                &w.name,
+                &format!("{} tabs", w.count),
+                w.active,
+                PopAction::Chrome {
+                    cmd: ChromeCommand::WsSwitch { id: w.id.clone() },
+                    clear_selection: false,
+                },
+                &ops,
+                &mut actions,
+            );
+            h += WS_ROW_PX;
+        }
+        let ci = actions.len();
+        actions.push(PopAction::WsCreate);
+        let ctag = PopAction::WsCreate.tag();
+        h += FORM_FIELD_PX + FORM_BTN_PX;
+        PopView {
+            frame: serde_json::json!({
+                "kind": "workspaces",
+                "rows": rows,
+                "form": {
+                    "field": {"id": "name", "label": "New workspace", "placeholder": "Name", "max": 64},
+                    "button": {"t": "Add workspace", "a": ctag, "i": ci},
+                },
+            }),
+            actions,
+            w: WS_POP_W,
+            h,
+        }
+    }
+
+    fn ws_rename_pop_view(&self, id: &str, name: &str) -> PopView {
+        let mut actions = vec![PopAction::WsRename { id: id.to_owned() }];
+        let tag = actions[0].tag();
+        PopView {
+            frame: serde_json::json!({
+                "kind": "workspace_rename",
+                "title": "Rename workspace",
+                "name": name,
+                "buttons": [{"t": "Save", "a": tag, "i": 0, "def": 1}],
+            }),
+            actions: std::mem::take(&mut actions),
+            w: WS_POP_W,
+            h: FORM_PAD_PX + FORM_TITLE_PX + FORM_FIELD_PX + FORM_BTN_PX,
+        }
+    }
+
+    /// Profile switcher: a switch row per profile, Delete only where the shell
+    /// will accept it (not Default, not the current process), and an inline
+    /// create field.
+    fn profiles_pop_view(&self) -> PopView {
+        let state = self.chrome_state();
+        let mut rows = Vec::new();
+        let mut actions = Vec::new();
+        let mut h = FORM_PAD_PX;
+        for p in &state.profiles {
+            let i = actions.len();
+            let cmd = ChromeCommand::ProfileSwitch { id: p.id.clone() };
+            actions.push(PopAction::Chrome {
+                cmd,
+                clear_selection: false,
+            });
+            let mut ops = Vec::new();
+            if !p.current && p.id != "Default" {
+                let oi = actions.len();
+                actions.push(PopAction::Chrome {
+                    cmd: ChromeCommand::ProfileDelete { id: p.id.clone() },
+                    clear_selection: false,
+                });
+                ops.push(serde_json::json!({"t": "Delete", "a": "cmd", "i": oi}));
+            }
+            rows.push(serde_json::json!({
+                "t": p.name, "s": if p.current { "Current" } else { "" },
+                "initial": p.initial, "cur": p.current, "i": i, "a": "cmd", "ops": ops,
+            }));
+            h += WS_ROW_PX;
+        }
+        let ci = actions.len();
+        actions.push(PopAction::ProfileCreate);
+        h += FORM_FIELD_PX + FORM_BTN_PX;
+        PopView {
+            frame: serde_json::json!({
+                "kind": "profiles",
+                "rows": rows,
+                "form": {
+                    "field": {"id": "name", "label": "New profile", "placeholder": "Name", "max": 32},
+                    "button": {"t": "Add profile", "a": PopAction::ProfileCreate.tag(), "i": ci},
+                },
+            }),
+            actions,
+            w: PROF_POP_W,
+            h,
+        }
+    }
+
+    /// Group create/edit form. The shell holds the target set, the original
+    /// values and whether Save means create or edit; the page only paints the
+    /// fields and posts back their values.
+    fn group_editor_view(&self, ctx: &GroupContext) -> PopView {
+        let mut actions = Vec::new();
+        let edit = ctx.mode == GroupSaveMode::Edit;
+        let mut swatches = Vec::new();
+        for c in 0..ferrite_tabs::manager::GROUP_COLORS.len() {
+            if edit && let Some(gid) = ctx.gid.as_ref() {
+                let i = actions.len();
+                actions.push(PopAction::GroupColor {
+                    gid: gid.clone(),
+                    color: c as u8,
+                });
+                swatches.push(serde_json::json!({"i": i, "a": "group_color"}));
+            } else {
+                swatches.push(serde_json::json!({"i": -1, "a": ""}));
+            }
+        }
+        let si = actions.len();
+        actions.push(PopAction::GroupSave {
+            mode: ctx.mode,
+            gid: ctx.gid.clone(),
+            tabs: ctx.tabs.clone(),
+        });
+        let mut buttons = vec![serde_json::json!({
+            "t": "Save", "a": "group_save", "i": si, "def": 1,
+        })];
+        let h = FORM_PAD_PX
+            + FORM_TITLE_PX
+            + FORM_FIELD_PX
+            + FORM_SWATCH_PX
+            + FORM_CHECK_PX
+            + FORM_BTN_PX;
+        if edit && let Some(gid) = ctx.gid.as_ref() {
+            let di = actions.len();
+            actions.push(PopAction::GroupDelete { gid: gid.clone() });
+            let cli = actions.len();
+            actions.push(PopAction::GroupClose { gid: gid.clone() });
+            buttons.push(serde_json::json!({"t": "Ungroup", "a": "group_delete", "i": di}));
+            buttons.push(serde_json::json!({"t": "Close tabs", "a": "group_close", "i": cli}));
+            // All three buttons share the one strip already charged above;
+            // a second strip here only padded the card with dead space.
+        }
+        PopView {
+            frame: serde_json::json!({
+                "kind": "group_editor",
+                "title": if edit { "Edit group" } else { "New group" },
+                "name": ctx.orig_name,
+                "color": ctx.orig_color,
+                "collapsed": ctx.orig_collapsed,
+                "count": ctx.tabs.len(),
+                "swatches": swatches,
+                "colors": ferrite_tabs::manager::GROUP_COLORS
+                    .iter()
+                    .map(|(_, hex)| *hex)
+                    .collect::<Vec<_>>(),
+                "buttons": buttons,
+            }),
+            actions,
+            w: GROUP_POP_W,
+            h,
+        }
+    }
+
+    /// Bookmarks-bar menu: the empty-bar menu, the overflow root, and any
+    /// folder depth. Every id is re-resolved against the live vault, so a
+    /// stale chrome measurement can never open a nonexistent folder.
+    fn bar_menu_view(&self, ctx: &BarContext) -> PopView {
+        let state = self.chrome_state();
+        let live: Vec<ferrite_chrome::chrome::BarItem> = state.bar_items.clone();
+        let mut rows = Vec::new();
+        let mut actions = Vec::new();
+        let mut h = POP_LIST_PAD_PX;
+        let current = ctx.stack.last();
+        if let Some(folder) = current {
+            let children: Vec<ferrite_chrome::chrome::BarItem> = match self.vault.as_ref() {
+                Some(v) => v
+                    .list_bookmark_children(Some(folder))
+                    .into_iter()
+                    .take(80)
+                    .map(|n| ferrite_chrome::chrome::BarItem {
+                        id: n.id,
+                        title: n.title,
+                        url: n.url,
+                        folder: n.is_folder,
+                    })
+                    .collect(),
+                None => Vec::new(),
+            };
+            if ctx.stack.len() > 1 || ctx.root.is_some() {
+                h += Self::pop_menu_row(&mut rows, &mut actions, "Back", PopAction::BarBack);
+            }
+            if children.is_empty() {
+                rows.push(serde_json::json!({"t": "Empty folder", "m": 1}));
+                h += POP_ROW_PX;
+            }
+            for item in &children {
+                let label = if item.title.trim().is_empty() {
+                    item.url.clone()
+                } else {
+                    item.title.clone()
+                };
+                let act = if item.folder {
+                    PopAction::BarFolder {
+                        id: item.id.clone(),
+                    }
+                } else {
+                    PopAction::Chrome {
+                        cmd: ChromeCommand::Navigate {
+                            url: item.url.clone(),
+                        },
+                        clear_selection: false,
+                    }
+                };
+                h += Self::pop_menu_row(&mut rows, &mut actions, label, act);
+            }
+            h += Self::pop_sep(&mut rows);
+            h += Self::pop_menu_row(
+                &mut rows,
+                &mut actions,
+                "New folder",
+                PopAction::BarNewFolder,
+            );
+        } else if let Some(ids) = ctx.root.as_ref() {
+            for id in ids {
+                let Some(item) = live.iter().find(|b| &b.id == id) else {
+                    continue;
+                };
+                let label = if item.title.trim().is_empty() {
+                    item.url.clone()
+                } else {
+                    item.title.clone()
+                };
+                let act = if item.folder {
+                    PopAction::BarFolder {
+                        id: item.id.clone(),
+                    }
+                } else {
+                    PopAction::Chrome {
+                        cmd: ChromeCommand::Navigate {
+                            url: item.url.clone(),
+                        },
+                        clear_selection: false,
+                    }
+                };
+                h += Self::pop_menu_row(&mut rows, &mut actions, label, act);
+            }
+            h += Self::pop_sep(&mut rows);
+            h += Self::pop_menu_row(
+                &mut rows,
+                &mut actions,
+                "Add this page",
+                PopAction::BarAddPage,
+            );
+            h += Self::pop_menu_row(
+                &mut rows,
+                &mut actions,
+                "Bookmark all tabs",
+                PopAction::BarBookmarkAll,
+            );
+        } else {
+            h += Self::pop_menu_row(
+                &mut rows,
+                &mut actions,
+                "Add this page",
+                PopAction::BarAddPage,
+            );
+            h += Self::pop_menu_row(
+                &mut rows,
+                &mut actions,
+                "New folder",
+                PopAction::BarNewFolder,
+            );
+            h += Self::pop_menu_row(
+                &mut rows,
+                &mut actions,
+                "Bookmark all tabs",
+                PopAction::BarBookmarkAll,
+            );
+            h += Self::pop_sep(&mut rows);
+            for (id, label) in [
+                ("bar-always", "Always show bar"),
+                ("bar-ntp", "Show on new tab only"),
+                ("bar-never", "Hide bar"),
+            ] {
+                h += Self::pop_menu_row(
+                    &mut rows,
+                    &mut actions,
+                    label,
+                    PopAction::BarVisibility(id.to_owned()),
+                );
+            }
+        }
+        h += POP_BORDER_PX;
+        PopView {
+            frame: serde_json::json!({"kind": "bar_menu", "rows": rows}),
+            actions,
+            w: BAR_POP_W,
+            h,
+        }
+    }
+
+    fn bar_folder_new_view(&self, parent: Option<&str>) -> PopView {
+        let act = PopAction::FolderCreate {
+            parent: parent.map(str::to_owned),
+        };
+        let tag = act.tag();
+        PopView {
+            frame: serde_json::json!({
+                "kind": "bar_folder_new",
+                "title": "New folder",
+                "name": "",
+                "buttons": [{"t": "Create", "a": tag, "i": 0, "def": 1}],
+            }),
+            actions: vec![act],
+            w: BAR_POP_W,
+            h: FORM_PAD_PX + FORM_TITLE_PX + FORM_FIELD_PX + FORM_BTN_PX,
+        }
+    }
+
+    fn tab_context_view(&self, id: &str) -> Option<PopView> {
+        let state = self.chrome_state();
+        let t = state.tabs.iter().find(|t| t.id == id)?;
+        let mut rows = Vec::new();
+        let mut actions = Vec::new();
+        let mut h = POP_LIST_PAD_PX;
+        macro_rules! row {
+            ($label:expr, $act:expr) => {{
+                h += Self::pop_menu_row(&mut rows, &mut actions, $label, $act);
+            }};
+        }
+        row!(
+            "Reload",
+            PopAction::Chrome {
+                cmd: ChromeCommand::CtxReload { id: id.to_owned() },
+                clear_selection: false,
+            }
+        );
+        row!(
+            "Duplicate tab",
+            PopAction::Chrome {
+                cmd: ChromeCommand::CtxDuplicate { id: id.to_owned() },
+                clear_selection: false,
+            }
+        );
+        row!(
+            if t.pinned { "Unpin tab" } else { "Pin tab" },
+            PopAction::Chrome {
+                cmd: ChromeCommand::CtxPin { id: id.to_owned() },
+                clear_selection: false,
+            }
+        );
+        row!(
+            if t.muted { "Unmute tab" } else { "Mute tab" },
+            PopAction::Chrome {
+                cmd: ChromeCommand::CtxMute { id: id.to_owned() },
+                clear_selection: false,
+            }
+        );
+        row!(
+            "Copy tab URL",
+            PopAction::Chrome {
+                cmd: ChromeCommand::CtxCopyUrl { id: id.to_owned() },
+                clear_selection: false,
+            }
+        );
+        row!(
+            "Close tab",
+            PopAction::Chrome {
+                cmd: ChromeCommand::CloseTab { id: id.to_owned() },
+                clear_selection: false,
+            }
+        );
+        row!(
+            "Close other tabs",
+            PopAction::Chrome {
+                cmd: ChromeCommand::CtxCloseOthers { id: id.to_owned() },
+                clear_selection: false,
+            }
+        );
+        row!(
+            "Close tabs to the right",
+            PopAction::Chrome {
+                cmd: ChromeCommand::CtxCloseRight { id: id.to_owned() },
+                clear_selection: false,
+            }
+        );
+        if !t.discarded {
+            row!(
+                "Sleep tab",
+                PopAction::Chrome {
+                    cmd: ChromeCommand::CtxSleep { id: id.to_owned() },
+                    clear_selection: false,
+                }
+            );
+        }
+        if !t.pinned {
+            rows.push(serde_json::json!({"sep": true}));
+            h += POP_SEP_PX;
+            row!(
+                "Add to new group",
+                PopAction::GroupEditorNew {
+                    tabs: vec![id.to_owned()],
+                }
+            );
+            let mut shown = 0;
+            for g in &state.groups {
+                if t.group.as_deref() == Some(g.id.as_str()) || shown >= 8 {
+                    continue;
+                }
+                row!(
+                    &format!("Move to {}", g.name),
+                    PopAction::Chrome {
+                        cmd: ChromeCommand::GroupAddTab {
+                            id: g.id.clone(),
+                            tab: id.to_owned(),
+                        },
+                        clear_selection: false,
+                    }
+                );
+                shown += 1;
+            }
+            if t.group.is_some() {
+                row!(
+                    "Remove from group",
+                    PopAction::Chrome {
+                        cmd: ChromeCommand::GroupRemoveTab { tab: id.to_owned() },
+                        clear_selection: false,
+                    }
+                );
+            }
+        }
+        h += POP_BORDER_PX;
+        Some(PopView {
+            frame: serde_json::json!({"kind": "tab_context", "rows": rows}),
+            actions,
+            w: CTX_POP_W,
+            h,
+        })
+    }
+
+    fn tabs_context_view(&self, ids: &[String]) -> Option<PopView> {
+        let state = self.chrome_state();
+        let live: Vec<&ferrite_chrome::chrome::TabRow> = ids
+            .iter()
+            .filter_map(|id| state.tabs.iter().find(|t| &t.id == id))
+            .collect();
+        if live.len() < 2 {
+            return None;
+        }
+        let n = live.len();
+        let all_muted = live.iter().all(|t| t.muted);
+        let all_pinned = live.iter().all(|t| t.pinned);
+        let ids: Vec<String> = live.iter().map(|t| t.id.clone()).collect();
+        let mut rows = Vec::new();
+        let mut actions = Vec::new();
+        let mut h = POP_LIST_PAD_PX;
+        h += Self::pop_menu_row(
+            &mut rows,
+            &mut actions,
+            format!("Close {n} tabs"),
+            PopAction::Chrome {
+                cmd: ChromeCommand::TabsClose { ids: ids.clone() },
+                clear_selection: true,
+            },
+        );
+        h += Self::pop_menu_row(
+            &mut rows,
+            &mut actions,
+            format!("{} {n} tabs", if all_muted { "Unmute" } else { "Mute" }),
+            PopAction::Chrome {
+                cmd: ChromeCommand::TabsMute {
+                    ids: ids.clone(),
+                    muted: !all_muted,
+                },
+                clear_selection: false,
+            },
+        );
+        h += Self::pop_menu_row(
+            &mut rows,
+            &mut actions,
+            format!("{} {n} tabs", if all_pinned { "Unpin" } else { "Pin" }),
+            PopAction::Chrome {
+                cmd: ChromeCommand::TabsPin {
+                    ids: ids.clone(),
+                    pinned: !all_pinned,
+                },
+                clear_selection: false,
+            },
+        );
+        h += Self::pop_menu_row(
+            &mut rows,
+            &mut actions,
+            format!("Group {n} tabs"),
+            PopAction::GroupEditorNew { tabs: ids },
+        );
+        h += POP_BORDER_PX;
+        Some(PopView {
+            frame: serde_json::json!({"kind": "tabs_context", "rows": rows}),
+            actions,
+            w: CTX_POP_W,
+            h,
+        })
+    }
+
+    fn group_context_view(&self, gid: &str) -> Option<PopView> {
+        let state = self.chrome_state();
+        let g = state.groups.iter().find(|g| g.id == gid)?;
+        let mut rows = Vec::new();
+        let mut actions = Vec::new();
+        let mut h = POP_LIST_PAD_PX;
+        h += Self::pop_menu_row(
+            &mut rows,
+            &mut actions,
+            "Edit group",
+            PopAction::GroupEditorEdit {
+                gid: gid.to_owned(),
+            },
+        );
+        h += Self::pop_menu_row(
+            &mut rows,
+            &mut actions,
+            if g.collapsed {
+                "Expand group"
+            } else {
+                "Collapse group"
+            },
+            PopAction::Chrome {
+                cmd: ChromeCommand::GroupCollapse {
+                    id: gid.to_owned(),
+                    collapsed: !g.collapsed,
+                },
+                clear_selection: false,
+            },
+        );
+        h += Self::pop_menu_row(
+            &mut rows,
+            &mut actions,
+            format!("Ungroup ({} tabs stay open)", g.count),
+            PopAction::Chrome {
+                cmd: ChromeCommand::GroupDelete { id: gid.to_owned() },
+                clear_selection: false,
+            },
+        );
+        h += Self::pop_menu_row(
+            &mut rows,
+            &mut actions,
+            format!("Close {} tabs", g.count),
+            PopAction::Chrome {
+                cmd: ChromeCommand::GroupClose { id: gid.to_owned() },
+                clear_selection: false,
+            },
+        );
+        h += POP_BORDER_PX;
+        Some(PopView {
+            frame: serde_json::json!({"kind": "group_context", "rows": rows}),
+            actions,
+            w: CTX_POP_W,
+            h,
+        })
+    }
+
+    fn bookmark_context_view(&self, id: &str) -> Option<PopView> {
+        let state = self.chrome_state();
+        let b = state.bar_items.iter().find(|b| b.id == id)?;
+        let mut rows = Vec::new();
+        let mut actions = Vec::new();
+        let mut h = POP_LIST_PAD_PX;
+        if b.folder {
+            h += Self::pop_menu_row(
+                &mut rows,
+                &mut actions,
+                "Open folder",
+                PopAction::BarFolder { id: id.to_owned() },
+            );
+        } else {
+            h += Self::pop_menu_row(
+                &mut rows,
+                &mut actions,
+                "Open",
+                PopAction::Chrome {
+                    cmd: ChromeCommand::Navigate { url: b.url.clone() },
+                    clear_selection: false,
+                },
+            );
+            h += Self::pop_menu_row(
+                &mut rows,
+                &mut actions,
+                "Open in new tab",
+                PopAction::Chrome {
+                    cmd: ChromeCommand::NewTab {
+                        url: Some(b.url.clone()),
+                    },
+                    clear_selection: false,
+                },
+            );
+        }
+        h += Self::pop_menu_row(
+            &mut rows,
+            &mut actions,
+            "Delete",
+            PopAction::Chrome {
+                cmd: ChromeCommand::CtxBookmarkDelete { id: id.to_owned() },
+                clear_selection: false,
+            },
+        );
+        h += POP_BORDER_PX;
+        Some(PopView {
+            frame: serde_json::json!({"kind": "bookmark_context", "rows": rows}),
+            actions,
+            w: CTX_POP_W,
+            h,
+        })
+    }
+
+    /// Shield frame. Pure for tests: connection summary, session totals with
+    /// their breakdown, the per-site line (only when it attributes), the
+    /// pause button, fail-open warnings, the recent-tracker list, then the
+    /// three accent rows the old `#shieldpop` carried. Every row is one
+    /// pinned height, so the card height is exact.
+    fn shield_pop_view_impl(input: &ShieldInput) -> PopView {
+        let mut rows = Vec::new();
+        let mut actions = Vec::new();
+        let mut h = POP_LIST_PAD_PX;
+        rows.push(Self::tx_row("Privacy Protection".to_owned(), "head"));
+        h += POP_TX_PX;
+        let (conn, col) = match input.scheme.as_str() {
+            "lock" => (
+                format!(
+                    "🔒 Secure connection to {}",
+                    if input.host.is_empty() {
+                        "this site"
+                    } else {
+                        input.host.as_str()
+                    }
+                ),
+                "",
+            ),
+            "info" => (
+                format!(
+                    "⚠ Not secure: {} loads over plain HTTP",
+                    if input.host.is_empty() {
+                        "this page"
+                    } else {
+                        input.host.as_str()
+                    }
+                ),
+                "warn",
+            ),
+            _ => (
+                "Ferrite internal page (no network connection)".to_owned(),
+                "faint",
+            ),
+        };
+        rows.push(Self::tx_row(conn, col));
+        h += POP_TX_PX;
+        if !input.proxy_alive {
+            rows.push(Self::tx_row(
+                "Proxy down: traffic is direct".to_owned(),
+                "danger",
+            ));
+            h += POP_TX_PX;
+        }
+        rows.push(Self::tx_row(
+            format!("{} blocked this session", input.blocked),
+            "",
+        ));
+        h += POP_TX_PX;
+        rows.push(Self::tx_row(
+            format!(
+                "ads {} · trackers {} · fingerprinting {} · malware {} · mixed {}",
+                input.blocked_ad,
+                input.blocked_tracker,
+                input.blocked_fingerprinting,
+                input.blocked_malware,
+                input.blocked_mixed
+            ),
+            "faint",
+        ));
+        h += POP_TX_PX;
+        if input.site_paused {
+            rows.push(Self::tx_row(
+                "Blocking paused on this site.".to_owned(),
+                "warn",
+            ));
+            h += POP_TX_PX;
+        } else if input.site_blocked > 0 {
+            rows.push(Self::tx_row(
+                format!("{} blocked on this site", input.site_blocked),
+                "",
+            ));
+            h += POP_TX_PX;
+        }
+        let pi = actions.len();
+        actions.push(PopAction::ShieldPause);
+        rows.push(serde_json::json!({
+            "k": "btn",
+            "t": if input.site_paused {
+                "Resume blocking"
+            } else {
+                "Pause blocking for this site"
+            },
+            "a": "pause",
+            "i": pi,
+        }));
+        h += POP_BTN_PX;
+        if input.fail_open > 0 {
+            rows.push(Self::tx_row(
+                format!("{} fail-open decisions", input.fail_open),
+                "danger",
+            ));
+            h += POP_TX_PX;
+        }
+        if input.recent_trackers.is_empty() {
+            rows.push(Self::tx_row(
+                "Blockers active for this session".to_owned(),
+                "faint",
+            ));
+            h += POP_TX_PX;
+        } else {
+            rows.push(serde_json::json!({"sec": "Recent trackers"}));
+            h += POP_SEC_PX;
+            for host in &input.recent_trackers {
+                rows.push(Self::tx_row(host.clone(), "faint"));
+                h += POP_TX_PX;
+            }
+        }
+        for (label, tag, act) in [
+            (
+                "Manage privacy settings",
+                "manage",
+                PopAction::ManagePrivacy,
+            ),
+            ("View certificate", "cert", PopAction::ViewCert),
+        ] {
+            let i = actions.len();
+            actions.push(act);
+            rows.push(serde_json::json!({"t": label, "i": i, "a": tag, "k": "acc"}));
+            h += POP_ROW_PX;
+        }
+        // Site details only for network pages (internal ferrite:// pages
+        // have no site data; the page would show an empty validated row).
+        if input.site_details {
+            let i = actions.len();
+            actions.push(PopAction::SiteDetails);
+            rows.push(serde_json::json!({"t": "Site details", "i": i, "a": "site", "k": "acc"}));
+            h += POP_ROW_PX;
+        }
+        h += POP_BORDER_PX;
+        PopView {
+            frame: serde_json::json!({"kind": "shield", "rows": rows}),
+            actions,
+            w: SHIELD_POP_W,
+            h,
+        }
+    }
+
+    /// Live shield frame. The numbers come from `status_row()`, the exact
+    /// builder the toolbar badge and the strip read, so the card can never
+    /// contradict them; the connection class and the site-details row come
+    /// from the active URL the same way `ChromeState.sec` does.
+    fn shield_pop_view(&self) -> PopView {
+        let s = self.status_row();
+        let (scheme, host, site_details) = match self.app.tabs.active_tab() {
+            Some(t) => (
+                if t.url.starts_with("ferrite://") {
+                    "shield".to_owned()
+                } else if t.url.starts_with("https://") {
+                    "lock".to_owned()
+                } else {
+                    "info".to_owned()
+                },
+                page_host_for_shield(&t.url).unwrap_or_default(),
+                t.url.starts_with("http://") || t.url.starts_with("https://"),
+            ),
+            None => ("shield".to_owned(), String::new(), false),
+        };
+        let input = ShieldInput {
+            scheme,
+            host,
+            proxy_alive: s.proxy_alive,
+            blocked: s.blocked,
+            blocked_ad: s.blocked_ad,
+            blocked_tracker: s.blocked_tracker,
+            blocked_fingerprinting: s.blocked_fingerprinting,
+            blocked_malware: s.blocked_malware,
+            blocked_mixed: s.blocked_mixed,
+            site_blocked: s.site_blocked,
+            site_paused: s.site_paused,
+            fail_open: s.fail_open,
+            recent_trackers: s.recent_trackers,
+            site_details,
+        };
+        Self::shield_pop_view_impl(&input)
+    }
+
+    /// Live nav frame: the active tab's back/forward entries, capped at 20
+    /// to match the engine traversal cap and the GoBack step clamp (steps
+    /// 11-20 were unreachable before the list drew 20).
+    fn nav_pop_view_active(&self, back: bool) -> PopView {
+        let urls: Vec<String> = match self.app.tabs.active_tab() {
+            Some(t) => {
+                // 20 rows to match the engine traversal cap and the GoBack
+                // steps clamp (steps 11-20 used to be unreachable because
+                // the UI only ever served 10).
+                if back {
+                    t.history.back_list(20)
+                } else {
+                    t.history.forward_list(20)
+                }
+            }
+            None => Vec::new(),
+        };
+        Self::nav_pop_view(back, &urls)
+    }
+
+    /// Build the overlay payload for a pop kind: page frame, action table,
+    /// and card size. Nav/history re-derive from live stores on every open
+    /// and refresh, so posts always validate against exactly what is on
+    /// screen. Zoom reads its percentage in the same breath. `arm_until` is
+    /// the open-time clickjacking deadline, passed in so a refresh republishes
+    /// the same value (a fresh `now()` here would repaint and re-arm on every
+    /// state push).
+    fn toolbar_pop_view(&mut self, kind: &PopKind, arm_until: Option<i64>) -> PopView {
+        match kind {
+            PopKind::Zoom => PopView {
+                frame: Self::zoom_pop_frame(self.zoom_pop_pct()),
+                actions: Vec::new(),
+                w: ZOOM_POP_W,
+                h: ZOOM_POP_H,
+            },
+            PopKind::NavBack => self.nav_pop_view_active(true),
+            PopKind::NavFwd => self.nav_pop_view_active(false),
+            PopKind::History => self.history_pop_view(),
+            PopKind::Downloads => self.downloads_pop_view(),
+            PopKind::Shield => self.shield_pop_view(),
+            PopKind::Permissions => {
+                let until = arm_until.unwrap_or_else(|| ferrite_tabs::now_millis() + POP_ARM_MS);
+                self.permissions_pop_view(until)
+            }
+            PopKind::Star
+            | PopKind::Workspaces
+            | PopKind::WorkspaceRename
+            | PopKind::Profiles
+            | PopKind::GroupEditor
+            | PopKind::BarMenu
+            | PopKind::BarFolderNew
+            | PopKind::TabContext
+            | PopKind::TabsContext
+            | PopKind::GroupContext
+            | PopKind::BookmarkContext => {
+                self.chrome_surface_view(kind, None)
+                    .unwrap_or_else(|| PopView {
+                        frame: serde_json::json!({"kind": kind.name(), "rows": []}),
+                        actions: Vec::new(),
+                        w: CTX_POP_W,
+                        h: POP_LIST_PAD_PX + POP_BORDER_PX,
+                    })
+            }
+        }
+    }
+
+    /// Build a 3c-6 surface from live state. `None` means the target vanished
+    /// between chrome's press and this call; the open path then closes without
+    /// painting. Every id is resolved here, never trusted from the page.
+    fn chrome_surface_view(&self, kind: &PopKind, ctx: Option<&PopContext>) -> Option<PopView> {
+        match kind {
+            PopKind::Star => self.star_pop_view(),
+            PopKind::Workspaces => Some(self.workspaces_pop_view()),
+            PopKind::WorkspaceRename => match ctx {
+                Some(PopContext::WsRename { id, name }) => Some(self.ws_rename_pop_view(id, name)),
+                _ => None,
+            },
+            PopKind::Profiles => Some(self.profiles_pop_view()),
+            PopKind::GroupEditor => match ctx {
+                Some(PopContext::Group(ctx)) => Some(self.group_editor_view(ctx)),
+                _ => None,
+            },
+            PopKind::BarMenu => match ctx {
+                Some(PopContext::Bar(bar)) => Some(self.bar_menu_view(bar)),
+                _ => Some(self.bar_menu_view(&BarContext::default())),
+            },
+            PopKind::BarFolderNew => match ctx {
+                Some(PopContext::FolderNew { parent }) => {
+                    Some(self.bar_folder_new_view(parent.as_deref()))
+                }
+                _ => Some(self.bar_folder_new_view(None)),
+            },
+            PopKind::TabContext => match ctx {
+                Some(PopContext::Tab(id)) => self.tab_context_view(id),
+                _ => None,
+            },
+            PopKind::TabsContext => match ctx {
+                Some(PopContext::Tabs(ids)) => self.tabs_context_view(ids),
+                _ => None,
+            },
+            PopKind::GroupContext => match ctx {
+                Some(PopContext::GroupTarget(id)) => self.group_context_view(id),
+                _ => None,
+            },
+            PopKind::BookmarkContext => match ctx {
+                Some(PopContext::Bookmark(id)) => self.bookmark_context_view(id),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Open a typed 3c-6 surface. Same vehicle and action grammar as the
+    /// toolbar cards, but chrome supplies ids/geometry only and the shell
+    /// resolves every target against live state before painting.
+    fn show_chrome_surface(
+        &mut self,
+        surface: ChromeSurface,
+        id: String,
+        ids: Vec<String>,
+        items: Vec<String>,
+        parent: Option<String>,
+        point: bool,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    ) {
+        let kind = PopKind::from_surface(surface);
+        if kind.toggles_on_repeat()
+            && self.toolbar_pop.as_ref().map(|p| p.kind.clone()) == Some(kind.clone())
+        {
+            self.hide_toolbar_pop();
+            return;
+        }
+        let ctx = match kind {
+            PopKind::BarMenu => {
+                let root = (!items.is_empty()).then_some(items);
+                let mut stack = Vec::new();
+                if let Some(p) = parent.filter(|p| !p.is_empty()) {
+                    stack.push(p);
+                }
+                if !id.is_empty() {
+                    stack.push(id);
+                }
+                Some(PopContext::Bar(BarContext { root, stack }))
+            }
+            PopKind::TabContext => {
+                let live = uuid::Uuid::parse_str(&id)
+                    .ok()
+                    .filter(|u| self.app.tabs.get_tab(*u).is_some());
+                if live.is_none() {
+                    return;
+                }
+                Some(PopContext::Tab(id))
+            }
+            PopKind::TabsContext => Some(PopContext::Tabs(ids)),
+            PopKind::GroupContext => {
+                if id.is_empty() {
+                    return;
+                }
+                Some(PopContext::GroupTarget(id))
+            }
+            PopKind::BookmarkContext => {
+                if id.is_empty() {
+                    return;
+                }
+                Some(PopContext::Bookmark(id))
+            }
+            _ => None,
+        };
+        let Some(v) = self.chrome_surface_view(&kind, ctx.as_ref()) else {
+            return;
+        };
+        self.hide_menu_overlay();
+        self.hide_ctx_menu();
+        self.hide_omni_pop();
+        Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
+        self.hide_toolbar_pop();
+        let bounds = if point {
+            self.popover_overlay_rect(x, y, v.w, v.h)
+        } else {
+            self.popover_anchor_rect((x, y, w, h), kind.aligns_right(), v.w, v.h)
+        };
+        self.toolbar_pop = Some(ToolbarPop {
+            kind,
+            x,
+            y,
+            w,
+            h: h.max(0.0),
+            frame: v.frame.clone(),
+            actions: v.actions,
+            cw: v.w,
+            ch: v.h,
+            arm_until: None,
+            tab: self.app.tabs.active_id(),
+            ctx,
+            point,
+        });
+        self.overlay_pop_present(bounds, &v.frame, true);
+        self.pop_set_open_flag(true);
+        if let Some(p) = self.toolbar_pop.as_ref() {
+            let js = format!("__ferritePopState({:?})", p.kind.name());
+            self.eval_chrome(&js);
+        }
+    }
+
+    /// Swap the frame of the open 3c-6 surface in place (bar drill-in/Back,
+    /// group editor after a context row) while keeping its anchor. The kind,
+    /// frame, and action table all move together, so a stale post can never
+    /// name the previous frame's rows.
+    fn replace_chrome_pop(&mut self, kind: PopKind, ctx: PopContext, v: PopView) {
+        let Some(p) = self.toolbar_pop.as_ref() else {
+            return;
+        };
+        let (x, y, w, h, point, tab) = (p.x, p.y, p.w, p.h, p.point, p.tab);
+        let bounds = if point {
+            self.popover_overlay_rect(x, y, v.w, v.h)
+        } else {
+            self.popover_anchor_rect((x, y, w, h), kind.aligns_right(), v.w, v.h)
+        };
+        self.toolbar_pop = Some(ToolbarPop {
+            kind,
+            x,
+            y,
+            w,
+            h,
+            frame: v.frame.clone(),
+            actions: v.actions,
+            cw: v.w,
+            ch: v.h,
+            arm_until: None,
+            tab,
+            ctx: Some(ctx),
+            point,
+        });
+        self.overlay_pop_present(bounds, &v.frame, true);
+        if let Some(p) = self.toolbar_pop.as_ref() {
+            let js = format!("__ferritePopState({:?})", p.kind.name());
+            self.eval_chrome(&js);
+        }
+    }
+
+    /// Open (or toggle) a toolbar popover from an owner-button rect.
+    /// Shell state is set before the best-effort present so unit tests pin
+    /// behavior without a window. Mutual exclusion runs the existing hide
+    /// funnels: every other user of the shared overlay dies first. Toggle
+    /// is the kind's own decision (`toggles_on_repeat`), not chrome's.
+    /// The overlay takes OS focus on open (the main menu's precedent): the
+    /// press that opened the pop already handed focus to chrome, and the
+    /// pop is real UI whose rows must be arrow/Enter reachable. A refresh
+    /// never re-focuses (see `refresh_toolbar_pop`).
+    fn show_toolbar_pop(&mut self, kind: PopKind, x: f64, y: f64, w: f64, h: f64, toggle: bool) {
+        if toggle && self.toolbar_pop.as_ref().map(|p| p.kind.clone()) == Some(kind.clone()) {
+            self.hide_toolbar_pop();
+            return;
+        }
+        if self.menu_open {
+            self.hide_menu_overlay();
+        }
+        self.hide_ctx_menu();
+        self.hide_omni_pop();
+        Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
+        let align_right = kind.aligns_right();
+        let arm_until = kind
+            .arms_on_open()
+            .then(|| ferrite_tabs::now_millis() + POP_ARM_MS);
+        let v = self.toolbar_pop_view(&kind, arm_until);
+        // An empty list has no card to show: `closes_when_empty` kinds close
+        // instead of painting a blank box (the chip is hidden when nothing is
+        // pending, so this only fires on a race between press and decide).
+        if kind.closes_when_empty() && v.no_rows() {
+            self.hide_toolbar_pop();
+            return;
+        }
+        let bounds = self.popover_anchor_rect((x, y, w, h), align_right, v.w, v.h);
+        // Publish the owner before the first paint: a freshly created overlay
+        // can finish loading and post `ctx_ready` while the first script is
+        // in flight, and the readiness replay must see an open card.
+        self.toolbar_pop = Some(ToolbarPop {
+            kind,
+            x,
+            y,
+            w,
+            h: h.max(0.0),
+            frame: v.frame.clone(),
+            actions: v.actions,
+            cw: v.w,
+            ch: v.h,
+            arm_until,
+            tab: self.app.tabs.active_id(),
+            ctx: None,
+            point: false,
+        });
+        self.overlay_pop_present(bounds, &v.frame, true);
+        self.pop_set_open_flag(true);
+        if let Some(p) = self.toolbar_pop.as_ref() {
+            let js = format!("__ferritePopState({:?})", p.kind.name());
+            self.eval_chrome(&js);
+        }
+    }
+
+    /// Left edge for a pop card anchored under its owner button. Pure; the
+    /// window clamp and scale conversion happen in `popover_overlay_rect`.
+    fn pop_anchor_x(align_right: bool, x: f64, w: f64, card_w: f64) -> f64 {
+        if align_right { x + w - card_w } else { x }
+    }
+
+    /// Whether a `popover_dismiss` report came from a content page
+    /// (`pop_dismiss_js` marks those `src:"page"`). Page reports must not
+    /// pull OS focus back to chrome (D6b): the pointerdown that reported them
+    /// already focused the page, and re-claiming it would eat the caret the
+    /// user clicked into — one lost click before they can type. Overlay
+    /// reports (Esc inside the shared overlay) do hand focus back, and the
+    /// suggestion mirror is chrome's own field, which keeps focus throughout.
+    fn dismiss_keeps_page_focus(v: &serde_json::Value) -> bool {
+        v.get("src").and_then(|s| s.as_str()) == Some("page")
+    }
+
+    /// Hide the toolbar popover (idempotent), clear the content-page
+    /// dismissal flags, and return keyboard focus to chrome like the menu
+    /// hide does (no select: must not disturb whatever was being typed).
+    fn hide_toolbar_pop(&mut self) {
+        self.hide_toolbar_pop_impl(true);
+    }
+
+    /// Hide triggered by the *page's own* `pointerdown` report
+    /// (`src:'page'`). That press already put OS focus on the page, so
+    /// re-claiming it for chrome would swallow the caret the user was
+    /// aiming at - one lost click before they can type. Nothing else
+    /// changes.
+    fn hide_toolbar_pop_keep_page_focus(&mut self) {
+        self.hide_toolbar_pop_impl(false);
+    }
+
+    fn hide_toolbar_pop_impl(&mut self, refocus_chrome: bool) {
+        let Some(p) = self.toolbar_pop.take() else {
+            return;
+        };
+        self.pop_set_open_flag(false);
+        let js = "__ferritePopState(null)";
+        self.eval_chrome(js);
+        if let Some(owner) = p.kind.owner_id() {
+            let js = format!("__ferriteRestoreFocus({owner:?})");
+            self.eval_chrome(&js);
+        }
+        if let Some(ov) = self.ctx_overlay.as_ref()
+            && let Err(e) = ov.set_visible(false)
+        {
+            debug!(error = %e, "pop hide failed");
+        }
+        if refocus_chrome
+            && let Some(chrome) = self.chrome.as_ref()
+            && let Err(e) = chrome.focus()
+        {
+            debug!(error = %e, "pop hide refocus failed");
+        }
+    }
+
+    /// Close an open card that belongs to a tab other than the active one.
+    /// Called from the tab-activation funnel — a keyboard switch pushes no
+    /// chrome state, so the refresh guard alone would leave a stale frame on
+    /// screen — and from the refresh path, which catches every activation that
+    /// *does* push (closing a tab activates a neighbour, a page-opened tab
+    /// activates itself). Returns whether it closed anything.
+    fn close_tab_owned_pop(&mut self) -> bool {
+        if let Some(p) = self.toolbar_pop.as_ref()
+            && p.kind.closes_on_tab_change()
+            && p.tab != self.app.tabs.active_id()
+        {
+            self.hide_toolbar_pop();
+            return true;
+        }
+        false
+    }
+
+    /// A window resize moves every owner rect with the chrome layout. Button-
+    /// anchored 3c-6 surfaces re-anchor from the same logical rect; a
+    /// point-anchored context menu closes, because its screen point no longer
+    /// means the tab/bar item it was opened on.
+    fn reanchor_toolbar_pop(&mut self) {
+        let Some((kind, x, y, w, h, cw, ch, point)) = self
+            .toolbar_pop
+            .as_ref()
+            .map(|p| (p.kind.clone(), p.x, p.y, p.w, p.h, p.cw, p.ch, p.point))
+        else {
+            return;
+        };
+        if !kind.is_chrome_surface() {
+            return;
+        }
+        if point {
+            self.hide_toolbar_pop();
+            return;
+        }
+        let bounds = self.popover_anchor_rect((x, y, w, h), kind.aligns_right(), cw, ch);
+        if let Some(ov) = self.ctx_overlay.as_ref()
+            && let Some(b) = bounds
+            && let Err(e) = ov.set_bounds(b)
+        {
+            debug!(error = %e, "pop resize failed");
+        }
+        self.raise_open_overlays();
+    }
+
+    /// Re-present the open popover with fresh data. Button-shaped rows stay
+    /// open on actuation (zoom parity), and any state push may change the
+    /// numbers while the popup is up. No-op when nothing is open, and no-op
+    /// when the frame is unchanged: chrome state pushes (load progress,
+    /// favicon arrival, blocked counters) would otherwise re-render the card
+    /// under the pointer on every tick and drop its focus. Refresh never
+    /// takes OS focus — the pop already has it. Returns whether a repaint
+    /// was attempted (the frame changed), which is exactly what the state
+    /// push is allowed to cause.
+    fn refresh_toolbar_pop(&mut self) -> bool {
+        let Some((kind, x, y, w, anchor_h, frame, arm_until, tab)) =
+            self.toolbar_pop.as_ref().map(|p| {
+                (
+                    p.kind.clone(),
+                    p.x,
+                    p.y,
+                    p.w,
+                    p.h,
+                    p.frame.clone(),
+                    p.arm_until,
+                    p.tab,
+                )
+            })
+        else {
+            return false;
+        };
+        // A card owned by one tab never re-points at another tab's rows.
+        // This runs before the snapshot guard: 3c-6 surfaces (star, context
+        // menus) are snapshots AND tab-scoped, so a push that lands on a new
+        // active tab must still retire them.
+        if self.close_tab_owned_pop() {
+            return true;
+        }
+        // 3c-6 forms/context menus are snapshots of the interaction they were
+        // opened on. A state tick must never rebuild the field under the
+        // caret or re-point a context menu at new ids.
+        if !kind.refreshed_by_state() {
+            return false;
+        }
+        let v = self.toolbar_pop_view(&kind, arm_until);
+        // A kind whose store emptied has no card left to show: close it (old
+        // chrome DOM hid the permission popover when the pending list went
+        // empty, which is also what a tab switch does, since the list is per
+        // active tab).
+        if kind.closes_when_empty() && v.no_rows() {
+            self.hide_toolbar_pop();
+            return true;
+        }
+        // The frame is the whole visible payload, so equality is exactly the
+        // "would this repaint anything?" test. The action table must always
+        // mirror the frame the user sees (a row index from a replaced frame
+        // is stale, never reachable), and equal frames mean equal tables.
+        if v.frame == frame {
+            return false;
+        }
+        let bounds = self.popover_anchor_rect((x, y, w, anchor_h), kind.aligns_right(), v.w, v.h);
+        self.overlay_pop_present(bounds, &v.frame, false);
+        self.toolbar_pop = Some(ToolbarPop {
+            kind,
+            x,
+            y,
+            w,
+            h: anchor_h,
+            frame: v.frame,
+            actions: v.actions,
+            cw: v.w,
+            ch: v.h,
+            arm_until,
+            tab,
+            ctx: None,
+            point: false,
+        });
+        true
+    }
+
+    /// One overlay row action for the open toolbar pop. The post must name
+    /// the open kind; list rows must name a valid row index AND the act tag
+    /// that row published, both against the shell's own table — everything
+    /// else is dropped before any behavior runs (activate_ctx precedent).
+    fn toolbar_pop_act(&mut self, kind: &str, act: &str, i: i64) {
+        let Some(p) = self.toolbar_pop.clone() else {
+            debug!(kind, act, "pop act: no open pop");
+            return;
+        };
+        if kind != p.kind.name() {
+            debug!(kind, open = p.kind.name(), act, "pop act: kind mismatch");
+            return;
+        }
+        // Clickjacking gate: an arming kind refuses every action until its
+        // open-time deadline passes, even if the page's own disabled-button
+        // guard were bypassed. The page disables the same buttons for the same
+        // window; this check is the authoritative one.
+        if p.arm_until
+            .is_some_and(|until| ferrite_tabs::now_millis() < until)
+        {
+            return;
+        }
+        if let PopKind::Zoom = p.kind {
+            match act {
+                // Zoom rows keep the popup open and refresh off the state
+                // push (`zoom_set` forces one): the exact chrome-DOM
+                // keep-open behavior this replaces.
+                "in" => self.zoom_step_active(1),
+                "out" => self.zoom_step_active(-1),
+                "reset" => self.zoom_reset_active(),
+                _ => {}
+            }
+            return;
+        }
+        if i < 0 {
+            return;
+        }
+        let Some(a) = p.actions.get(i as usize).cloned() else {
+            return;
+        };
+        if a.tag() != act {
+            return;
+        }
+        // Form actions only run through `popover_submit`; a bare activation
+        // of Save/Add is dropped rather than saving defaults.
+        if a.needs_values() {
+            return;
+        }
+        // Actuation closes the pop before acting unless this action is one
+        // of the keep-open downloads rows or an in-overlay transition (old
+        // DOM parity). A rejected action keeps the form open so the user can
+        // correct it instead of losing their input.
+        let close = a.closes_pop();
+        let ok = self.run_pop_action(&a, None);
+        if close && ok {
+            self.hide_toolbar_pop();
+        }
+    }
+
+    /// One form submission from the shared overlay. The same kind/index/tag
+    /// triple as a row activation, but the action must be one that expects
+    /// values, and only the overlay webview may call it (content pages are
+    /// not allowed to fabricate form submissions).
+    fn toolbar_pop_submit(&mut self, kind: &str, act: &str, i: i64, values: &PopValues) {
+        let Some(p) = self.toolbar_pop.clone() else {
+            debug!("submit: no open toolbar pop");
+            return;
+        };
+        if kind != p.kind.name() || i < 0 {
+            debug!(kind, open = p.kind.name(), i, "submit: kind/index mismatch");
+            return;
+        }
+        let Some(a) = p.actions.get(i as usize).cloned() else {
+            debug!(i, "submit: index outside action table");
+            return;
+        };
+        if a.tag() != act || !a.needs_values() {
+            debug!(
+                act,
+                want = a.tag(),
+                "submit: act tag mismatch or not a form action"
+            );
+            return;
+        }
+        let close = a.closes_pop();
+        let ok = self.run_pop_action(&a, Some(values));
+        if close && ok {
+            self.hide_toolbar_pop();
+        }
+    }
+
+    /// One validated list-row action. Dispatch happens on the open pop's
+    /// own action table, so nothing beyond kind + tag + index ever reaches
+    /// a behavior from the wire. Returns false when live state rejected the
+    /// action (the caller then leaves the surface open).
+    fn run_pop_action(&mut self, a: &PopAction, values: Option<&PopValues>) -> bool {
+        match a {
+            PopAction::Nav { fwd, steps } => {
+                let cmd = if *fwd {
+                    ChromeCommand::GoForward { steps: *steps }
+                } else {
+                    ChromeCommand::GoBack { steps: *steps }
+                };
+                self.handle_chrome_command(cmd);
+            }
+            PopAction::Reopen(index) => {
+                if let Some(entry) = self.closed_at(*index).cloned() {
+                    if self.open_restored(&entry).is_some() {
+                        self.take_closed_at(*index);
+                    }
+                }
+            }
+            PopAction::RestoreAll => {
+                // Oldest first so the newest ends active (ClosedRestoreAll
+                // parity the toast and menu restore row share).
+                let mut failed = Vec::new();
+                for entry in self.drain_closed_all() {
+                    if self.open_restored(&entry).is_none() {
+                        failed.push(entry);
+                    }
+                }
+                self.closed_tabs = failed;
+            }
+            PopAction::Go(url) => {
+                self.handle_chrome_command(ChromeCommand::Navigate { url: url.clone() });
+            }
+            PopAction::AllHistory => {
+                self.handle_chrome_command(ChromeCommand::Navigate {
+                    url: "ferrite://history".to_owned(),
+                });
+            }
+            PopAction::DlOpen(id) => self.bubble_dl_open(id, false),
+            PopAction::DlFolder(id) => self.bubble_dl_open(id, true),
+            PopAction::DlRetry(id) => match self.bubble_dl_target(id) {
+                Some((_, url, _)) if !url.is_empty() => self.open_tab(url),
+                _ => self.notify("That file is gone.".to_owned()),
+            },
+            PopAction::DlRemove(id) => {
+                if let Some(vault) = self.vault.as_ref()
+                    && let Err(e) = vault.remove_download(id)
+                {
+                    debug!(error = %e, "pop download remove failed");
+                }
+                // Stays open (old bubble parity) and re-renders from the same
+                // shell-side store, so the vanished row is the confirmation.
+                self.refresh_toolbar_pop();
+            }
+            PopAction::ManagePrivacy => self.handle_chrome_command(ChromeCommand::MenuItem {
+                id: "settings-privacy".to_owned(),
+            }),
+            PopAction::ViewCert => {
+                if let Some(u) = self.active_tab_url() {
+                    let url = format!(
+                        "ferrite://certs?url={}",
+                        ferrite_tabs::protocol::encode_query_component(&u)
+                    );
+                    self.handle_chrome_command(ChromeCommand::Navigate { url });
+                }
+            }
+            PopAction::SiteDetails => {
+                if let Some(u) = self.active_tab_url() {
+                    let url = format!(
+                        "ferrite://site?origin={}",
+                        ferrite_tabs::protocol::encode_query_component(&u)
+                    );
+                    self.handle_chrome_command(ChromeCommand::Navigate { url });
+                }
+            }
+            PopAction::ShieldPause => self.handle_chrome_command(ChromeCommand::ShieldPause),
+            PopAction::PermDecide {
+                origin,
+                kind,
+                always,
+            } => {
+                // Decide only a request the shell still holds. The table entry
+                // is shell-built, but the card can outlive its request (the
+                // site died, the tab navigated); a decision for a dead row
+                // would mint a one-shot grant a *later* request would consume.
+                let still_pending = self
+                    .perm_rows()
+                    .iter()
+                    .any(|r| &r.origin == origin && &r.kind == kind);
+                if still_pending {
+                    self.handle_chrome_command(ChromeCommand::PermDecide {
+                        origin: origin.clone(),
+                        kind: kind.clone(),
+                        always: *always,
+                    });
+                }
+            }
+            // Old `#permnotnow`: close, hand the caret back to the omnibox,
+            // and leave the request pending (the chip stays put).
+            PopAction::PermNotNow => self.focus_omnibox(),
+            PopAction::Chrome {
+                cmd,
+                clear_selection,
+            } => {
+                self.handle_chrome_command(cmd.clone());
+                if *clear_selection {
+                    self.eval_chrome("window.__ferriteClearSelection&&__ferriteClearSelection()");
+                }
+            }
+            PopAction::StarSave { url, .. } => {
+                let Some(values) = values else {
+                    return false;
+                };
+                let name = values.name.trim();
+                if name.is_empty() || self.active_tab_url().as_deref() != Some(url.as_str()) {
+                    return false;
+                }
+                let state = self.chrome_state();
+                let folder = if values.folder.is_empty() {
+                    None
+                } else if state.folders.iter().any(|f| f.id == values.folder) {
+                    Some(values.folder.clone())
+                } else {
+                    return false;
+                };
+                if state.starred {
+                    // Edit mode: the page is already bookmarked, so this is a
+                    // rename (and maybe a move), never a second row.
+                    if !self.update_starred_bookmark(url, name, folder.as_deref()) {
+                        return false;
+                    }
+                } else {
+                    self.handle_chrome_command(ChromeCommand::BookmarkAdd {
+                        url: url.clone(),
+                        title: name.to_owned(),
+                        parent: folder,
+                    });
+                }
+            }
+            PopAction::StarManage { url, .. } => {
+                if self.active_tab_url().as_deref() != Some(url.as_str()) {
+                    return false;
+                }
+                let folder = values
+                    .map(|v| v.folder.clone())
+                    .filter(|f| !f.is_empty())
+                    .or_else(|| self.chrome_state().starred_folder);
+                let url = match folder {
+                    Some(f) => format!(
+                        "ferrite://bookmarks?folder={}",
+                        ferrite_tabs::protocol::encode_query_component(&f)
+                    ),
+                    None => "ferrite://bookmarks".to_owned(),
+                };
+                self.handle_chrome_command(ChromeCommand::Navigate { url });
+            }
+            PopAction::StarRemove { url, title } => {
+                let state = self.chrome_state();
+                if !state.starred || self.active_tab_url().as_deref() != Some(url.as_str()) {
+                    return false;
+                }
+                self.handle_chrome_command(ChromeCommand::ToggleStar {
+                    url: url.clone(),
+                    title: title.clone(),
+                });
+            }
+            PopAction::WsCreate => {
+                let Some(values) = values else {
+                    return false;
+                };
+                let name = values.name.trim();
+                if name.is_empty() {
+                    return false;
+                }
+                self.handle_chrome_command(ChromeCommand::WsCreate {
+                    name: name.chars().take(64).collect(),
+                });
+            }
+            PopAction::WsRenameForm { id, name } => {
+                let state = self.chrome_state();
+                if !state.workspaces.iter().any(|w| &w.id == id) {
+                    return false;
+                }
+                let ctx = PopContext::WsRename {
+                    id: id.clone(),
+                    name: name.clone(),
+                };
+                let kind = PopKind::WorkspaceRename;
+                let Some(v) = self.chrome_surface_view(&kind, Some(&ctx)) else {
+                    return false;
+                };
+                self.replace_chrome_pop(kind, ctx, v);
+                return false;
+            }
+            PopAction::WsRename { id } => {
+                let Some(values) = values else {
+                    return false;
+                };
+                let name = values.name.trim();
+                if name.is_empty() || !self.chrome_state().workspaces.iter().any(|w| &w.id == id) {
+                    return false;
+                }
+                self.handle_chrome_command(ChromeCommand::WsRename {
+                    id: id.clone(),
+                    name: name.chars().take(64).collect(),
+                });
+            }
+            PopAction::ProfileCreate => {
+                let Some(values) = values else {
+                    return false;
+                };
+                let name = values.name.trim();
+                if name.is_empty() {
+                    return false;
+                }
+                self.handle_chrome_command(ChromeCommand::ProfileCreate {
+                    name: name.chars().take(32).collect(),
+                });
+            }
+            PopAction::GroupEditorNew { tabs } => {
+                let live: Vec<String> = tabs
+                    .iter()
+                    .filter(|id| {
+                        uuid::Uuid::parse_str(id)
+                            .ok()
+                            .and_then(|u| self.app.tabs.get_tab(u))
+                            .is_some()
+                    })
+                    .cloned()
+                    .collect();
+                if live.is_empty() {
+                    debug!(tabs = tabs.len(), "group editor new: no live tab");
+                    return false;
+                }
+                let ctx = GroupContext {
+                    mode: GroupSaveMode::Create,
+                    gid: None,
+                    tabs: live,
+                    orig_name: String::new(),
+                    orig_color: 0,
+                    orig_collapsed: false,
+                };
+                let kind = PopKind::GroupEditor;
+                let Some(v) =
+                    self.chrome_surface_view(&kind, Some(&PopContext::Group(ctx.clone())))
+                else {
+                    return false;
+                };
+                self.replace_chrome_pop(kind, PopContext::Group(ctx), v);
+                return false;
+            }
+            PopAction::GroupEditorEdit { gid } => {
+                let state = self.chrome_state();
+                let Some(g) = state.groups.iter().find(|g| &g.id == gid).cloned() else {
+                    return false;
+                };
+                let tabs = state
+                    .tabs
+                    .iter()
+                    .filter(|t| t.group.as_deref() == Some(gid.as_str()))
+                    .map(|t| t.id.clone())
+                    .collect::<Vec<_>>();
+                let ctx = GroupContext {
+                    mode: GroupSaveMode::Edit,
+                    gid: Some(gid.clone()),
+                    tabs,
+                    orig_name: g.name,
+                    orig_color: g.color,
+                    orig_collapsed: g.collapsed,
+                };
+                let kind = PopKind::GroupEditor;
+                let Some(v) =
+                    self.chrome_surface_view(&kind, Some(&PopContext::Group(ctx.clone())))
+                else {
+                    return false;
+                };
+                self.replace_chrome_pop(kind, PopContext::Group(ctx), v);
+                return false;
+            }
+            PopAction::GroupColor { gid, color } => {
+                let state = self.chrome_state();
+                if !state.groups.iter().any(|g| &g.id == gid)
+                    || *color as usize >= ferrite_tabs::manager::GROUP_COLORS.len()
+                {
+                    return false;
+                }
+                self.handle_chrome_command(ChromeCommand::GroupColor {
+                    id: gid.clone(),
+                    color: *color,
+                });
+            }
+            PopAction::GroupSave { mode, gid, tabs } => {
+                let Some(values) = values else {
+                    return false;
+                };
+                let name = values.name.trim();
+                if name.is_empty() {
+                    return false;
+                }
+                let color = values.color;
+                if color as usize >= ferrite_tabs::manager::GROUP_COLORS.len() {
+                    return false;
+                }
+                match mode {
+                    GroupSaveMode::Create => {
+                        let live: Vec<String> = tabs
+                            .iter()
+                            .filter(|id| {
+                                uuid::Uuid::parse_str(id)
+                                    .ok()
+                                    .and_then(|u| self.app.tabs.get_tab(u))
+                                    .is_some()
+                            })
+                            .cloned()
+                            .collect();
+                        if live.is_empty() {
+                            return false;
+                        }
+                        self.handle_chrome_command(ChromeCommand::GroupCreate {
+                            name: name.chars().take(64).collect(),
+                            tabs: live,
+                            color,
+                            collapsed: values.collapsed,
+                        });
+                        self.eval_chrome(
+                            "window.__ferriteClearSelection&&__ferriteClearSelection()",
+                        );
+                    }
+                    GroupSaveMode::Edit => {
+                        let Some(gid) = gid else { return false };
+                        let state = self.chrome_state();
+                        let Some(g) = state.groups.iter().find(|g| &g.id == gid).cloned() else {
+                            return false;
+                        };
+                        if g.name != name {
+                            self.handle_chrome_command(ChromeCommand::GroupRename {
+                                id: gid.clone(),
+                                name: name.chars().take(64).collect(),
+                            });
+                        }
+                        if g.color != color {
+                            self.handle_chrome_command(ChromeCommand::GroupColor {
+                                id: gid.clone(),
+                                color,
+                            });
+                        }
+                        if g.collapsed != values.collapsed {
+                            self.handle_chrome_command(ChromeCommand::GroupCollapse {
+                                id: gid.clone(),
+                                collapsed: values.collapsed,
+                            });
+                        }
+                    }
+                }
+            }
+            PopAction::GroupDelete { gid } => {
+                if !self.chrome_state().groups.iter().any(|g| &g.id == gid) {
+                    return false;
+                }
+                self.handle_chrome_command(ChromeCommand::GroupDelete { id: gid.clone() });
+            }
+            PopAction::GroupClose { gid } => {
+                if !self.chrome_state().groups.iter().any(|g| &g.id == gid) {
+                    return false;
+                }
+                self.handle_chrome_command(ChromeCommand::GroupClose { id: gid.clone() });
+            }
+            PopAction::FolderCreate { parent } => {
+                let Some(values) = values else {
+                    return false;
+                };
+                let name = values.name.trim();
+                if name.is_empty() {
+                    return false;
+                }
+                if let Some(p) = parent
+                    && !self.chrome_state().folders.iter().any(|f| &f.id == p)
+                {
+                    return false;
+                }
+                self.handle_chrome_command(ChromeCommand::FolderAdd {
+                    name: name.chars().take(200).collect(),
+                    parent: parent.clone(),
+                });
+            }
+            PopAction::BarAddPage => {
+                if let Some(t) = self.app.tabs.active_tab() {
+                    self.handle_chrome_command(ChromeCommand::BookmarkAdd {
+                        url: t.url.clone(),
+                        title: if t.title.trim().is_empty() {
+                            t.url.clone()
+                        } else {
+                            t.title.clone()
+                        },
+                        parent: None,
+                    });
+                }
+            }
+            PopAction::BarBookmarkAll => {
+                self.handle_chrome_command(ChromeCommand::BookmarkAllTabs);
+            }
+            PopAction::BarVisibility(id) => {
+                self.handle_chrome_command(ChromeCommand::MenuItem { id: id.clone() });
+            }
+            PopAction::BarFolder { id } => {
+                let Some(PopContext::Bar(mut ctx)) =
+                    self.toolbar_pop.as_ref().and_then(|p| p.ctx.clone())
+                else {
+                    return false;
+                };
+                let state = self.chrome_state();
+                if !state.bar_items.iter().any(|b| &b.id == id && b.folder)
+                    && !state.folders.iter().any(|f| &f.id == id)
+                {
+                    return false;
+                }
+                ctx.stack.push(id.clone());
+                let kind = PopKind::BarMenu;
+                let Some(v) = self.chrome_surface_view(&kind, Some(&PopContext::Bar(ctx.clone())))
+                else {
+                    return false;
+                };
+                self.replace_chrome_pop(kind, PopContext::Bar(ctx), v);
+                return false;
+            }
+            PopAction::BarBack => {
+                let Some(PopContext::Bar(mut ctx)) =
+                    self.toolbar_pop.as_ref().and_then(|p| p.ctx.clone())
+                else {
+                    return false;
+                };
+                ctx.stack.pop();
+                let kind = PopKind::BarMenu;
+                let Some(v) = self.chrome_surface_view(&kind, Some(&PopContext::Bar(ctx.clone())))
+                else {
+                    return false;
+                };
+                self.replace_chrome_pop(kind, PopContext::Bar(ctx), v);
+                return false;
+            }
+            PopAction::BarNewFolder => {
+                let parent = self
+                    .toolbar_pop
+                    .as_ref()
+                    .and_then(|p| match p.ctx.as_ref() {
+                        Some(PopContext::Bar(ctx)) => ctx.stack.last().cloned(),
+                        _ => None,
+                    });
+                let ctx = PopContext::FolderNew {
+                    parent: parent.clone(),
+                };
+                let kind = PopKind::BarFolderNew;
+                let Some(v) = self.chrome_surface_view(&kind, Some(&ctx)) else {
+                    return false;
+                };
+                self.replace_chrome_pop(kind, ctx, v);
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Active tab's URL, if any. Used by the shield's certificate/site rows,
+    /// which always describe the page the pop was opened from.
+    fn active_tab_url(&self) -> Option<String> {
+        self.app.tabs.active_tab().map(|t| t.url.clone())
+    }
+
+    /// Paint the gated dismissal flag onto every content page. The
+    /// pointerdown reporter (`pop_dismiss_js`) posts `popover_dismiss` while
+    /// this stands, and the shell clears it on close. The autofill flag
+    /// (`af_set_flag`) is per-tab because the dropdown belongs to one field;
+    /// this one is global because dismissal must fire from any page click.
+    fn pop_set_open_flag(&self, open: bool) {
+        let js = if open {
+            "window.__ferritePopoverOpen=true;"
+        } else {
+            "window.__ferritePopoverOpen=false;"
+        };
+        for t in self.app.tabs.iter() {
+            if let Some(h) = t.webview.as_ref()
+                && let Err(e) = h.evaluate_script(js)
+            {
+                debug!(error = %e, "pop flag failed");
+            }
+        }
+    }
+
+    /// A fresh document resets its JS globals, so while a toolbar popover is
+    /// open the dismissal flag must ride every commit again: keyboard
+    /// navigations and in-page actions do not pass through a `pointerdown`
+    /// first. Parity note: the chrome-DOM pops also stayed open across
+    /// navigation (nothing hid them on commit).
+    fn reapply_pop_flag(&self, tab_id: uuid::Uuid) {
+        if self.toolbar_pop.is_none() {
+            return;
+        }
+        if let Some(t) = self.app.tabs.get_tab(tab_id)
+            && let Some(h) = t.webview.as_ref()
+            && let Err(e) = h.evaluate_script("window.__ferritePopoverOpen=true;")
+        {
+            debug!(error = %e, "pop flag reapply failed");
+        }
+    }
+
+    /// Window-relative geometry for a toolbar popover anchored below its
+    /// button: left-aligned (unlike the right-aligned menu), clamped into the
+    /// window, height capped to the window. Pure; the window/scale conversion
+    /// lives in `popover_overlay_rect`.
+    fn popover_overlay_geom(
+        x_left: f64,
+        y_top: f64,
+        w: f64,
+        h: f64,
+        win_w: f64,
+        win_h: f64,
+    ) -> Option<(f64, f64, f64, f64)> {
+        if !x_left.is_finite() || !y_top.is_finite() || !w.is_finite() || !h.is_finite() {
+            return None;
+        }
+        let h = h.min((win_h - 8.0).max(0.0));
+        let cx = x_left.clamp(0.0, (win_w - w).max(0.0));
+        let cy = y_top.clamp(0.0, (win_h - h).max(0.0));
+        Some((cx, cy, w, h))
+    }
+
+    fn popover_overlay_rect(&self, x_left: f64, y_top: f64, w: f64, h: f64) -> Option<wry::Rect> {
+        let window = self.window.as_ref()?;
+        let scale = window.scale_factor();
+        let (win_w, win_h) = self.window_logical()?;
+        let (cx, cy, w, h) = Self::popover_overlay_geom(x_left, y_top, w, h, win_w, win_h)?;
+        ferrite_tabs::logical_to_wry_rect(LogicalRect::new(cx, cy, w, h), scale)
+    }
+
+    /// Window-relative geometry for a toolbar popover anchored to its owner
+    /// button `(ax, ay, aw, ah)`: right edge off the button's right edge for
+    /// right-aligned kinds (`pop_anchor_x`), otherwise the button's left
+    /// edge; `POP_GAP_PX` below the button, flipped above it when the card
+    /// would run past the bottom (the shield also opens from the
+    /// status-strip button at the window bottom), then clamped into the
+    /// window. Pure; the scale conversion lives in `popover_anchor_rect`.
+    fn popover_anchor_geom(
+        ax: f64,
+        ay: f64,
+        aw: f64,
+        ah: f64,
+        w: f64,
+        h: f64,
+        win_w: f64,
+        win_h: f64,
+        align_right: bool,
+    ) -> Option<(f64, f64, f64, f64)> {
+        if !ax.is_finite()
+            || !ay.is_finite()
+            || !aw.is_finite()
+            || !ah.is_finite()
+            || !w.is_finite()
+            || !h.is_finite()
+        {
+            return None;
+        }
+        let h = h.min((win_h - 8.0).max(0.0));
+        let cx = Self::pop_anchor_x(align_right, ax, aw, w).clamp(0.0, (win_w - w).max(0.0));
+        let below = ay + ah + POP_GAP_PX;
+        let y_top = if below + h <= win_h - 4.0 {
+            below
+        } else {
+            (ay - POP_GAP_PX - h).max(4.0)
+        };
+        let cy = y_top.clamp(0.0, (win_h - h).max(0.0));
+        Some((cx, cy, w, h))
+    }
+
+    fn popover_anchor_rect(
+        &self,
+        anchor: (f64, f64, f64, f64),
+        align_right: bool,
+        w: f64,
+        h: f64,
+    ) -> Option<wry::Rect> {
+        let window = self.window.as_ref()?;
+        let scale = window.scale_factor();
+        let (win_w, win_h) = self.window_logical()?;
+        let (ax, ay, aw, ah) = anchor;
+        let (cx, cy, w, h) =
+            Self::popover_anchor_geom(ax, ay, aw, ah, w, h, win_w, win_h, align_right)?;
+        ferrite_tabs::logical_to_wry_rect(LogicalRect::new(cx, cy, w, h), scale)
     }
 
     // ── Script dialogs (intercepted page alert/confirm/prompt/beforeunload) ──
@@ -4883,6 +7891,13 @@ impl ShellApp {
         let Some(head) = self.dialogs.head(active).cloned() else {
             return;
         };
+        // The dialog is modal: nothing transient may sit above it or keep
+        // keyboard ownership while a page question waits for an answer.
+        self.hide_menu_overlay();
+        self.hide_ctx_menu();
+        self.hide_omni_pop();
+        self.hide_toolbar_pop();
+        Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
         let window = self.window.clone();
         let bounds = self.dlg_overlay_rect();
         let (Some(window), Some(bounds)) = (window.as_ref(), bounds) else {
@@ -4913,6 +7928,9 @@ impl ShellApp {
         }
         if let Err(e) = ov.set_visible(true) {
             debug!(error = %e, "dialog show failed");
+        }
+        if let Err(e) = ov.raise() {
+            debug!(error = %e, "dialog raise failed");
         }
         if let Err(e) = ov.focus() {
             debug!(error = %e, "dialog focus failed");
@@ -4964,6 +7982,283 @@ impl ShellApp {
             && let Err(e) = h.focus()
         {
             debug!(error = %e, "dialog focus-return failed");
+        }
+    }
+
+    // ── Find bar and toast overlays (3c-5) ──
+    //
+    // Both are floating page overlays: chrome and content are separate OS
+    // webviews, so a chrome-DOM card below the toolbar band paints under the
+    // page. Each owns its window, its served page and its lifetime; neither
+    // participates in the chrome document's state.
+
+    /// Find card rect: top-right of the content slot, 12px in from the right
+    /// edge and 8px down, clamped into the window. Derived from
+    /// `content_rect`, so the side panel, the bookmarks bar, the crash infobar,
+    /// the vertical rail and the status strip all push it clear by
+    /// construction.
+    fn find_overlay_rect(&self) -> Option<wry::Rect> {
+        let window = self.window.as_ref()?;
+        let scale = window.scale_factor();
+        let (win_w, win_h) = self.window_logical()?;
+        let content = self.content_rect()?;
+        ferrite_tabs::logical_to_wry_rect(find_card_rect(content, win_w, win_h), scale)
+    }
+
+    /// Toast card rect for `seq`: the exact measured size at the head's
+    /// anchor. See `toast_card_rect` for the two anchors.
+    fn toast_overlay_rect(&self, seq: u64) -> Option<wry::Rect> {
+        let window = self.window.as_ref()?;
+        let scale = window.scale_factor();
+        let (win_w, win_h) = self.window_logical()?;
+        let content = self.content_rect()?;
+        let anchor = self
+            .toasts
+            .current_view()
+            .filter(|v| v.seq == seq)
+            .map_or(crate::toast::ToastAnchor::Floating, |v| v.anchor);
+        ferrite_tabs::logical_to_wry_rect(
+            toast_card_rect(content, win_w, win_h, self.toast_size, anchor),
+            scale,
+        )
+    }
+
+    /// One find frame as the script the page expects. `find_query` is user
+    /// input, so the closer is escaped like every other injected frame.
+    fn find_frame_script(&self, focus: bool) -> String {
+        let frame = serde_json::json!({
+            "open": self.find_open,
+            "query": self.find_query,
+            "case": self.find_case,
+            "total": self.find_total,
+            "index": self.find_index,
+            "focus": focus,
+        });
+        format!(
+            "__ferriteFind({})",
+            serde_json::to_string(&frame)
+                .unwrap_or_default()
+                .replace("</", "<\\/")
+        )
+    }
+
+    /// Show the find card (lazy-create, place, focus, push). Opening and
+    /// re-opening both land here: `find_focus` makes the page select the term.
+    /// A fresh window stays hidden until the page reports its first paint
+    /// (`find_ready`), so an empty themed box cannot appear or take a click
+    /// before the card it stands for exists.
+    fn show_find_overlay(&mut self) {
+        let window = self.window.clone();
+        let bounds = self.find_overlay_rect();
+        let (Some(window), Some(bounds)) = (window.as_ref(), bounds) else {
+            return;
+        };
+        if self.find_overlay.is_none() {
+            // A fresh window starts unready: its first ready post can be
+            // dropped by the bounded queue, and the page's retry loop is what
+            // re-arms the handshake, not a stale flag from another window.
+            self.find_ready = false;
+            // Creation takes keyboard focus even though the window is hidden
+            // on the next line; the card only owns the keys once it paints.
+            let owner = focus_owner();
+            match self
+                .app
+                .tabs
+                .factory()
+                .create(window, "ferrite://find", Some(bounds))
+            {
+                Ok(h) => self.find_overlay = Some(h),
+                Err(e) => {
+                    debug!(error = %e, "find overlay creation failed");
+                    hand_focus_back(owner);
+                    return;
+                }
+            }
+            if let Some(ov) = self.find_overlay.as_ref()
+                && let Err(e) = ov.set_visible(false)
+            {
+                debug!(error = %e, "find hide-before-paint failed");
+            }
+            hand_focus_back(owner);
+        }
+        // Recomputed (not reused): `wry::Rect` is not `Copy`.
+        let bounds = self.find_overlay_rect();
+        let ov = self.find_overlay.clone();
+        let (Some(ov), Some(bounds)) = (ov.as_ref(), bounds) else {
+            return;
+        };
+        if let Err(e) = ov.set_bounds(bounds) {
+            debug!(error = %e, "find bounds failed");
+        }
+        if !self.find_ready {
+            // `find_ready` replays this frame and shows the window then.
+            return;
+        }
+        if let Err(e) = ov.set_visible(true) {
+            debug!(error = %e, "find show failed");
+        }
+        if let Err(e) = ov.raise() {
+            debug!(error = %e, "find raise failed");
+        }
+        if let Err(e) = ov.focus() {
+            debug!(error = %e, "find focus failed");
+        }
+        self.find_focus = true;
+        self.push_find_frame();
+    }
+
+    /// Push the live find state to the card. Echo pushes are skipped by
+    /// signature; a focus push always lands (it moves the caret once).
+    fn push_find_frame(&mut self) {
+        let focus = std::mem::take(&mut self.find_focus);
+        let js = self.find_frame_script(focus);
+        if self.find_ready && !focus && js == self.find_sig {
+            return;
+        }
+        let Some(ov) = self.find_overlay.as_ref() else {
+            return;
+        };
+        if let Err(e) = ov.evaluate_script(&js) {
+            debug!(error = %e, "find push failed");
+            return;
+        }
+        // Before the page reports ready the script may be dropped by the
+        // engine; only a landed push becomes the replay signature.
+        if self.find_ready {
+            self.find_sig = js;
+        }
+    }
+
+    /// Hide the card without moving focus (state already dropped).
+    fn hide_find_overlay_silent(&mut self) {
+        if let Some(ov) = self.find_overlay.as_ref() {
+            if let Err(e) = ov.set_visible(false) {
+                debug!(error = %e, "find hide failed");
+            }
+        }
+        self.find_sig.clear();
+        self.find_focus = false;
+    }
+
+    /// Keep the card in step with the live find state (tick).
+    fn sync_find_overlay(&mut self) {
+        if !self.find_open {
+            return;
+        }
+        if self.find_overlay.is_none() {
+            self.show_find_overlay();
+            return;
+        }
+        if self.find_ready {
+            self.push_find_frame();
+        }
+    }
+
+    /// Push the current toast head into its overlay (lazy-create). The window
+    /// is created hidden and only shown once the page reports the measured
+    /// card size, so no part of it can swallow a click it does not paint.
+    fn push_toast_overlay(&mut self, view: &crate::toast::ToastView) {
+        let window = self.window.clone();
+        let Some(window) = window.as_ref() else {
+            return;
+        };
+        if self.toast_overlay.is_none() {
+            let Some(bounds) = self.toast_overlay_rect(view.seq) else {
+                return;
+            };
+            // Same creation-shape as the find card: hide it on the next line,
+            // but WebView2 still took the keyboard, so give it back. A toast
+            // must never interrupt what the user is typing.
+            let owner = focus_owner();
+            match self
+                .app
+                .tabs
+                .factory()
+                .create(window, "ferrite://toast", Some(bounds))
+            {
+                Ok(h) => self.toast_overlay = Some(h),
+                Err(e) => {
+                    debug!(error = %e, "toast overlay creation failed");
+                    hand_focus_back(owner);
+                    return;
+                }
+            }
+            if let Some(ov) = self.toast_overlay.as_ref()
+                && let Err(e) = ov.set_visible(false)
+            {
+                debug!(error = %e, "toast hide-before-measure failed");
+            }
+            hand_focus_back(owner);
+        }
+        if let Some(ov) = self.toast_overlay.as_ref()
+            && let Err(e) = ov.evaluate_script(&crate::toast::frame_script(view))
+        {
+            debug!(error = %e, "toast push failed");
+        }
+    }
+
+    /// Size the toast window to the card the page measured, then show it.
+    /// The measurement is unprivileged overlay traffic, so it is clamped and
+    /// seq-gated here.
+    fn place_toast(&mut self, seq: u64, w: f64, h: f64) {
+        if self.toast_seq != Some(seq) {
+            return;
+        }
+        let Some(size) = clamp_toast_size(w, h) else {
+            return;
+        };
+        self.toast_size = size;
+        let bounds = self.toast_overlay_rect(seq);
+        let ov = self.toast_overlay.clone();
+        let (Some(ov), Some(bounds)) = (ov.as_ref(), bounds) else {
+            return;
+        };
+        if let Err(e) = ov.set_bounds(bounds) {
+            debug!(error = %e, "toast bounds failed");
+        }
+        if let Err(e) = ov.set_visible(true) {
+            debug!(error = %e, "toast show failed");
+        }
+        if let Err(e) = ov.raise() {
+            debug!(error = %e, "toast raise failed");
+        }
+        self.toast_visible = Some(seq);
+    }
+
+    fn hide_toast_overlay(&mut self) {
+        if let Some(ov) = self.toast_overlay.as_ref()
+            && let Err(e) = ov.set_visible(false)
+        {
+            debug!(error = %e, "toast hide failed");
+        }
+        self.toast_visible = None;
+    }
+
+    /// Keep the toast overlay in step with the queue head (tick): a new head
+    /// is pushed, a gone head hides the window. A card that expired locally
+    /// stays hidden; the queue tick is what advances the head.
+    fn sync_toast_overlay(&mut self) {
+        match self.toasts.current_view() {
+            None => {
+                if self.toast_seq.take().is_some() {
+                    if let Some(ov) = self.toast_overlay.as_ref()
+                        && let Err(e) = ov.evaluate_script(&crate::toast::clear_script())
+                    {
+                        debug!(error = %e, "toast clear failed");
+                    }
+                    self.hide_toast_overlay();
+                }
+            }
+            Some(v) => {
+                if self.toast_seq != Some(v.seq) {
+                    self.toast_seq = Some(v.seq);
+                    // Drop the superseded card before the new frame lands: it
+                    // must not stay on screen (or clickable) while the new
+                    // head re-measures. `place_toast` shows the window again.
+                    self.hide_toast_overlay();
+                    self.push_toast_overlay(&v);
+                }
+            }
         }
     }
 
@@ -5258,7 +8553,8 @@ impl ShellApp {
         self.af_open = true;
         self.af_filter = String::new();
         self.af_hl = Some(0);
-        self.overlay_show(f.x, y, w, h, &items, false, Some(0));
+        self.omni_pop = None;
+        self.overlay_show(f.x, y, w, h, &items, false, Some(0), "__ferriteCtxMenu");
         self.af_items = items;
         self.af_set_flag(tab, true);
         self.ctx_menu = Some(CtxPayload {
@@ -5499,8 +8795,10 @@ impl ShellApp {
         let json = serde_json::to_string(&visible)
             .unwrap_or_else(|_| "[]".to_owned())
             .replace("</", "<\\/");
+        let js = format!("__ferriteCtxMenu({json},{hl})");
+        self.ctx_last_js = Some(js.clone());
         if let Some(ov) = self.ctx_overlay.clone()
-            && let Err(e) = ov.evaluate_script(&format!("__ferriteCtxMenu({json},{hl})"))
+            && let Err(e) = ov.evaluate_script(&js)
         {
             debug!(error = %e, "af repush failed");
         }
@@ -5516,6 +8814,20 @@ impl ShellApp {
             .and_then(|t| t.webview.as_ref())
             .and_then(|h| h.cookies_for_url(url).ok())
             .unwrap_or_default()
+    }
+
+    /// Engine User-Agent for Ferrite-owned refetches. A missing engine
+    /// handle (or a backend without a getter) sends no synthesized UA.
+    fn tab_user_agent(&self, tab: Uuid) -> Option<String> {
+        self.app
+            .tabs
+            .get_tab(tab)
+            .and_then(|t| t.webview.as_ref())
+            .and_then(|h| h.user_agent())
+    }
+
+    fn tab_page_url(&self, tab: Uuid) -> Option<String> {
+        self.app.tabs.get_tab(tab).map(|t| t.url.clone())
     }
 
     /// Guest forced-download dir: the temp dir while ephemeral (native
@@ -5535,8 +8847,12 @@ impl ShellApp {
         let force = self.forced_download_dir();
         if saveable_url(url) {
             let cookies = self.tab_cookies(tab, url);
+            let page_url = self.tab_page_url(tab);
+            let user_agent = self.tab_user_agent(tab);
             crate::filedlg::spawn_save_url(
                 url.to_owned(),
+                page_url,
+                user_agent,
                 cookies,
                 self.save_last_dir.clone(),
                 force,
@@ -5682,8 +8998,12 @@ impl ShellApp {
     /// precedent, chrome DOM cannot overlay content in z-order).
     fn show_ctx_menu(&mut self, p: CtxPayload) {
         // Shared overlay window: a context menu replaces any open main
-        // menu (its rows replace the menu rows below; flag cleared here).
+        // menu (its rows replace the menu rows below; flag cleared here),
+        // and any open toolbar pop (same view, same mutual exclusion).
         self.menu_open = false;
+        self.omni_pop = None;
+        Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
+        self.hide_toolbar_pop();
         let mut items = self.fill_rows(&p);
         items.extend(self.ctx_items(&p));
         if items.is_empty() {
@@ -5698,7 +9018,7 @@ impl ShellApp {
             }
             _ => p.y,
         };
-        self.overlay_show(p.x, y, w, h, &items, true, None);
+        self.overlay_show(p.x, y, w, h, &items, true, None, "__ferriteCtxMenu");
         let tab = p.tab;
         self.ctx_menu = Some(p);
         // A context menu replaces any dropdown: close the type-ahead
@@ -5711,6 +9031,8 @@ impl ShellApp {
     /// Overlay mechanics shared by the context menu and the focus dropdown:
     /// same webview, page, and runner, only rows and anchor differ. `focus`
     /// moves keyboard focus into the overlay, the dropdown keeps field focus.
+    /// `hook` names the page renderer (`__ferriteCtxMenu` rows, `__ferriteSugs`
+    /// for the omnibox mirror). Content-slot-relative anchor.
     fn overlay_show(
         &mut self,
         x: f64,
@@ -5720,9 +9042,63 @@ impl ShellApp {
         items: &[serde_json::Value],
         focus: bool,
         hl: Option<usize>,
+        hook: &str,
+    ) {
+        let bounds = self.ctx_overlay_rect(x, y, w, h);
+        self.overlay_present(bounds, items, focus, hl, hook);
+    }
+
+    /// Present the shared overlay at an already-computed window rect (the
+    /// content-relative `overlay_show` and the window-relative toolbar
+    /// popover both land here). Lazily creates it on first use. `wry::Rect`
+    /// is `Copy`, so the caller's rect survives the creation branch.
+    fn overlay_present(
+        &mut self,
+        bounds: Option<wry::Rect>,
+        items: &[serde_json::Value],
+        focus: bool,
+        hl: Option<usize>,
+        hook: &str,
+    ) {
+        let json = serde_json::to_string(&items)
+            .unwrap_or_else(|_| "[]".to_owned())
+            .replace("</", "<\\/");
+        let hl_js = hl.map(|i| i.to_string()).unwrap_or("undefined".to_owned());
+        let js = format!("{hook}({json},{hl_js})");
+        self.overlay_present_core(bounds, hook, js, focus);
+    }
+
+    /// Toolbar-pop variant: the hook takes one object frame instead of an
+    /// array (no highlight argument — pop kinds carry their state inside the
+    /// frame). `focus` is true on open only: the pop is real UI (menu
+    /// precedent) and its rows must take keyboard, while a refresh must not
+    /// pull focus back from wherever the user has it.
+    fn overlay_pop_present(
+        &mut self,
+        bounds: Option<wry::Rect>,
+        frame: &serde_json::Value,
+        focus: bool,
+    ) {
+        let json = serde_json::to_string(frame)
+            .unwrap_or_else(|_| "{}".to_owned())
+            .replace("</", "<\\/");
+        self.overlay_present_core(
+            bounds,
+            "__ferritePop",
+            format!("__ferritePop({json})"),
+            focus,
+        );
+    }
+
+    /// Shared creation + sizing + focus + eval path for both overlay hooks.
+    fn overlay_present_core(
+        &mut self,
+        bounds: Option<wry::Rect>,
+        hook: &str,
+        js: String,
+        focus: bool,
     ) {
         let window = self.window.clone();
-        let bounds = self.ctx_overlay_rect(x, y, w, h);
         let (Some(window), Some(bounds)) = (window.as_ref(), bounds) else {
             return;
         };
@@ -5740,26 +9116,55 @@ impl ShellApp {
                 }
             }
         }
-        // Recomputed (not reused): `wry::Rect` is not `Copy`.
-        let bounds = self.ctx_overlay_rect(x, y, w, h);
         let ov = self.ctx_overlay.clone();
-        if let (Some(ov), Some(bounds)) = (ov.as_ref(), bounds) {
+        if let Some(ov) = ov.as_ref() {
             if let Err(e) = ov.set_bounds(bounds) {
                 debug!(error = %e, "ctx bounds failed");
             }
             if let Err(e) = ov.set_visible(true) {
                 debug!(error = %e, "ctx show failed");
             }
+            if let Err(e) = ov.raise() {
+                debug!(error = %e, "ctx raise failed");
+            }
             if focus && let Err(e) = ov.focus() {
                 debug!(error = %e, "ctx focus failed");
             }
-            let json = serde_json::to_string(&items)
-                .unwrap_or_else(|_| "[]".to_owned())
-                .replace("</", "<\\/");
-            let hl_js = hl.map(|i| i.to_string()).unwrap_or("undefined".to_owned());
-            if let Err(e) = ov.evaluate_script(&format!("__ferriteCtxMenu({json},{hl_js})")) {
-                debug!(error = %e, "ctx push failed");
+            self.ctx_last_js = Some(js.clone());
+            debug!(
+                hook,
+                len = js.len(),
+                "ctx payload stored for readiness replay"
+            );
+            if let Err(e) = ov.evaluate_script(&js) {
+                debug!(error = %e, hook, "ctx push failed");
             }
+        }
+    }
+
+    /// The shared overlay page posts `ctx_ready` after its renderer hooks are
+    /// installed. The first presentation can be evaluated while the webview
+    /// is still on its initial empty document (creation and show are
+    /// synchronous, navigation is not), leaving a correctly sized but blank
+    /// card until the next open. Replaying the exact last script closes that
+    /// race, and only while an overlay owner is still open (a late ready post
+    /// after dismissal must not resurrect a closed card).
+    fn replay_ctx_payload(&self) {
+        let open = self.menu_open
+            || self.omni_pop.is_some()
+            || self.ctx_menu.is_some()
+            || self.toolbar_pop.is_some()
+            || self.af_open;
+        if !open {
+            debug!("ctx ready ignored: no overlay owner open");
+            return;
+        }
+        if let (Some(ov), Some(js)) = (self.ctx_overlay.as_ref(), self.ctx_last_js.as_ref())
+            && let Err(e) = ov.evaluate_script(js)
+        {
+            debug!(error = %e, "ctx replay failed");
+        } else {
+            debug!("ctx ready replayed the last frame");
         }
     }
 
@@ -6205,12 +9610,27 @@ impl ShellApp {
         // navigation racing the switch still lands on the new pack.
         let live_css = full_theme_css(&self.app.theme, pack);
         self.app.tabs.factory().set_theme_css(live_css.clone());
-        let css = serde_json::to_string(pack.css()).unwrap_or_default();
+        let css = serde_json::to_string(&live_css).unwrap_or_default();
         self.eval_chrome(&format!("__ferriteTheme({css})"));
         // Open documents: upsert the live style block in our own pages
         // only. Failures are per-tab and debug-logged; the switch itself
         // never fails, never reloads, never drops state.
+        // Overlay webviews are long-lived and themed at load time, so a pack
+        // switch must upsert their live style block too: otherwise every
+        // popover/dropdown keeps the boot pack's colours until restart.
         let js = ferrite_tabs::live_theme_script(&live_css);
+        for (label, ov) in [
+            ("ctx", self.ctx_overlay.as_ref()),
+            ("dialog", self.dlg_overlay.as_ref()),
+            ("find", self.find_overlay.as_ref()),
+            ("toast", self.toast_overlay.as_ref()),
+        ] {
+            if let Some(ov) = ov
+                && let Err(e) = ov.evaluate_script(&js)
+            {
+                debug!(error = %e, overlay = label, "overlay theme push failed");
+            }
+        }
         for t in self.app.tabs.iter() {
             if !t.url.starts_with("ferrite://") {
                 continue;
@@ -6241,22 +9661,46 @@ impl ShellApp {
         }
     }
 
+    /// Ctrl+F5 / Ctrl+Shift+R. This is always a reload, even while the page is
+    /// still loading: the user asked to discard the current document. The
+    /// WebView2 implementation sends CDP `Page.reload` with `ignoreCache`;
+    /// mock/other backends fall back to their normal reload.
+    fn hard_reload_active(&mut self) {
+        if let Some(tab) = self.app.tabs.active_tab_mut() {
+            let r = tab.hard_reload();
+            if let Err(e) = r {
+                debug!(error = %e, "hard reload failed");
+            } else {
+                let id = tab.id;
+                self.clear_tab_dialogs(id);
+                self.find_reset();
+            }
+        }
+    }
+
     /// Open a tab, logging refusals (limit, invalid URL) instead of failing
     /// silently and leaving the user on a dead button. Explicit new tabs
     /// (not restores, not programmatic loads) take omnibox focus: typing
     /// must work the moment the tab exists, every time, not just at boot.
     fn open_tab(&mut self, url: String) {
         let focus_bar = url == "ferrite://newtab" || url.trim().is_empty();
+        // A new tab is an explicit browser action: a menu open at the moment
+        // must not survive as a stale flag behind the new page (its next
+        // toggle click would otherwise look dead).
+        self.dismiss_open_menus();
         let window = self.window.clone();
         let bounds = self.content_wry();
         if let Some(window) = window.as_ref() {
             if let Err(e) = self.app.tabs.new_tab(Some(window), Some(url), bounds) {
                 debug!(error = %e, "new tab refused");
             } else if focus_bar {
-                self.eval_chrome("__ferriteFocusOmnibox()");
+                self.focus_omnibox();
             }
         }
         self.layout_tabs();
+        // The new content webview was created at HWND_TOP. Session-wide
+        // toolbar popovers stay open by design, so put them back on top.
+        self.raise_open_overlays();
     }
 
     /// Open a closed entry with its recorded state: history replaces
@@ -6266,6 +9710,7 @@ impl ShellApp {
     /// keeps the entry on the stack for the next attempt instead of
     /// losing it.
     fn open_restored(&mut self, closed: &ClosedTab) -> Option<Uuid> {
+        self.dismiss_open_menus();
         let window = self.window.clone();
         let bounds = self.content_wry();
         if let Some(window) = window.as_ref() {
@@ -6284,6 +9729,7 @@ impl ShellApp {
                         Self::graft_closed_state(tab, closed);
                     }
                     self.layout_tabs();
+                    self.raise_open_overlays();
                     return Some(id);
                 }
                 Err(_) => return None,
@@ -6325,6 +9771,7 @@ impl ShellApp {
     /// never persisted, never recorded. Refusals toast like every other
     /// user-invoked creation path (a silent no-op would read as broken).
     fn open_private_tab(&mut self, url: String) {
+        self.dismiss_open_menus();
         let window = self.window.clone();
         let bounds = self.content_wry();
         if let Some(window) = window.as_ref() {
@@ -6338,6 +9785,7 @@ impl ShellApp {
             }
         }
         self.layout_tabs();
+        self.raise_open_overlays();
         self.push_chrome(true);
     }
 
@@ -6362,9 +9810,13 @@ impl ShellApp {
                 debug!(error = %e, "find clear on switch failed");
             }
             self.find_reset();
-            self.push_chrome(true);
         }
         self.hide_ctx_menu();
+        // A permission card asks about the tab that opened it: switching tabs
+        // closes it instead of showing another page's requests under the
+        // pointer. Keyboard switching pushes no chrome state, so the refresh
+        // guard alone would leave a stale frame on screen.
+        self.close_tab_owned_pop();
         // Auto-PiP (opt-in only): the tab left behind was playing video;
         // float it silently so the handoff needs no click. Failures stay
         // silent by design (background tabs may lack gesture credit).
@@ -6388,6 +9840,10 @@ impl ShellApp {
         }
         self.layout_tabs();
         self.sync_dialog_overlay();
+        // Showing the newly active content webview put it at the top of the
+        // sibling stack; anything still open (a session-wide popover) belongs
+        // above it.
+        self.raise_open_overlays();
     }
 
     /// Load the session file as discarded tabs (count returned).
@@ -6543,6 +9999,11 @@ impl ShellApp {
             Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
             return;
         }
+        // Single owner: tab search replaces every transient surface.
+        self.hide_menu_overlay();
+        self.hide_ctx_menu();
+        self.hide_omni_pop();
+        self.hide_toolbar_pop();
         let bounds = self.content_wry();
         if self.overlay.is_none() {
             match self
@@ -6566,6 +10027,9 @@ impl ShellApp {
             }
             if let Err(e) = ov.set_visible(true) {
                 debug!(error = %e, "overlay show failed");
+            }
+            if let Err(e) = ov.raise() {
+                debug!(error = %e, "overlay raise failed");
             }
             if let Err(e) = ov.focus() {
                 warn!(error = %e, "tabsearch overlay focus failed");
@@ -6775,6 +10239,9 @@ impl ShellApp {
             self.ask_downloads
                 .store(ask, std::sync::atomic::Ordering::Relaxed);
         }
+        if let Some(parallel) = v.get("parallel_downloads").and_then(|x| x.as_bool()) {
+            self.parallel_downloads = parallel;
+        }
         if let Some(pip) = v.get("pip_auto").and_then(|x| x.as_bool()) {
             self.pip_auto = pip;
         }
@@ -6921,6 +10388,7 @@ impl ShellApp {
             "panel_section": "bookmarks",
             "panel_w": 320,
             "ask_downloads": false,
+            "parallel_downloads": true,
             "pip_auto": false,
             "omnibox_engine": "duckduckgo",
             "engines_custom": [],
@@ -7135,6 +10603,8 @@ impl ShellApp {
             "ask_downloads": self
                 .ask_downloads
                 .load(std::sync::atomic::Ordering::Relaxed),
+            "parallel_downloads": self.parallel_downloads,
+            "parallel_downloads_supported": cfg!(target_os = "windows"),
             "pip_auto": self.pip_auto,
             "home_url": self.home_url,
             "engines": engines,
@@ -9346,6 +12816,10 @@ impl ShellApp {
         // Fresh document: prefs may have changed since the installer ran
         // (or the tab predates them). Re-apply spellcheck state per commit.
         self.apply_spellcheck_prefs(tab_id);
+        // Fresh document reset this page's JS globals: while a toolbar
+        // popover is open its dismissal flag must live again here, or a
+        // keyboard navigation (no pointerdown) would swallow the next press.
+        self.reapply_pop_flag(tab_id);
         // A committed navigation ends any in-flight print dialog for the
         // tab, releasing the per-tab print guard.
         self.print_jobs.finish(&tab_id);
@@ -9810,14 +13284,6 @@ impl ShellApp {
                 let short: String = message.chars().take(400).collect();
                 warn!(chrome_error = %short, "chrome page javascript error");
             }
-            ChromeCommand::ToastAction { seq } => self.toast_action(seq),
-            ChromeCommand::ToastDismiss { seq } => {
-                if self.toasts.dismiss(seq, Instant::now()) {
-                    self.sync_undo_deadline(Instant::now());
-                    self.sync_save_deadline(Instant::now());
-                    self.push_chrome(true);
-                }
-            }
             ChromeCommand::Navigate { url } => {
                 let tab_id = self.app.tabs.active_id();
                 debug!(url = %url, ?tab_id, "chrome navigate");
@@ -10019,6 +13485,84 @@ impl ShellApp {
             }
             ChromeCommand::MenuItem { id } => self.menu_action(&id),
             ChromeCommand::MenuOpen { x, y } => self.show_menu_overlay(x as f64, y as f64),
+            ChromeCommand::ChromeSurfaceOpen {
+                surface,
+                id,
+                ids,
+                items,
+                parent,
+                point,
+                x,
+                y,
+                w,
+                h,
+            } => {
+                self.show_chrome_surface(
+                    surface, id, ids, items, parent, point, x as f64, y as f64, w as f64, h as f64,
+                );
+            }
+            ChromeCommand::PopoverOpen {
+                kind,
+                x,
+                y,
+                w,
+                h,
+                hl,
+                clip,
+            } => {
+                if kind == "omnibox" {
+                    // One overlay at a time: a toolbar popover replaces the
+                    // menu/ctx/autofill users of the shared view.
+                    self.hide_ctx_menu();
+                    self.omni_pop = Some(OmniPop {
+                        x: x as f64,
+                        y: y as f64,
+                        w: (w as f64).max(1.0),
+                        h: (h as f64).max(0.0),
+                        hl: if hl >= 0 { Some(hl as usize) } else { None },
+                        clip: clip.map(|c| c.chars().take(120).collect()),
+                    });
+                    self.omni_pop_repush();
+                } else if let Some(k) = PopKind::from_name(&kind) {
+                    // Repeat-press behavior is the kind's own (zoom/history
+                    // toggle; nav drops re-open), never chrome's.
+                    let toggle = k.toggles_on_repeat();
+                    self.show_toolbar_pop(k, x as f64, y as f64, w as f64, h as f64, toggle);
+                }
+            }
+            ChromeCommand::PopoverClose { kind } => {
+                if kind == "omnibox" {
+                    self.hide_omni_pop();
+                } else if kind == "*" {
+                    // Chrome's click-away / Escape: close whatever
+                    // shell-hosted toolbar pop is open. The suggestion
+                    // popup is untouched here — it is field-owned and
+                    // closes through its own popover_close omnibox posts.
+                    self.hide_toolbar_pop();
+                } else if PopKind::from_name(&kind).is_some() {
+                    self.hide_toolbar_pop();
+                }
+            }
+            ChromeCommand::PopoverHighlight { index } => {
+                if let Some(p) = self.omni_pop.as_mut() {
+                    p.hl = if index >= 0 {
+                        Some(index as usize)
+                    } else {
+                        None
+                    };
+                }
+                if self.omni_pop.is_some() {
+                    self.omni_pop_repush();
+                }
+            }
+            ChromeCommand::PopoverClipboard { clip } => {
+                if let Some(p) = self.omni_pop.as_mut() {
+                    p.clip = clip.map(|c| c.chars().take(120).collect());
+                }
+                if self.omni_pop.is_some() {
+                    self.omni_pop_repush();
+                }
+            }
             ChromeCommand::Reload => self.reload_or_stop_active(),
             ChromeCommand::GoBack { steps } => {
                 if let Some(tab) = self.app.tabs.active_tab_mut() {
@@ -10102,9 +13646,9 @@ impl ShellApp {
                 self.push_panel_section();
                 self.push_bookmarks_tabs();
             }
-            ChromeCommand::FolderAdd { name } => {
+            ChromeCommand::FolderAdd { name, parent } => {
                 match self.vault.as_ref() {
-                    Some(vault) => match vault.add_folder(&name, None) {
+                    Some(vault) => match vault.add_folder(&name, parent.as_deref()) {
                         Ok(_) => info!("bookmark folder created"),
                         Err(e) => {
                             debug!(error = %e, "folder create failed");
@@ -10165,36 +13709,9 @@ impl ShellApp {
                 self.push_panel_section();
                 self.push_bookmarks_tabs();
             }
-            ChromeCommand::HistoryRecent => {
-                let items = self.history_json("");
-                let items: Vec<serde_json::Value> = items.into_iter().take(8).collect();
-                let closed: Vec<serde_json::Value> = self
-                    .closed_display()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (url, title))| {
-                        serde_json::json!({"index": i, "url": url, "title": title})
-                    })
-                    .collect();
-                self.push_list_to(self.chrome.as_ref(), "__ferriteHistoryRecent", &items);
-                self.push_list_to(self.chrome.as_ref(), "__ferriteClosedRecent", &closed);
-            }
-            ChromeCommand::ClosedReopen { index } => {
-                if let Some(entry) = self.closed_at(index).cloned() {
-                    if self.open_restored(&entry).is_some() {
-                        self.take_closed_at(index);
-                    }
-                }
-            }
-            ChromeCommand::ClosedRestoreAll => {
-                let mut failed = Vec::new();
-                for entry in self.drain_closed_all() {
-                    if self.open_restored(&entry).is_none() {
-                        failed.push(entry);
-                    }
-                }
-                self.closed_tabs = failed;
-            }
+            // Mobile-bundle downloads bubble (see the `DownloadsRecent` doc in
+            // ferrite-chrome::ipc). Desktop's bubble moved to the overlay pop
+            // (`PopKind::Downloads`), which reads `downloads_json` directly.
             ChromeCommand::DownloadsRecent => {
                 let items: Vec<serde_json::Value> =
                     self.downloads_json("", "").into_iter().take(8).collect();
@@ -10217,28 +13734,6 @@ impl ShellApp {
                 let items: Vec<serde_json::Value> =
                     self.downloads_json("", "").into_iter().take(8).collect();
                 self.push_list_to(self.chrome.as_ref(), "__ferriteDownloadsRecent", &items);
-            }
-            ChromeCommand::HistList { dir } => {
-                let hook = match dir.as_str() {
-                    "back" => "__ferriteBackList",
-                    "fwd" => "__ferriteFwdList",
-                    _ => return,
-                };
-                let items: Vec<serde_json::Value> = match self.app.tabs.active_tab() {
-                    Some(t) => {
-                        // 20 rows to match the engine cap and the GoBack
-                        // steps clamp: steps 11-20 used to be unreachable
-                        // because the UI only ever served 10.
-                        let list = if dir == "back" {
-                            t.history.back_list(20)
-                        } else {
-                            t.history.forward_list(20)
-                        };
-                        list.iter().map(|u| serde_json::json!({"url": u})).collect()
-                    }
-                    None => Vec::new(),
-                };
-                self.push_list_to(self.chrome.as_ref(), hook, &items);
             }
             ChromeCommand::PanelToggle => self.set_panel_open(!self.panel_open),
             ChromeCommand::PanelSection { id } => self.set_panel_section(&id),
@@ -10296,47 +13791,27 @@ impl ShellApp {
             }
             ChromeCommand::ReadingList => self.push_reading_list(),
             ChromeCommand::FindOpen => self.open_find_bar(),
+            // Mobile-only contract: the bundled (not yet served) mobile chrome
+            // template keeps its own find card and toast and posts the old
+            // vocabulary. Desktop's card and toast are overlay windows and
+            // post `find_*`/`toast_*` as overlay `type` messages; both paths
+            // converge on the same state owners.
             ChromeCommand::FindSearch { query, case } => {
                 if !self.find_open {
                     self.find_open = true;
                     self.find_tab = self.app.tabs.active_id();
                 }
-                self.find_query = query.clone();
-                self.find_case = case;
-                if !query.trim().is_empty() {
-                    self.last_find = query.clone();
-                }
-                if !self.find_eval("search", &query, case) {
-                    self.find_total = 0;
-                    self.find_index = 0;
-                    self.push_chrome(true);
-                }
+                self.find_set_query(query, case);
             }
-            ChromeCommand::FindNext => {
-                if self.find_open {
-                    let (q, case) = (self.find_query.clone(), self.find_case);
-                    if !self.find_eval("next", &q, case) {
-                        self.find_total = 0;
-                        self.find_index = 0;
-                        self.push_chrome(true);
-                    }
+            ChromeCommand::FindNext => self.find_step("next"),
+            ChromeCommand::FindPrev => self.find_step("prev"),
+            ChromeCommand::FindClose => self.close_find(),
+            ChromeCommand::ToastAction { seq } => self.toast_action(seq),
+            ChromeCommand::ToastDismiss { seq } => {
+                if self.toasts.dismiss(seq, Instant::now()) {
+                    self.sync_undo_deadline(Instant::now());
+                    self.sync_save_deadline(Instant::now());
                 }
-            }
-            ChromeCommand::FindPrev => {
-                if self.find_open {
-                    let (q, case) = (self.find_query.clone(), self.find_case);
-                    if !self.find_eval("prev", &q, case) {
-                        self.find_total = 0;
-                        self.find_index = 0;
-                        self.push_chrome(true);
-                    }
-                }
-            }
-            ChromeCommand::FindClose => {
-                let (q, case) = (self.find_query.clone(), self.find_case);
-                self.find_eval("clear", &q, case);
-                self.find_reset();
-                self.push_chrome(true);
             }
             ChromeCommand::OpenDevTools => self.open_devtools(),
             ChromeCommand::EnterPip => self.pip_enter_active(false),
@@ -10924,7 +14399,7 @@ impl ShellApp {
             ChromeCommand::ZoomIn => self.zoom_step_active(1),
             ChromeCommand::ZoomOut => self.zoom_step_active(-1),
             ChromeCommand::ZoomReset => self.zoom_reset_active(),
-            ChromeCommand::FocusOmnibox => self.eval_chrome("__ferriteFocusOmnibox()"),
+            ChromeCommand::FocusOmnibox => self.focus_omnibox(),
         }
     }
 
@@ -11155,11 +14630,14 @@ impl ShellApp {
                     }
                 }
             }
-            debug!(tab_id = %msg.tab_id, payload_len = msg.payload.len(), "ipc");
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&msg.payload) else {
                 continue;
             };
             let msg_type = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+            // Type included: a dropped or misrouted message is the first thing
+            // a keyboard/focus report has to rule out, and payload_len alone
+            // cannot tell an overlay's ready post from a key report.
+            debug!(tab_id = %msg.tab_id, payload_len = msg.payload.len(), msg_type, "ipc");
             // Default-deny origin check: content pages legitimately post
             // telemetry (hover/audio/find/context/scan/reader/console/
             // title), the overlay UIs (tabsearch, ctxmenu, random-UUID
@@ -11197,6 +14675,45 @@ impl ShellApp {
                 }
             }
             match msg_type {
+                "shortcut" => {
+                    // A bound key press captured in the focused webview: the
+                    // OS hands the key to the document, so the only carrier
+                    // the shell has is this report. Capability check, not a
+                    // type check — the reporter carries this webview's token,
+                    // which page script can neither read nor compute, so a
+                    // page cannot drive tabs, devtools or theme by posting
+                    // JSON. Repeats are dropped here rather than in the
+                    // reporter so the policy has one home.
+                    let token = v.get("token").and_then(|x| x.as_str());
+                    if !ferrite_tabs::shortcuts::verify_token(msg.tab_id, token) {
+                        debug!(tab_id = %msg.tab_id, "ipc: shortcut without token ignored");
+                        continue;
+                    }
+                    if v.get("repeat").and_then(|x| x.as_bool()).unwrap_or(false) {
+                        continue;
+                    }
+                    let action = ferrite_tabs::shortcuts::action_for_report(
+                        v.get("code").and_then(|x| x.as_str()).unwrap_or(""),
+                        v.get("primary").and_then(|x| x.as_bool()).unwrap_or(false),
+                        v.get("shift").and_then(|x| x.as_bool()).unwrap_or(false),
+                        v.get("alt").and_then(|x| x.as_bool()).unwrap_or(false),
+                    );
+                    if let Some(action) = action {
+                        debug!(
+                            tab_id = %msg.tab_id,
+                            code = v.get("code").and_then(|x| x.as_str()).unwrap_or(""),
+                            ?action,
+                            "shortcut dispatched"
+                        );
+                        self.handle_shortcut(action);
+                    } else {
+                        debug!(
+                            tab_id = %msg.tab_id,
+                            code = v.get("code").and_then(|x| x.as_str()).unwrap_or(""),
+                            "shortcut report outside the table"
+                        );
+                    }
+                }
                 "audio" => {
                     let playing = v.get("playing").and_then(|x| x.as_bool()).unwrap_or(false);
                     if let Some(tab) = self.app.tabs.get_tab_mut(msg.tab_id) {
@@ -11826,6 +15343,15 @@ impl ShellApp {
                         .store(value, std::sync::atomic::Ordering::Relaxed);
                     persist_setting("ask_downloads", serde_json::Value::Bool(value));
                     info!(value, "ask-downloads toggled");
+                }
+                "parallel_downloads" => {
+                    let value = v.get("value").and_then(|x| x.as_bool()).unwrap_or(true);
+                    self.parallel_downloads = value;
+                    persist_setting("parallel_downloads", serde_json::Value::Bool(value));
+                    info!(
+                        value,
+                        "parallel-downloads setting changed; restart to apply"
+                    );
                 }
                 "pip_auto" => {
                     let value = v.get("value").and_then(|x| x.as_bool()).unwrap_or(false);
@@ -13861,7 +17387,152 @@ impl ShellApp {
                     let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
                     self.activate_ctx(id);
                 }
+                // The shared overlay page has installed its render hooks. If a
+                // card is open, its first paint may have raced this load; replay
+                // the last frame now. A hidden overlay ignores the post.
+                "ctx_ready" => self.replay_ctx_payload(),
                 "ctx_dismiss" => self.hide_ctx_menu(),
+                // 3c-5 find card: its own window, its own served page. Every
+                // post is state-gated (nothing acts while the bar is closed)
+                // and the query is capped here as well as in the page.
+                "find_ready" => {
+                    // First ready per window only: the page keeps asking until
+                    // a frame lands (a post can be dropped while the queue
+                    // drains a burst), and a late duplicate must not re-select
+                    // the term under a caret the user has already moved.
+                    if !self.find_ready {
+                        self.find_ready = true;
+                        // First paint raced the load: re-show so the open frame
+                        // lands and the term is selected exactly once.
+                        if self.find_open {
+                            self.find_focus = true;
+                            self.find_sig.clear();
+                            self.show_find_overlay();
+                        }
+                    }
+                }
+                "find_search" => {
+                    if self.find_open {
+                        let q = capped_field(&v, "q", 500);
+                        let case = v.get("case").and_then(|x| x.as_bool()).unwrap_or(false);
+                        self.find_set_query(q, case);
+                    }
+                }
+                "find_next" => {
+                    if self.find_open {
+                        self.find_step("next");
+                    }
+                }
+                "find_prev" => {
+                    if self.find_open {
+                        self.find_step("prev");
+                    }
+                }
+                "find_close" => {
+                    if self.find_open {
+                        self.close_find();
+                    }
+                }
+                // 3c-5 toast card: the page reports the size it painted, then
+                // the shell sizes the window to exactly that card. A seq that
+                // is not the live head cannot move or close anything.
+                "toast_ready" => {
+                    self.toast_ready = true;
+                    if let Some(view) = self
+                        .toasts
+                        .current_view()
+                        .filter(|v| Some(v.seq) == self.toast_seq)
+                    {
+                        self.push_toast_overlay(&view);
+                    }
+                }
+                "toast_size" => {
+                    let seq = v.get("seq").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let w = v.get("w").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                    let h = v.get("h").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                    self.place_toast(seq, w, h);
+                }
+                "toast_action" => {
+                    let seq = v.get("seq").and_then(|x| x.as_u64()).unwrap_or(0);
+                    self.toast_action(seq);
+                }
+                "toast_dismiss" => {
+                    let seq = v.get("seq").and_then(|x| x.as_u64()).unwrap_or(0);
+                    if self.toasts.dismiss(seq, Instant::now()) {
+                        // Same contract as the old chrome-command path: a
+                        // dismissed toast takes its staged undo/save with it,
+                        // so an unreachable action cannot outlive its UI.
+                        self.sync_undo_deadline(Instant::now());
+                        self.sync_save_deadline(Instant::now());
+                    }
+                }
+                "toast_expired" => {
+                    let seq = v.get("seq").and_then(|x| x.as_u64()).unwrap_or(0);
+                    if self.toast_seq == Some(seq) {
+                        // The card emptied itself. Drop the window now: an
+                        // invisible window would keep swallowing clicks until
+                        // the next queue tick.
+                        self.hide_toast_overlay();
+                    }
+                }
+                // Omnibox suggestion overlay: a row click/delete or Esc is
+                // replayed in chrome, the single owner of suggestion state
+                // and its a11y listbox. Ignored unless the popover is open,
+                // so a stale or forged post cannot act on a closed list.
+                "sug_activate" => {
+                    if self.omni_pop.is_some() {
+                        let i = v.get("index").and_then(|x| x.as_i64()).unwrap_or(-1);
+                        self.eval_chrome(&format!("__ferriteSugActivate({i})"));
+                    }
+                }
+                "sug_delete" => {
+                    if self.omni_pop.is_some() {
+                        let i = v.get("index").and_then(|x| x.as_i64()).unwrap_or(-1);
+                        self.eval_chrome(&format!("__ferriteSugDelete({i})"));
+                    }
+                }
+                "popover_dismiss" => {
+                    // Shared dismissal type: Esc from the suggestion mirror
+                    // and from a toolbar pop, plus the gated pointerdown
+                    // report from content pages. Both hides are idempotent
+                    // and per-user. The page reports `src:"page"` and has
+                    // already taken OS focus through that same press, so
+                    // chrome must not claim it back (D6b) - the overlay's own
+                    // Esc is the case that needs the chrome refocus.
+                    self.hide_omni_pop();
+                    if Self::dismiss_keeps_page_focus(&v) {
+                        self.hide_toolbar_pop_keep_page_focus();
+                    } else {
+                        self.hide_toolbar_pop();
+                    }
+                }
+                // One toolbar-pop row action. The kind and the action must
+                // both match what the shell published for the open pop;
+                // everything else is dropped before any behavior runs.
+                "popover_activate" => {
+                    let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+                    let act = v.get("act").and_then(|x| x.as_str()).unwrap_or("");
+                    let i = v.get("i").and_then(|x| x.as_i64()).unwrap_or(-1);
+                    self.toolbar_pop_act(kind, act, i);
+                }
+                "popover_submit" => {
+                    // Only the shared overlay may submit a chrome form. A
+                    // content page shares the allowlist but is never the
+                    // owner of these frames.
+                    if self.app.tabs.get_tab(msg.tab_id).is_none() {
+                        let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+                        let act = v.get("act").and_then(|x| x.as_str()).unwrap_or("");
+                        let i = v.get("i").and_then(|x| x.as_i64()).unwrap_or(-1);
+                        let values = v
+                            .get("values")
+                            .cloned()
+                            .and_then(|x| serde_json::from_value::<PopValues>(x).ok())
+                            .unwrap_or_default();
+                        self.toolbar_pop_submit(kind, act, i, &values);
+                    } else {
+                        debug!("popover_submit from a tab - dropped");
+                    }
+                }
                 // Main-menu traffic on the shared overlay window. Ids run
                 // the same `menu_action` arms as every other sender (unknown
                 // ids ignored there). Toggle rows stay open for trial and
@@ -14500,6 +18171,8 @@ impl ShellApp {
         // this, documented on the DeniedDownload type).
         while let Ok(d) = self.dlask_rx.try_recv() {
             let cookies = self.tab_cookies(d.tab_id, &d.url);
+            let page_url = self.tab_page_url(d.tab_id);
+            let user_agent = self.tab_user_agent(d.tab_id);
             // Guest: no save dialog by design (any permanent path it could
             // offer would violate ephemerality). Fetch straight into the
             // temp dir; the first-download warning covers the surprise.
@@ -14511,6 +18184,8 @@ impl ShellApp {
                 d.url,
                 d.filename,
                 cookies,
+                page_url,
+                user_agent,
                 self.downloads.clone(),
                 self.save_last_dir.clone(),
                 force,
@@ -14630,6 +18305,11 @@ impl ShellApp {
                 }
             }
         }
+        // 3c-5 overlays derive their frames from live shell state and are
+        // pushed here (not through `push_chrome`, whose signature no longer
+        // carries them). Both calls are cheap no-ops when nothing changed.
+        self.sync_find_overlay();
+        self.sync_toast_overlay();
         if dirty || sug_dirty {
             self.push_chrome(false);
         }
@@ -14866,125 +18546,150 @@ impl ShellApp {
     // ── Input ──
 
     fn on_local_key(&mut self, event: &KeyEvent) -> bool {
-        let Some(window) = self.window.clone() else {
-            return false;
-        };
         if event.state != ElementState::Pressed || event.repeat {
             return false;
         }
-        // Boot gate: no local shortcuts while blocked (new tabs, private
-        // tabs, taskmanager, find, zoom would all open or mutate state
-        // behind the decision screen). F11 falls through (window chrome,
-        // no browsing state); everything else is consumed here.
-        if self.boot_block.is_some() && !matches!(event.logical_key, Key::Named(NamedKey::F11)) {
+        // The winit carrier. It fires only while the OS window itself holds
+        // keyboard focus: a focused webview takes that focus at creation
+        // (`ferrite_tabs::shortcuts` has the measurement), which is why the
+        // same decision is also reachable from the `shortcut` IPC report
+        // below. Both go through one table and one dispatcher.
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return false;
+        };
+        let Some(code) = shortcuts::Code::from_winit(code) else {
+            return false;
+        };
+        let Some(action) = shortcuts::lookup(
+            code,
+            self.modifiers.control_key() || self.modifiers.super_key(),
+            self.modifiers.shift_key(),
+            self.modifiers.alt_key(),
+        ) else {
+            return false;
+        };
+        self.handle_shortcut(action)
+    }
+
+    /// One shortcut decision, whatever carried it here. Which physical keys
+    /// mean what, with which modifiers, in which order, lives in
+    /// `ferrite_tabs::shortcuts::BINDINGS` (and nowhere else); this owns what
+    /// each action does. The match is exhaustive over `Action`, so a new
+    /// binding cannot arrive without a body for it.
+    fn handle_shortcut(&mut self, action: Action) -> bool {
+        // Boot gate: no shortcuts while blocked (new tabs, private tabs,
+        // taskmanager, find, zoom would all open or mutate state behind the
+        // decision screen). Fullscreen falls through (window chrome, no
+        // browsing state); everything else is consumed here.
+        if self.boot_block.is_some() && action != Action::ToggleFullscreen {
             return true;
         }
-        if self.modifiers.control_key() && self.modifiers.shift_key() {
-            if let Key::Character(ref s) = event.logical_key
-                && s.eq_ignore_ascii_case("a")
-            {
-                self.toggle_web_tabsearch();
-                return true;
-            }
-            if let Key::Character(ref s) = event.logical_key
-                && s.eq_ignore_ascii_case("i")
-            {
-                self.open_devtools();
-                return true;
-            }
+        // A shortcut is an explicit command. Dismiss menu-shaped surfaces
+        // first, exactly like `handle_chrome_command` does for toolbar
+        // gestures; Escape owns its own order in the match below.
+        if action != Action::DismissOrStop {
+            self.dismiss_open_menus();
+        }
+        match action {
+            Action::ToggleTabSearch => self.toggle_web_tabsearch(),
+            Action::OpenDevtools => self.open_devtools(),
             // Private tab: incognito engine store, never persisted. Same
             // creation-time constraint as everything engine-side.
-            if let Key::Character(ref s) = event.logical_key
-                && s.eq_ignore_ascii_case("n")
-            {
-                self.open_private_tab("ferrite://newtab".to_owned());
-                return true;
+            Action::OpenPrivateTab => self.open_private_tab("ferrite://newtab".to_owned()),
+            // Page zoom: Ctrl/Cmd +,-,0. The table accepts either side of
+            // Shift on +/- (that is how "+" is typed) and has separate
+            // NumpadAdd/NumpadSubtract rows.
+            Action::ZoomIn => self.zoom_step_active(1),
+            Action::ZoomOut => self.zoom_step_active(-1),
+            Action::ZoomReset => self.zoom_reset_active(),
+            Action::OpenTaskManager => {
+                self.overlay_open = false;
+                Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
+                self.open_tab("ferrite://taskmanager".to_owned());
             }
-        }
-        // Page zoom: Ctrl/Cmd +,-,0 (unshifted = included. The + key
-        // reports "=" without Shift). Numpad keys have no stable
-        // Character mapping. Add when someone misses them.
-        if (self.modifiers.control_key() || self.modifiers.super_key())
-            && !self.modifiers.shift_key()
-            && !self.modifiers.alt_key()
-        {
-            if let Key::Character(ref s) = event.logical_key {
-                if s == "+" || s == "=" {
-                    self.zoom_step_active(1);
-                    return true;
-                }
-                if s == "-" {
-                    self.zoom_step_active(-1);
-                    return true;
-                }
-                if s == "0" {
-                    self.zoom_reset_active();
-                    return true;
+            Action::OpenHistory => self.open_tab("ferrite://history".to_owned()),
+            Action::OpenDownloads => self.open_tab("ferrite://downloads".to_owned()),
+            Action::OpenBookmarks => self.open_tab("ferrite://bookmarks".to_owned()),
+            // Chrome's Alt+F/Alt+E/F10 menu, anchored under the top-right
+            // button. The window is the only anchor that does not require
+            // reading chrome geometry back across the webview boundary.
+            Action::OpenMenu => {
+                if let Some((w, _)) = self.window_logical() {
+                    self.show_menu_overlay(w - 8.0, 40.0);
                 }
             }
-        }
-        if event.logical_key == Key::Named(NamedKey::Escape)
-            && self.modifiers.shift_key()
-            && !self.modifiers.control_key()
-            && !self.modifiers.alt_key()
-        {
-            self.overlay_open = false;
-            Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
-            self.open_tab("ferrite://taskmanager".to_owned());
-            return true;
-        }
-        if self.overlay_open && event.logical_key == Key::Named(NamedKey::Escape) {
-            self.overlay_open = false;
-            Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
-            return true;
-        }
-        match event.logical_key {
-            Key::Named(NamedKey::F11) => {
+            // Escape: close an open overlay first (the check that used to sit
+            // in front of the key match), else stop a loading tab, else let
+            // the page keep the key — Escape is not ours alone.
+            Action::DismissOrStop => {
+                if self.overlay_open {
+                    self.overlay_open = false;
+                    Self::close_web_tabsearch(&mut self.overlay, &mut self.app.tabs);
+                    return true;
+                }
+                if self.menu_open {
+                    self.hide_menu_overlay();
+                    return true;
+                }
+                if self.omni_pop.is_some() {
+                    self.hide_omni_pop();
+                    return true;
+                }
+                if self.ctx_menu.is_some() {
+                    self.hide_ctx_menu();
+                    return true;
+                }
+                if self.toolbar_pop.is_some() {
+                    self.hide_toolbar_pop();
+                    return true;
+                }
+                if self
+                    .app
+                    .tabs
+                    .active_tab()
+                    .map(|t| t.is_loading)
+                    .unwrap_or(false)
+                {
+                    if let Some(tab) = self.app.tabs.active_tab_mut()
+                        && let Err(e) = tab.stop()
+                    {
+                        debug!(error = %e, "esc stop failed");
+                    }
+                    return true;
+                }
+                return false;
+            }
+            // The only action that needs the OS window itself.
+            Action::ToggleFullscreen => {
+                let Some(window) = self.window.clone() else {
+                    return false;
+                };
                 self.toggle_fullscreen(&window);
-                true
             }
-            Key::Named(NamedKey::F12) => {
-                self.open_devtools();
-                true
-            }
-            Key::Named(NamedKey::F3) => {
+            Action::FindNextOrOpen => {
                 // Find owns F3 everywhere (next match; Shift+F3 previous).
                 // The status toggle is menu-only with no default key.
-                if self.modifiers.shift_key() {
-                    if self.find_open {
-                        let (q, case) = (self.find_query.clone(), self.find_case);
-                        self.find_eval("prev", &q, case);
-                    }
-                } else if self.find_open {
+                if self.find_open {
                     let (q, case) = (self.find_query.clone(), self.find_case);
                     self.find_eval("next", &q, case);
                 } else {
                     self.open_find_bar();
                 }
-                true
             }
-            Key::Named(NamedKey::F4) => {
+            Action::FindPrevIfOpen => {
+                if self.find_open {
+                    let (q, case) = (self.find_query.clone(), self.find_case);
+                    self.find_eval("prev", &q, case);
+                }
+            }
+            Action::CycleThemePack => {
                 // F4 cycles DESIGN packs (each pack owns its flare. Archive
                 // gold still overrides via accent context sync in tick).
                 let next = self.theme_pack.next();
                 self.set_theme_pack(next);
-                true
             }
-            Key::Character(ref s)
-                if s.eq_ignore_ascii_case("b")
-                    && self.modifiers.control_key()
-                    && !self.modifiers.shift_key()
-                    && !self.modifiers.alt_key() =>
-            {
-                self.set_panel_open(!self.panel_open);
-                true
-            }
-            Key::Character(ref s)
-                if s.eq_ignore_ascii_case("b")
-                    && self.modifiers.control_key()
-                    && self.modifiers.shift_key()
-                    && !self.modifiers.alt_key() =>
-            {
+            Action::TogglePanel => self.set_panel_open(!self.panel_open),
+            Action::CycleBarMode => {
                 let next = match self.bar_mode.as_str() {
                     "always" => "ntp",
                     "ntp" => "never",
@@ -14993,18 +18698,9 @@ impl ShellApp {
                 self.bar_seen = true;
                 persist_setting("bar_seen", serde_json::Value::Bool(true));
                 self.set_bar_mode(next);
-                true
             }
-            Key::Character(ref s)
-                if s.eq_ignore_ascii_case("f")
-                    && self.modifiers.control_key()
-                    && !self.modifiers.shift_key()
-                    && !self.modifiers.alt_key() =>
-            {
-                self.open_find_bar();
-                true
-            }
-            Key::Character(ref s) if (s == "f" || s == "F") => {
+            Action::OpenFind => self.open_find_bar(),
+            Action::LinkHints => {
                 if let Some(tab) = self.app.tabs.active_tab() {
                     if !tab.is_loading && !tab.is_crashed {
                         let theme = &self.app.theme;
@@ -15021,104 +18717,23 @@ impl ShellApp {
                         }
                     }
                 }
-                true
             }
-            // Ctrl-gated shortcuts: bare l/t/w must never fire while typing
-            // in a page (the old code opened/closed tabs mid-typing).
-            Key::Character(ref s)
-                if s.eq_ignore_ascii_case("l")
-                    && self.modifiers.control_key()
-                    && !self.modifiers.shift_key()
-                    && !self.modifiers.alt_key() =>
-            {
-                self.eval_chrome("__ferriteFocusOmnibox()");
-                true
-            }
-            Key::Character(ref s)
-                if s.eq_ignore_ascii_case("p")
-                    && self.modifiers.control_key()
-                    && !self.modifiers.shift_key()
-                    && !self.modifiers.alt_key() =>
-            {
-                self.print_active();
-                true
-            }
-            Key::Character(ref s)
-                if s.eq_ignore_ascii_case("t")
-                    && self.modifiers.control_key()
-                    && !self.modifiers.shift_key()
-                    && !self.modifiers.alt_key() =>
-            {
-                self.open_tab("ferrite://newtab".to_owned());
-                true
-            }
-            Key::Character(ref s)
-                if s.eq_ignore_ascii_case("k")
-                    && self.modifiers.control_key()
-                    && !self.modifiers.shift_key()
-                    && !self.modifiers.alt_key() =>
-            {
-                // Command palette (same overlay as tab search, unified
-                // list). Ctrl-gated like every other shell shortcut, so
-                // typing k in a page never fires it.
-                self.toggle_web_tabsearch();
-                true
-            }
-            Key::Character(ref s)
-                if s.eq_ignore_ascii_case("t")
-                    && self.modifiers.control_key()
-                    && self.modifiers.shift_key()
-                    && !self.modifiers.alt_key() =>
-            {
-                self.reopen_closed_tab();
-                true
-            }
-            Key::Named(NamedKey::Tab)
-                if self.modifiers.control_key() && !self.modifiers.alt_key() =>
-            {
-                // Ctrl+Tab cycles (Shift reverses). Same focus caveat as all
-                // shell shortcuts: the OS window must hold keyboard focus.
-                let n = self.app.tabs.len();
-                if n > 1
-                    && let Some(cur) = self.app.tabs.active_index()
-                {
-                    let next = if self.modifiers.shift_key() {
-                        (cur + n - 1) % n
-                    } else {
-                        (cur + 1) % n
-                    };
-                    self.switch_to_index(next);
-                }
-                true
-            }
-            Key::Character(ref s)
-                if s.len() == 1
-                    && self.modifiers.control_key()
-                    && !self.modifiers.shift_key()
-                    && !self.modifiers.alt_key()
-                    && matches!(
-                        s.as_str(),
-                        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
-                    ) =>
-            {
-                // Ctrl+1..8 jumps to tab N, Ctrl+9 to the last tab.
-                let n = self.app.tabs.len();
-                if n > 0 {
-                    let idx = if s.as_str() == "9" {
-                        n - 1
-                    } else {
-                        s.parse::<usize>().unwrap_or(1).saturating_sub(1).min(n - 1)
-                    };
+            Action::FocusOmnibox => self.focus_omnibox(),
+            Action::FocusContent => self.focus_content(),
+            Action::Print => self.print_active(),
+            Action::NewTab => self.open_tab("ferrite://newtab".to_owned()),
+            // Command palette (same overlay as tab search, unified list).
+            Action::ReopenTab => self.reopen_closed_tab(),
+            Action::CycleTabNext => self.cycle_tab(1),
+            Action::CycleTabPrev => self.cycle_tab(-1),
+            Action::SwitchTab(digit) => {
+                // Ctrl+1..8 jumps to tab N; Ctrl+9 to the last tab. A digit
+                // past the end is a no-op, not a clamp onto the last tab.
+                if let Some(idx) = switch_tab_index(digit, self.app.tabs.len()) {
                     self.switch_to_index(idx);
                 }
-                true
             }
-            Key::Character(ref s)
-                if s.eq_ignore_ascii_case("w")
-                    && self.modifiers.control_key()
-                    && !self.modifiers.shift_key()
-                    && !self.modifiers.alt_key() =>
-            {
+            Action::CloseTab => {
                 if let Some(id) = self.app.tabs.active_id() {
                     // Pinned tabs refuse normal close (PinnedTab error);
                     // surface it in the log instead of failing silently.
@@ -15126,32 +18741,20 @@ impl ShellApp {
                 } else {
                     self.layout_tabs();
                 }
-                true
             }
-            Key::Character(ref s)
-                if s.eq_ignore_ascii_case("d")
-                    && self.modifiers.control_key()
-                    && !self.modifiers.shift_key()
-                    && !self.modifiers.alt_key() =>
-            {
+            Action::ToggleStar => {
                 if let Some(tab) = self.app.tabs.active_tab() {
                     let (url, title) = (tab.url.clone(), tab.title.clone());
                     self.toggle_star(url, title);
                 }
-                true
             }
-            Key::Character(ref s)
-                if s.eq_ignore_ascii_case("r")
-                    && self.modifiers.control_key()
-                    && !self.modifiers.shift_key()
-                    && !self.modifiers.alt_key() =>
-            {
-                // Same smart toggle as the toolbar button and Esc: a loading
-                // tab stops instead of reloading over itself.
-                self.reload_or_stop_active();
-                true
-            }
-            Key::Named(NamedKey::ArrowLeft) if self.modifiers.alt_key() => {
+            // Same smart toggle as the toolbar button and Esc: a loading tab
+            // stops instead of reloading over itself.
+            Action::ReloadOrStop => self.reload_or_stop_active(),
+            // Ctrl+F5/Ctrl+Shift+R: Chrome's hard reload. Unlike F5 this is
+            // never a stop: the user explicitly asked for a fresh document.
+            Action::HardReload => self.hard_reload_active(),
+            Action::Back => {
                 if let Some(tab) = self.app.tabs.active_tab_mut()
                     && let Some(url) = tab.go_back()
                 {
@@ -15162,9 +18765,8 @@ impl ShellApp {
                         self.clear_tab_dialogs(id);
                     }
                 }
-                true
             }
-            Key::Named(NamedKey::ArrowRight) if self.modifiers.alt_key() => {
+            Action::Forward => {
                 if let Some(tab) = self.app.tabs.active_tab_mut()
                     && let Some(url) = tab.go_forward()
                 {
@@ -15175,28 +18777,20 @@ impl ShellApp {
                         self.clear_tab_dialogs(id);
                     }
                 }
-                true
             }
-            Key::Named(NamedKey::Escape) => {
-                // Stop a loading tab.
-                if self
-                    .app
-                    .tabs
-                    .active_tab()
-                    .map(|t| t.is_loading)
-                    .unwrap_or(false)
-                {
-                    if let Some(tab) = self.app.tabs.active_tab_mut()
-                        && let Err(e) = tab.stop()
-                    {
-                        debug!(error = %e, "esc stop failed");
-                    }
-                    true
-                } else {
-                    false
-                }
-            }
-            _ => false,
+        }
+        true
+    }
+
+    /// Ctrl+Tab / Ctrl+Shift+Tab: one step around the tab strip. The window
+    /// key never reaches here with a focused webview (see `handle_shortcut`).
+    fn cycle_tab(&mut self, step: isize) {
+        let n = self.app.tabs.len();
+        if n > 1
+            && let Some(cur) = self.app.tabs.active_index()
+        {
+            let next = (cur as isize + step).rem_euclid(n as isize) as usize;
+            self.switch_to_index(next);
         }
     }
 
@@ -15549,12 +19143,14 @@ impl ApplicationHandler<ShellWake> for ShellApp {
                 {
                     debug!(error = %e, "chrome resize failed");
                 }
+                self.reanchor_toolbar_pop();
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some((w, h)) = self.window_logical() {
                     self.app.update_window_dimensions(w, h);
                 }
                 self.layout_tabs();
+                self.reanchor_toolbar_pop();
             }
             WindowEvent::RedrawRequested => {
                 // No retained scene: just re-pin bounds and push if dirty.
@@ -15671,6 +19267,29 @@ fn engine_missing_dialog() {
         .show();
 }
 
+/// Win32 `CREATE_NO_WINDOW` (0x0800_0000): create the child without a console.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Build a command for an OS helper that is a console program on Windows.
+///
+/// Ferrite is a GUI-subsystem process with no console of its own, so spawning
+/// a console-subsystem helper (`cmd`, `reg`, …) makes Windows allocate a *new,
+/// visible* console window for it. `CREATE_NO_WINDOW` suppresses that; piped
+/// stdio and captured output are unaffected. No-op on other platforms.
+fn spawn_without_console(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[cfg(not(windows))]
+    let cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    let cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new(program);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd
+    };
+    cmd
+}
+
 /// Open a downloaded file, or reveal it in its folder. The page passes a
 /// bare filename (sanitized at save time). Anything with separators or
 /// parent refs is rejected, and the file must exist under the download dir.
@@ -15689,7 +19308,7 @@ fn open_path(name: &str, reveal: bool) {
             .arg(format!("/select,{}", path.display()))
             .spawn()
     } else {
-        std::process::Command::new("cmd")
+        spawn_without_console("cmd")
             .args(["/C", "start", "", &path.display().to_string()])
             .spawn()
     };
@@ -16774,6 +20393,651 @@ struct ReaderAssembly {
     parts: Vec<Option<String>>,
 }
 
+/// Omnibox suggestion popover state on the shared overlay webview. Chrome
+/// keeps keyboard focus and the a11y listbox (`#sugs`); the shell only
+/// positions the overlay, rebuilds the visual rows from its own suggestion
+/// list, and relays a click back to chrome. x/y/w/h are the pill anchor's
+/// window-relative top-left and size in logical pixels.
+#[derive(Debug, Clone)]
+struct OmniPop {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    hl: Option<usize>,
+    clip: Option<String>,
+}
+
+/// Row height and card padding for the omnibox suggestion overlay (two-line
+/// title+URL rows, ~= the `.sg` box in the overlay page).
+const OMNI_ROW_PX: f64 = 45.0;
+const OMNI_PAD_PX: f64 = 10.0;
+
+/// Zoom toolbar-pop card geometry: three buttons (34px controls, the
+/// percent-reset one 64px wide), two 6px gaps, 2px `.pz` row padding, the
+/// `#m` frame's own 4px padding (NOT overridden for zoom, unlike
+/// `#m.plist`), and its 1px border — 4+2+30+2+4+2 = 44 tall and
+/// 4+4+34+6+64+6+34+2 = 154 wide, inside this box with 6px of slack. The
+/// `.pz` row in the overlay page must stay inside this; growing any padding
+/// there clips the card and raises a scrollbar.
+const ZOOM_POP_W: f64 = 160.0;
+const ZOOM_POP_H: f64 = 44.0;
+
+/// Gap between an owner button's bottom edge and a toolbar pop's top edge
+/// (the menu's +4px precedent, used by every anchoring here).
+const POP_GAP_PX: f64 = 4.0;
+
+/// List-pop card widths (logical px). Old DOM parity: nav drops 230–420,
+/// history 300–420; the overlay pins fixed widths inside that band.
+const NAV_POP_W: f64 = 300.0;
+const HIST_POP_W: f64 = 360.0;
+
+/// List-row heights (logical px), mirrored exactly by the overlay page
+/// CSS (protocol.rs `#m .pr/.pr2/.psec/#m.plist`): `.pr` is 26 (5+16+5),
+/// `.pr2` is 40 (5+16+14+5), `.psec` is 20 (6+12+2), the card adds 10
+/// `#m.plist` padding and the `#m` border. The shell computes card height
+/// from these, so a list never scrolls and clips nothing.
+const POP_ROW_PX: f64 = 26.0;
+const POP_ROW2_PX: f64 = 40.0;
+const POP_SEC_PX: f64 = 20.0;
+const POP_LIST_PAD_PX: f64 = 10.0;
+const POP_BORDER_PX: f64 = 2.0;
+
+/// Text-row, button-row and download-row heights (logical px). Same
+/// contract as the row pins above: the overlay page CSS in protocol.rs
+/// mirrors these exactly, so the text-heavy cards (shield, downloads) get a
+/// fixed box the shell computes instead of a scrollbar. `.ptx` = 1+16+1,
+/// `.pbtn` = 6+24+6, `.pdl` = 6+16+2+14+6+24+6.
+const POP_TX_PX: f64 = 18.0;
+const POP_BTN_PX: f64 = 36.0;
+const POP_DL_ROW_PX: f64 = 74.0;
+
+/// Downloads and shield cards are as wide as history: wide enough for a
+/// tracker host and the five-counter breakdown to stay on one line.
+const DL_POP_W: f64 = 360.0;
+const SHIELD_POP_W: f64 = 360.0;
+
+/// Permissions card. Same 360 width as the other text cards, plus the two
+/// heights its own row kinds add: `perm` reuses the download row's
+/// arithmetic (6+16+2+14+6+24+6), the note is 1+14+14+1, and "Not now" is the
+/// shared button row. `POP_NOTE_PX` is a two-line box: the copy is a fixed
+/// sentence, and the measurement harness asserts it wraps to exactly two
+/// lines at every DPI scale.
+const PERM_POP_W: f64 = 360.0;
+const POP_NOTE_PX: f64 = 30.0;
+const POP_PERM_ROW_PX: f64 = POP_DL_ROW_PX;
+
+/// 3c-6 cards. Menu widths mirror the old chrome-DOM boxes (star 280,
+/// workspace 310, profiles 240 at their widest) with a little slack for the
+/// shared 13px row text. Form arithmetic is explicit: `#m.pform` is 4px
+/// `#m` padding + 1px border + 8px form padding; a field is 14px label +
+/// 3px gap + 28px control + 8px gap; the button strip is 36px; a checkbox
+/// row is 24px; a note is 18px.
+const STAR_POP_W: f64 = 300.0;
+const WS_POP_W: f64 = 320.0;
+const PROF_POP_W: f64 = 300.0;
+const GROUP_POP_W: f64 = 310.0;
+const BAR_POP_W: f64 = 280.0;
+const CTX_POP_W: f64 = 260.0;
+const FORM_PAD_PX: f64 = 26.0;
+const FORM_TITLE_PX: f64 = 24.0;
+const FORM_FIELD_PX: f64 = 53.0;
+const FORM_SWATCH_PX: f64 = 36.0;
+const FORM_CHECK_PX: f64 = 24.0;
+const FORM_BTN_PX: f64 = 36.0;
+const WS_ROW_PX: f64 = 34.0;
+const POP_SEP_PX: f64 = 13.0;
+
+/// Clickjacking window for a permission card: its decisions stay inert for
+/// this long after the frame is built (old chrome-DOM `permOpenedAt` + 500ms).
+/// The frame carries an absolute deadline so a mid-arm refresh cannot restart
+/// it, and the shell refuses early posts instead of trusting the page.
+const POP_ARM_MS: i64 = 500;
+
+/// The one sentence under a permission row (old `#permpop .pnote` copy).
+const PERM_NOTE: &str =
+    "Blocked until you allow. Allowing applies to future requests. The site must ask again.";
+
+/// Kinds of shell-hosted toolbar popovers. One kind at a time opens on the
+/// shared overlay; names are the wire contract posted by chrome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PopKind {
+    Zoom,
+    NavBack,
+    NavFwd,
+    History,
+    Downloads,
+    Shield,
+    /// Pending permission requests for the active tab: the chip's card, the
+    /// only kind that arms its buttons on open and closes when its list empties.
+    Permissions,
+    /// 3c-6: the chrome surfaces that used to be DOM popovers.
+    Star,
+    Workspaces,
+    WorkspaceRename,
+    Profiles,
+    GroupEditor,
+    BarMenu,
+    BarFolderNew,
+    TabContext,
+    TabsContext,
+    GroupContext,
+    BookmarkContext,
+}
+
+impl PopKind {
+    fn name(&self) -> &'static str {
+        match self {
+            PopKind::Zoom => "zoom",
+            PopKind::NavBack => "nav_back",
+            PopKind::NavFwd => "nav_fwd",
+            PopKind::History => "history",
+            PopKind::Downloads => "downloads",
+            PopKind::Shield => "shield",
+            PopKind::Permissions => "permissions",
+            PopKind::Star => "star",
+            PopKind::Workspaces => "workspaces",
+            PopKind::WorkspaceRename => "workspace_rename",
+            PopKind::Profiles => "profiles",
+            PopKind::GroupEditor => "group_editor",
+            PopKind::BarMenu => "bar_menu",
+            PopKind::BarFolderNew => "bar_folder_new",
+            PopKind::TabContext => "tab_context",
+            PopKind::TabsContext => "tabs_context",
+            PopKind::GroupContext => "group_context",
+            PopKind::BookmarkContext => "bookmark_context",
+        }
+    }
+
+    fn from_name(s: &str) -> Option<PopKind> {
+        match s {
+            "zoom" => Some(PopKind::Zoom),
+            "nav_back" => Some(PopKind::NavBack),
+            "nav_fwd" => Some(PopKind::NavFwd),
+            "history" => Some(PopKind::History),
+            "downloads" => Some(PopKind::Downloads),
+            "shield" => Some(PopKind::Shield),
+            "permissions" => Some(PopKind::Permissions),
+            "star" => Some(PopKind::Star),
+            "workspaces" => Some(PopKind::Workspaces),
+            "workspace_rename" => Some(PopKind::WorkspaceRename),
+            "profiles" => Some(PopKind::Profiles),
+            "group_editor" => Some(PopKind::GroupEditor),
+            "bar_menu" => Some(PopKind::BarMenu),
+            "bar_folder_new" => Some(PopKind::BarFolderNew),
+            "tab_context" => Some(PopKind::TabContext),
+            "tabs_context" => Some(PopKind::TabsContext),
+            "group_context" => Some(PopKind::GroupContext),
+            "bookmark_context" => Some(PopKind::BookmarkContext),
+            _ => None,
+        }
+    }
+
+    fn from_surface(surface: ChromeSurface) -> PopKind {
+        match surface {
+            ChromeSurface::Star => PopKind::Star,
+            ChromeSurface::Workspaces => PopKind::Workspaces,
+            ChromeSurface::Profiles => PopKind::Profiles,
+            ChromeSurface::BarMenu => PopKind::BarMenu,
+            ChromeSurface::TabContext => PopKind::TabContext,
+            ChromeSurface::TabsContext => PopKind::TabsContext,
+            ChromeSurface::GroupContext => PopKind::GroupContext,
+            ChromeSurface::BookmarkContext => PopKind::BookmarkContext,
+        }
+    }
+
+    /// Every 3c-6 kind is transient chrome UI: a bound shortcut, a tab switch,
+    /// an outside page press or another overlay opening all retire it. The
+    /// session-wide toolbar cards keep their old behavior (3c-1..3c-4).
+    fn is_chrome_surface(&self) -> bool {
+        matches!(
+            self,
+            PopKind::Star
+                | PopKind::Workspaces
+                | PopKind::WorkspaceRename
+                | PopKind::Profiles
+                | PopKind::GroupEditor
+                | PopKind::BarMenu
+                | PopKind::BarFolderNew
+                | PopKind::TabContext
+                | PopKind::TabsContext
+                | PopKind::GroupContext
+                | PopKind::BookmarkContext
+        )
+    }
+
+    fn closes_on_shortcut(&self) -> bool {
+        self.is_chrome_surface()
+    }
+
+    /// The chrome control whose `aria-expanded` follows this surface, and the
+    /// element focus returns to on dismissal. Context menus have no owner:
+    /// their source chip can disappear with the action that closed them.
+    fn owner_id(&self) -> Option<&'static str> {
+        match self {
+            PopKind::Star => Some("star"),
+            PopKind::Workspaces | PopKind::WorkspaceRename => Some("wsbtn"),
+            PopKind::Profiles => Some("profbtn"),
+            _ => None,
+        }
+    }
+
+    /// Click-toggled owners (zoom chip, history button, downloads button,
+    /// shield button, permission chip) toggle shut on a repeat press; the nav
+    /// drops re-open on every press because their gesture is
+    /// right-click/long-press, where a toggle would only close the list the
+    /// user is aiming at (old DOM behavior: the contextmenu path always
+    /// re-presented the list).
+    fn toggles_on_repeat(&self) -> bool {
+        matches!(
+            self,
+            PopKind::Zoom
+                | PopKind::History
+                | PopKind::Downloads
+                | PopKind::Shield
+                | PopKind::Permissions
+                | PopKind::Star
+                | PopKind::Workspaces
+                | PopKind::Profiles
+        )
+    }
+
+    /// Only the session-wide toolbar cards follow chrome state pushes. A 3c-6
+    /// form must never be rebuilt under the user's caret, and a context menu
+    /// must refer to the ids it was opened on.
+    fn refreshed_by_state(&self) -> bool {
+        !self.is_chrome_surface()
+    }
+
+    /// Cards wider than the space between their button and the window edge
+    /// hang their right edge off the button's right edge, so they stay
+    /// under the control they belong to instead of sliding along the window
+    /// edge (old DOM: `#histpop{right:120px}` and `#shieldpop{right:120px}`
+    /// were the same alignment, and `#dlpop` clamped to `r.right-320`). Only
+    /// the right-side owners do this; the nav drops sit at the left edge
+    /// where left-alignment is already the button's own edge, and the
+    /// permission chip sits inside the address pill, not at the window edge.
+    fn aligns_right(&self) -> bool {
+        matches!(
+            self,
+            PopKind::History
+                | PopKind::Downloads
+                | PopKind::Shield
+                | PopKind::Star
+                | PopKind::Profiles
+        )
+    }
+
+    /// Kinds whose button set must stay inert briefly after opening, so the
+    /// click that opened the card can never also answer it (permissions only).
+    fn arms_on_open(&self) -> bool {
+        matches!(self, PopKind::Permissions)
+    }
+
+    /// Kinds that have nothing to show when their store is empty: the card is
+    /// closed instead of painted. Old chrome DOM hid the permission popover
+    /// with `if(!pm.length) permpop.style.display='none'`, and the list is per
+    /// active tab, so switching away closes it the same way.
+    fn closes_when_empty(&self) -> bool {
+        matches!(self, PopKind::Permissions)
+    }
+
+    /// Kinds whose content belongs to the tab that opened them. A permission
+    /// card is a question about *this* page: it must never be re-pointed at
+    /// another tab's request under the pointer (old chrome DOM hid the popover
+    /// on tab change). History, downloads and shield read session-wide stores
+    /// and deliberately follow the switch (3c-2/3c-3).
+    fn closes_on_tab_change(&self) -> bool {
+        matches!(self, PopKind::Permissions) || self.is_chrome_surface()
+    }
+}
+
+/// Everything the shield popover shows, gathered shell-side so the frame
+/// builder stays pure and testable. `scheme` is the active URL's class
+/// (`lock` = https, `info` = anything else that is not an internal page,
+/// `shield` = `ferrite://`), the same value `ChromeState.sec` keys the
+/// toolbar badge off.
+#[derive(Debug, Clone, Default)]
+struct ShieldInput {
+    scheme: String,
+    host: String,
+    proxy_alive: bool,
+    blocked: u64,
+    blocked_ad: u64,
+    blocked_tracker: u64,
+    blocked_fingerprinting: u64,
+    blocked_malware: u64,
+    blocked_mixed: u64,
+    site_blocked: u64,
+    site_paused: bool,
+    fail_open: u64,
+    recent_trackers: Vec<String>,
+    /// Active tab is an http(s) page, so a per-site details row exists.
+    site_details: bool,
+}
+
+/// Human size for a download row, mirroring the old chrome-side
+/// `fmtDlSize` exactly (integer bytes, one decimal for KB/MB, two for GB).
+fn fmt_dl_size(n: u64) -> String {
+    let f = n as f64;
+    if f < 1024.0 {
+        format!("{} B", n)
+    } else if f < 1_048_576.0 {
+        format!("{:.1} KB", f / 1024.0)
+    } else if f < 1_073_741_824.0 {
+        format!("{:.1} MB", f / 1_048_576.0)
+    } else {
+        format!("{:.2} GB", f / 1_073_741_824.0)
+    }
+}
+
+/// One row action a list pop published. The overlay posts (kind, act tag,
+/// row index) and the shell re-validates all three against the action
+/// table it itself published before running anything — the zoom kinds gate
+/// their action string the same way. Tag + index together make a stale
+/// post aimed at a replaced frame land nowhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PopAction {
+    /// Jump `steps` in the active tab's back/forward history (rows are
+    /// 1..=N steps deep in display order).
+    Nav {
+        fwd: bool,
+        steps: usize,
+    },
+    /// Reopen one recently-closed tab by display index (0 = latest).
+    Reopen(usize),
+    /// Reopen every recently-closed tab, oldest first (newest ends active).
+    RestoreAll,
+    /// Navigate straight to a history entry's URL.
+    Go(String),
+    /// Open the full history page.
+    AllHistory,
+    /// Downloads, by vault id: open the finished file / reveal it in the
+    /// file manager / re-fetch from its source URL / drop the vault row.
+    DlOpen(String),
+    DlFolder(String),
+    DlRetry(String),
+    DlRemove(String),
+    /// Shield rows: the privacy settings section, the certificate page for
+    /// the active URL, the per-site details page, and the blocking pause
+    /// toggle (host derived shell-side, never from the page).
+    ManagePrivacy,
+    ViewCert,
+    SiteDetails,
+    ShieldPause,
+    /// One permission decision. `origin`/`kind` are the row's own values from
+    /// the shell's action table (never page-supplied), and the action is
+    /// dropped unless that request is still pending when the press lands.
+    PermDecide {
+        origin: String,
+        kind: String,
+        always: bool,
+    },
+    /// "Not now": hide the card, put the caret back in the omnibox, and leave
+    /// the request pending (old `#permnotnow` posted nothing).
+    PermNotNow,
+    /// A validated chrome command from a 3c-6 menu row. The shell built the
+    /// command from live state and the row only names it back; `clear`
+    /// consumes a multi-tab selection exactly when the old DOM did.
+    Chrome {
+        cmd: ChromeCommand,
+        clear_selection: bool,
+    },
+    /// Starer form submissions. `url`/`title` are the page the shell built the
+    /// frame for; the action is dropped if the active page no longer matches.
+    StarSave {
+        url: String,
+        title: String,
+    },
+    StarManage {
+        url: String,
+        title: String,
+    },
+    StarRemove {
+        url: String,
+        title: String,
+    },
+    WsCreate,
+    WsRenameForm {
+        id: String,
+        name: String,
+    },
+    WsRename {
+        id: String,
+    },
+    ProfileCreate,
+    /// Open the group editor for a new group over these validated tab ids.
+    GroupEditorNew {
+        tabs: Vec<String>,
+    },
+    GroupEditorEdit {
+        gid: String,
+    },
+    GroupColor {
+        gid: String,
+        color: u8,
+    },
+    GroupSave {
+        mode: GroupSaveMode,
+        gid: Option<String>,
+        tabs: Vec<String>,
+    },
+    GroupDelete {
+        gid: String,
+    },
+    GroupClose {
+        gid: String,
+    },
+    FolderCreate {
+        parent: Option<String>,
+    },
+    BarAddPage,
+    BarBookmarkAll,
+    BarVisibility(String),
+    BarFolder {
+        id: String,
+    },
+    BarBack,
+    BarNewFolder,
+}
+
+/// Whether the group editor is creating a group or editing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupSaveMode {
+    Create,
+    Edit,
+}
+
+/// Shell-owned state a 3c-6 surface needs across refreshes of its own frame
+/// (bar drill-in stack, group editor mode). Never serialized to the page.
+#[derive(Debug, Clone)]
+enum PopContext {
+    Bar(BarContext),
+    Group(GroupContext),
+    WsRename { id: String, name: String },
+    FolderNew { parent: Option<String> },
+    Tab(String),
+    Tabs(Vec<String>),
+    GroupTarget(String),
+    Bookmark(String),
+}
+
+#[derive(Debug, Clone, Default)]
+struct BarContext {
+    /// Overflow root ids, in chrome's measured order, validated shell-side.
+    /// `None` when the menu was opened directly on a bar folder.
+    root: Option<Vec<String>>,
+    /// Visited folder ids, deepest last. Empty = overflow/empty-bar root.
+    stack: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct GroupContext {
+    mode: GroupSaveMode,
+    gid: Option<String>,
+    tabs: Vec<String>,
+    orig_name: String,
+    orig_color: u8,
+    orig_collapsed: bool,
+}
+
+impl PopAction {
+    /// The act tag the overlay row carries back for wire validation.
+    fn tag(&self) -> &'static str {
+        match self {
+            PopAction::Nav { .. } => "nav",
+            PopAction::Reopen(_) => "reopen",
+            PopAction::RestoreAll => "restore_all",
+            PopAction::Go(_) => "go",
+            PopAction::AllHistory => "all",
+            PopAction::DlOpen(_) => "dl_open",
+            PopAction::DlFolder(_) => "dl_folder",
+            PopAction::DlRetry(_) => "dl_retry",
+            PopAction::DlRemove(_) => "dl_remove",
+            PopAction::ManagePrivacy => "manage",
+            PopAction::ViewCert => "cert",
+            PopAction::SiteDetails => "site",
+            PopAction::ShieldPause => "pause",
+            PopAction::PermDecide { always: false, .. } => "allow",
+            PopAction::PermDecide { always: true, .. } => "always",
+            PopAction::PermNotNow => "notnow",
+            PopAction::Chrome { .. } => "cmd",
+            PopAction::StarSave { .. } => "star_save",
+            PopAction::StarManage { .. } => "star_manage",
+            PopAction::StarRemove { .. } => "star_remove",
+            PopAction::WsCreate => "ws_create",
+            PopAction::WsRenameForm { .. } => "ws_rename_form",
+            PopAction::WsRename { .. } => "ws_rename",
+            PopAction::ProfileCreate => "profile_create",
+            PopAction::GroupEditorNew { .. } => "group_new",
+            PopAction::GroupEditorEdit { .. } => "group_edit",
+            PopAction::GroupColor { .. } => "group_color",
+            PopAction::GroupSave { .. } => "group_save",
+            PopAction::GroupDelete { .. } => "group_delete",
+            PopAction::GroupClose { .. } => "group_close",
+            PopAction::FolderCreate { .. } => "folder_create",
+            PopAction::BarAddPage => "bar_add_page",
+            PopAction::BarBookmarkAll => "bar_bookmark_all",
+            PopAction::BarVisibility(_) => "bar_visibility",
+            PopAction::BarFolder { .. } => "bar_folder",
+            PopAction::BarBack => "bar_back",
+            PopAction::BarNewFolder => "bar_new_folder",
+        }
+    }
+
+    /// Actions whose values must arrive through `popover_submit`. A plain
+    /// row activation for one of these is ignored, and a submit naming a
+    /// non-form action is ignored too.
+    fn needs_values(&self) -> bool {
+        matches!(
+            self,
+            PopAction::StarSave { .. }
+                | PopAction::WsCreate
+                | PopAction::WsRename { .. }
+                | PopAction::ProfileCreate
+                | PopAction::GroupSave { .. }
+                | PopAction::FolderCreate { .. }
+        )
+    }
+
+    /// Whether actuating this row hides the pop. Old chrome-DOM parity:
+    /// every history/shield row and the downloads "Retry"/"See all rows"
+    /// closed their popup before posting, while "Open"/"Show in folder" and
+    /// "Remove" left it up (the remove re-fetched the list in place).
+    fn closes_pop(&self) -> bool {
+        !matches!(
+            self,
+            PopAction::DlOpen(_)
+                | PopAction::DlFolder(_)
+                | PopAction::DlRemove(_)
+                // Form/navigation transitions inside the shared overlay.
+                | PopAction::WsRenameForm { .. }
+                | PopAction::GroupEditorNew { .. }
+                | PopAction::GroupEditorEdit { .. }
+                | PopAction::GroupColor { .. }
+                | PopAction::BarFolder { .. }
+                | PopAction::BarBack
+                | PopAction::BarNewFolder
+        )
+    }
+}
+
+/// Everything a toolbar pop needs to open or refresh: the exact page frame,
+/// the row action table posts validate against, and the card size. Zoom
+/// kinds leave `actions` empty (their rows are string-gated).
+#[derive(Debug, Clone)]
+struct PopView {
+    frame: serde_json::Value,
+    actions: Vec<PopAction>,
+    w: f64,
+    h: f64,
+}
+
+impl PopView {
+    /// True when the frame is a list frame with no rows at all (the zoom frame
+    /// has no `rows` key and is never empty). `closes_when_empty` kinds turn
+    /// this into a close instead of an empty card.
+    fn no_rows(&self) -> bool {
+        self.frame
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .is_some_and(|a| a.is_empty())
+    }
+}
+
+#[cfg(test)]
+impl PopView {
+    /// Row count of a list frame (0 for the non-list zoom frame).
+    fn rows_len(&self) -> usize {
+        self.frame
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0)
+    }
+}
+
+/// State of the open toolbar popover: the owner button's window-relative
+/// anchor (logical px, posted by chrome as whole CSS px) plus the kind,
+/// which pins both the rendered frame and the action vocabulary the overlay
+/// may name back. The action table is rebuilt on every refresh, so posts
+/// always validate against exactly the frame on screen. Mirror of
+/// `CtxPayload`'s trust shape: posts can only refer to what the shell
+/// itself published.
+///
+/// `frame` is the last frame pushed to the page: a refresh that would
+/// compute the same frame skips the repaint entirely (progress ticks and
+/// favicon arrivals push chrome state constantly, and re-rendering the card
+/// under the pointer would reset its focus). `w` is the anchor width, which
+/// right-aligned kinds need to hang their right edge off the button.
+#[derive(Debug, Clone)]
+struct ToolbarPop {
+    kind: PopKind,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    frame: serde_json::Value,
+    actions: Vec<PopAction>,
+    /// Card size, retained so a window resize can re-anchor an open
+    /// button-anchored surface without rebuilding its frame.
+    cw: f64,
+    ch: f64,
+    /// Absolute epoch-ms deadline before which `arms_on_open` kinds refuse
+    /// every action. Fixed at open and preserved across refreshes, so a state
+    /// push mid-arm cannot restart the wait; `None` for kinds that never arm.
+    arm_until: Option<i64>,
+    /// The tab the card was opened on. `closes_on_tab_change` kinds close
+    /// rather than re-point when the active tab differs.
+    tab: Option<Uuid>,
+    /// Shell-owned drill-in/editor state; `None` for every toolbar card.
+    ctx: Option<PopContext>,
+    /// True when (x,y) is a pointer point, not an owner rect. Point-anchored
+    /// surfaces close on resize because their coordinates are no longer
+    /// meaningful.
+    point: bool,
+}
+
 /// Content right-click payload: viewport CSS px plus engine-resolved targets.
 /// Stored while the overlay menu is open. Actions run against this, never
 /// against later page-supplied data.
@@ -16799,6 +21063,27 @@ fn flip_y(y_below: f64, field_top: f64, h: f64, top: f64, win_h: f64) -> f64 {
         field_top - h
     } else {
         y_below
+    }
+}
+
+/// Mirrors `clipLooksUrl` in chrome.html: a clipboard snippet is "paste and
+/// go" when it looks like a URL, otherwise "paste and search". Cosmetic only
+/// (the shell classifies the pasted text on submit); kept here so the visible
+/// overlay label matches the action chrome will run.
+fn clip_looks_url(t: &str) -> bool {
+    if let Some((scheme, _)) = t.split_once("://") {
+        let mut ch = scheme.chars();
+        return ch.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    }
+    if t.is_empty() || t.contains(char::is_whitespace) || t.contains(['<', '>', '"']) {
+        return false;
+    }
+    match t.find('.') {
+        Some(i) => i > 0 && i < t.len() - 1,
+        None => false,
     }
 }
 
@@ -17217,7 +21502,7 @@ fn chromium_profile_file(
 fn default_browser_id() -> Option<&'static str> {
     #[cfg(windows)]
     {
-        let out = std::process::Command::new("reg")
+        let out = spawn_without_console("reg")
             .args([
                 "query",
                 r"HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice",
@@ -17357,6 +21642,85 @@ fn host_slice(href: &str) -> &str {
     s.split(':').next().unwrap_or(s)
 }
 
+/// Pure content-slot arithmetic: window size plus the chrome bands in play ->
+/// the page rect. Free so every inset combination is testable without a
+/// window (the shell method only adds the live flags).
+fn content_slot(
+    win_w: f64,
+    win_h: f64,
+    vertical: bool,
+    bar: bool,
+    infobar: bool,
+    panel_w: Option<f64>,
+    status: bool,
+) -> Option<LogicalRect> {
+    // Full form of the bands, never `else EXPR + ...` (which would bind the
+    // additions into the else branch and drop them in vertical mode).
+    let chrome_top = if vertical {
+        CHROME_TOP_VTAB_PX
+    } else {
+        CHROME_TOP_PX
+    };
+    let top =
+        chrome_top + if bar { BAR_H_PX } else { 0.0 } + if infobar { INFOBAR_H_PX } else { 0.0 };
+    let left = if vertical { VTAB_W_PX } else { 0.0 };
+    let pw = panel_w.unwrap_or(0.0);
+    // The status strip is window chrome that owns its band, like the panel
+    // owns its column: reserving it is what makes it visible.
+    let bottom = if status { STATUS_H_PX } else { 0.0 };
+    if win_w <= left + pw || win_h <= top + bottom {
+        return None;
+    }
+    Some(LogicalRect::new(
+        left,
+        top,
+        win_w - left - pw,
+        win_h - top - bottom,
+    ))
+}
+
+/// Find card rect: top-right of the content slot, 12px in from its right edge
+/// and 8px below its top, clamped into the window. Pure for the geometry net.
+fn find_card_rect(content: LogicalRect, win_w: f64, win_h: f64) -> LogicalRect {
+    let x = (content.x + content.w - FIND_W_PX - 12.0).clamp(0.0, (win_w - FIND_W_PX).max(0.0));
+    let y = (content.y + 8.0).clamp(0.0, (win_h - FIND_H_PX).max(0.0));
+    LogicalRect::new(x, y, FIND_W_PX, FIND_H_PX)
+}
+
+/// Toast card rect for one queue head: the measured size at the head's anchor.
+/// `downloads` sits at the top-right of the page (under the button that started
+/// it), everything else at the bottom-right, 10px above the content slot's
+/// bottom edge (i.e. above the status strip). Pure for the geometry net.
+fn toast_card_rect(
+    content: LogicalRect,
+    win_w: f64,
+    win_h: f64,
+    size: (f64, f64),
+    anchor: crate::toast::ToastAnchor,
+) -> LogicalRect {
+    let (w, h) = size;
+    let x = (content.x + content.w - w - 12.0).clamp(0.0, (win_w - w).max(0.0));
+    let y = match anchor {
+        crate::toast::ToastAnchor::Downloads => content.y + 8.0,
+        crate::toast::ToastAnchor::Floating => content.y + content.h - h - 10.0,
+    };
+    let y = y.clamp(0.0, (win_h - h).max(0.0));
+    LogicalRect::new(x, y, w, h)
+}
+
+/// Clamp a page-measured toast size. Non-finite measurements are dropped
+/// (never shown): the window must be exactly the painted card, or it would
+/// swallow clicks it does not paint.
+fn clamp_toast_size(w: f64, h: f64) -> Option<(f64, f64)> {
+    if !w.is_finite() || !h.is_finite() {
+        return None;
+    }
+    Some((
+        w.clamp(TOAST_MIN_W_PX, TOAST_MAX_W_PX),
+        h.clamp(TOAST_MIN_H_PX, TOAST_MAX_H_PX),
+    ))
+}
+
 /// Message types an unprivileged (non-`ferrite://`) page may post.
 /// Pure for tests. Every admitted type is validated again inside its
 /// own arm. The allowlist is breadth, per-arm checks are depth.
@@ -17382,8 +21746,39 @@ fn content_page_allowed(msg_type: &str) -> bool {
             | "palette"
             | "ctx_activate"
             | "ctx_dismiss"
+            // Readiness handshake from the shared overlay page: replays the
+            // shell's stored frame only while an overlay owner is open, and
+            // never executes page-supplied data.
+            | "ctx_ready"
+            // 3c-5 ownership handshakes: each overlay page reports the first
+            // frame it painted so the shell can replay the stored one, plus
+            // the closed set of actions its own UI owns. All state-gated.
+            | "find_ready"
+            | "find_search"
+            | "find_next"
+            | "find_prev"
+            | "find_close"
+            | "toast_ready"
+            | "toast_size"
+            | "toast_action"
+            | "toast_dismiss"
+            | "toast_expired"
             | "menu_activate"
             | "menu_dismiss"
+            // Omnibox suggestion overlay mirror (unprivileged like the menu
+            // overlay): a click replays in chrome, Esc closes. Gated on the
+            // popover being open, so a content page cannot act through it.
+            | "sug_activate"
+            | "sug_delete"
+            | "popover_dismiss"
+            // Shell-hosted toolbar pop rows: kind + action gated again in
+            // the arm against the open pop's published frame.
+            | "popover_activate"
+            // Form submissions (star name/folder, workspace rename, group
+            // save, folder create). Same kind + index + act tag gate as an
+            // activation, plus a `PopValues` payload; without this entry the
+            // gate drops every overlay form submit before it is validated.
+            | "popover_submit"
             // Form/autofill flows: focus opens the vault-gated dropdown,
             // af_* only steer an open dropdown, dismiss closes menus.
             | "autofill_focus"
@@ -17423,6 +21818,12 @@ fn content_page_allowed(msg_type: &str) -> bool {
             | "bootdecision_data"
             | "bootdecision"
             | "bootrecovery"
+            // Shortcut reporter: a bound key press the webview captured
+            // because the OS delivers keys to the focused document, not to
+            // our window. Admissible from any page (any page can hold focus);
+            // the arm refuses it without that webview's token, so the token —
+            // not the type — is the permission.
+            | "shortcut"
     )
 }
 
@@ -17601,6 +22002,36 @@ fn sync_code_payload(code: Option<&str>, expires_at_ms: Option<i64>) -> String {
     escape_script_close(&serde_json::to_string(&payload).unwrap_or_default())
 }
 
+/// The window that owns keyboard focus inside this process, captured before a
+/// sibling webview is created. WebView2 builds its controller focused even when
+/// the caller hides it on the next line, so a surface created for a later frame
+/// must hand the keyboard back: otherwise a hidden card holds the keys, and an
+/// unpainted card cannot even answer Escape.
+#[cfg(windows)]
+fn focus_owner() -> Option<windows::Win32::Foundation::HWND> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+    let h = unsafe { GetFocus() };
+    (!h.is_invalid()).then_some(h)
+}
+
+/// Hand the keyboard back to `owner`. Best effort: the owner may have gone away
+/// between the capture and the creation (a tab closed under a toast).
+#[cfg(windows)]
+fn hand_focus_back(owner: Option<windows::Win32::Foundation::HWND>) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+    if let Some(h) = owner {
+        let _ = unsafe { SetFocus(Some(h)) };
+    }
+}
+
+#[cfg(not(windows))]
+fn focus_owner() -> Option<()> {
+    None
+}
+
+#[cfg(not(windows))]
+fn hand_focus_back(_owner: Option<()>) {}
+
 /// Second-instance guard. Holds an exclusive OS file lock beside the
 /// stores for process lifetime (returned guard must be kept alive by the
 /// caller). Retries ~3s with backoff so a boot-gate relaunch racing its
@@ -17753,6 +22184,150 @@ mod settings_apply_tests {
     }
 
     #[test]
+    fn star_edit_renames_in_place_instead_of_duplicating() {
+        // Regression net for the edit-save defect measured in the delivered
+        // build: saving the star card's edit form with a new name added a
+        // second bar chip instead of renaming the bookmark the card opened.
+        let mut app = test_app();
+        let vault = std::sync::Arc::new(ferrite_vault::Vault::open_in_memory().unwrap());
+        vault
+            .insert_bookmark("https://example.com", "Example Domain", None)
+            .unwrap();
+        app.vault = Some(vault.clone());
+        assert!(app.update_starred_bookmark("https://example.com", "Renamed", None));
+        let rows = vault.list_bookmark_children(None);
+        assert_eq!(rows.len(), 1, "one row, not a second copy");
+        assert_eq!(rows[0].title, "Renamed");
+        // Moving is the same save: the row follows the chosen folder.
+        let folder = vault.add_folder("Dev", None).unwrap();
+        assert!(app.update_starred_bookmark("https://example.com", "Renamed", Some(&folder)));
+        let root = vault.list_bookmark_children(None);
+        assert_eq!(root.len(), 1, "bar root holds only the new folder");
+        assert!(root[0].is_folder, "the bookmark left the bar root");
+        assert_eq!(vault.list_bookmark_children(Some(&folder)).len(), 1);
+        // A URL with no live row (page changed, bookmark deleted) rejects, so
+        // the card stays open rather than resurrecting a row.
+        assert!(!app.update_starred_bookmark("https://other.example", "x", None));
+        assert_eq!(vault.list_bookmark_children(Some(&folder)).len(), 1);
+    }
+
+    #[test]
+    fn star_card_charges_one_button_strip_for_short_labels() {
+        // The card height must match the single row the renderer paints.
+        // Charging the strip per button left 36px of dead card under the
+        // row, and full-sentence labels wrapped and clipped inside the 28px
+        // buttons of a 300px card. Labels stay one word each; the full
+        // sentence rides along as the accessible name.
+        let mut app = test_app();
+        let vault = std::sync::Arc::new(ferrite_vault::Vault::open_in_memory().unwrap());
+        vault
+            .insert_bookmark("https://example.com", "Example One", None)
+            .unwrap();
+        app.vault = Some(vault);
+        app.app
+            .tabs
+            .new_tab_mock(Some("https://example.com".to_owned()))
+            .unwrap();
+        let v = app.star_pop_view().expect("star card");
+        assert_eq!(
+            v.h,
+            FORM_PAD_PX + FORM_TITLE_PX + FORM_FIELD_PX * 2.0 + FORM_BTN_PX,
+            "one strip for the whole row, not one per button"
+        );
+        let buttons = v
+            .frame
+            .get("buttons")
+            .and_then(|b| b.as_array())
+            .expect("buttons");
+        assert_eq!(buttons.len(), 3, "Save, Remove, Manage on the edit card");
+        for b in buttons {
+            let label = b.get("t").and_then(|t| t.as_str()).expect("label");
+            assert!(
+                label.len() <= 7,
+                "{label} has to fit a third of the card without wrapping"
+            );
+            assert!(
+                b.get("aria")
+                    .and_then(|a| a.as_str())
+                    .is_some_and(|a| !a.is_empty() && a.len() > label.len()),
+                "{label} keeps its full sentence as the accessible name"
+            );
+        }
+    }
+
+    #[test]
+    fn tabs_context_bulk_rows_carry_every_selected_id() {
+        // Multi-select gesture lives in the chrome page (Ctrl/Cmd click), which
+        // the harness cannot synthesize (modifier state never reaches the
+        // WebView2 input queue). The surface it opens is shell-owned, so its
+        // frame and action table are pinned here: every bulk command must name
+        // the whole selection, never just the tab under the pointer.
+        let mut app = test_app();
+        let a = app
+            .app
+            .tabs
+            .new_tab_mock(Some("https://a.example".to_owned()))
+            .unwrap();
+        let b = app
+            .app
+            .tabs
+            .new_tab_mock(Some("https://b.example".to_owned()))
+            .unwrap();
+        let ids = vec![a.to_string(), b.to_string()];
+        let v = app.tabs_context_view(&ids).expect("bulk menu");
+        let rows = v
+            .frame
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .expect("rows");
+        let labels: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| r.get("t").and_then(|t| t.as_str()))
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Close 2 tabs", "Mute 2 tabs", "Pin 2 tabs", "Group 2 tabs"]
+        );
+        for action in &v.actions {
+            match action {
+                PopAction::Chrome {
+                    cmd,
+                    clear_selection,
+                } => {
+                    let carried = match cmd {
+                        ChromeCommand::TabsClose { ids }
+                        | ChromeCommand::TabsMute { ids, .. }
+                        | ChromeCommand::TabsPin { ids, .. } => ids,
+                        other => panic!("unexpected bulk command: {other:?}"),
+                    };
+                    assert_eq!(carried.len(), 2, "the whole selection, not one tab");
+                    assert_eq!(
+                        *clear_selection,
+                        matches!(cmd, ChromeCommand::TabsClose { .. }),
+                        "only close consumes the outline; mute/pin keep it"
+                    );
+                }
+                PopAction::GroupEditorNew { tabs } => {
+                    assert_eq!(tabs.len(), 2, "grouping uses the selection");
+                }
+                other => panic!("unexpected bulk action: {other:?}"),
+            }
+        }
+        // One live id is the single-tab menu's job, not the bulk surface.
+        assert!(app.tabs_context_view(&ids[..1]).is_none());
+        // Stale ids are dropped, and fewer than two survivors is not bulk.
+        let mut stale = ids.clone();
+        stale.push("not-a-uuid".to_owned());
+        assert_eq!(
+            app.tabs_context_view(&stale)
+                .expect("two live ids")
+                .actions
+                .len(),
+            4
+        );
+    }
+
+    #[test]
     fn merge_overwrites_present_and_keeps_absent() {
         let mut doc = serde_json::json!({"a": 1, "b": 2});
         merge_settings_doc(&mut doc, &serde_json::json!({"b": 3, "c": 4}));
@@ -17805,6 +22380,7 @@ mod settings_apply_tests {
             "panel_section": "history",
             "panel_w": 400,
             "ask_downloads": true,
+            "parallel_downloads": false,
             "pip_auto": true,
             "notifications_global": false,
             "save_last_dir": "/tmp/ferrite-test",
@@ -17842,6 +22418,7 @@ mod settings_apply_tests {
         assert_eq!(app.panel_section, "history");
         assert_eq!(app.panel_w, 400);
         assert!(app.ask_downloads.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!app.parallel_downloads);
         assert!(app.pip_auto);
         assert!(!app.permissions.notifications_global());
         assert_eq!(
@@ -17882,6 +22459,7 @@ mod settings_apply_tests {
         app.startup_mode = "urls".to_owned();
         app.sleep_timeout_min = 5;
         app.autofill_payment = false;
+        app.parallel_downloads = false;
         app.translate_target = "de".to_owned();
         app.privacy.update_settings(|s| {
             s.adblock_enabled = false;
@@ -17900,6 +22478,7 @@ mod settings_apply_tests {
         assert!(app.sleep_exceptions.is_empty());
         assert!(app.autofill_payment);
         assert!(app.autofill_form);
+        assert!(app.parallel_downloads, "parallel downloads default on");
         assert_eq!(
             app.translate_target,
             ferrite_tabs::translate::DEFAULT_TARGET
@@ -18429,6 +23008,24 @@ mod import_tests {
             "bootdecision_data",
             "bootdecision",
             "bootrecovery",
+            "ctx_ready",
+            // 3c-5: the find card and toast are their own overlay windows
+            // (ferrite://find, ferrite://toast) and post this closed set.
+            // Each arm re-gates on find_open / the live toast seq.
+            "find_ready",
+            "find_search",
+            "find_next",
+            "find_prev",
+            "find_close",
+            "toast_ready",
+            "toast_size",
+            "toast_action",
+            "toast_dismiss",
+            "toast_expired",
+            // Admitted as a type so any focused page can report a bound key;
+            // the arm refuses it without that webview's token (tested in
+            // `a_shortcut_report_without_its_token_is_ignored`).
+            "shortcut",
         ] {
             assert!(content_page_allowed(t), "{t} admitted");
         }
@@ -18446,6 +23043,11 @@ mod import_tests {
             // page may post it even though the query arm only reads.
             "site_query",
             "site_forget",
+            // Lookalike overlay types: only the closed set above is a
+            // vocabulary, never a prefix match.
+            "find_exec",
+            "toast_eval",
+            "toast_size_hack",
         ] {
             assert!(!content_page_allowed(t), "{t} denied");
         }
@@ -18484,15 +23086,25 @@ mod import_tests {
         assert_eq!(site_origin_host("https://example.com"), "example.com");
     }
 
+    /// The app's window icon is the brand mark wherever the platform takes one
+    /// from the app — and deliberately none on Windows, where the taskbar
+    /// button, caption and alt-tab all resolve to the executable's embedded
+    /// `brand/ferrite.ico` (see `ShellConfig::window_icon`).
     #[test]
-    fn window_icon_decodes_brand_favicon() {
-        let (rgba, w, h) =
-            ShellConfig::window_icon_pixels().expect("brand/favicon.png must decode");
-        assert!(w >= 16 && h >= 16, "usable icon size: {w}x{h}");
-        assert_eq!(rgba.len(), (w * h * 4) as usize, "rgba buffer matches");
-        // Not a blank image: the mark carries real pixels.
-        assert!(rgba.chunks_exact(4).any(|p| p[3] > 0), "non-empty alpha");
-        assert!(ShellConfig::window_icon().is_some(), "icon builds");
+    fn window_icon_follows_the_platform() {
+        assert_eq!(
+            ShellConfig::default()
+                .window_attributes()
+                .window_icon
+                .is_some(),
+            !cfg!(target_os = "windows"),
+            "window attributes: brand mark off Windows, none on Windows"
+        );
+        assert_eq!(
+            ShellConfig::window_icon().is_some(),
+            !cfg!(target_os = "windows"),
+            "the window icon agrees with the attributes"
+        );
     }
 
     #[test]
@@ -18886,6 +23498,205 @@ mod palette_tests {
         app.run_palette_row("setting", "privacy-adblock");
         assert!(app.palette_recent.is_empty());
     }
+
+    #[test]
+    fn a_reported_shortcut_drives_the_same_action_as_the_window_key() {
+        use ferrite_tabs::{IpcMessage, MockHandle, WebViewHandle};
+        use std::rc::Rc;
+        // The whole point of the table: the key arrives from the webview's
+        // report (the OS gave it to the document, not to our window) and must
+        // run exactly the action the winit carrier would have run.
+        let mut app = test_app();
+        // The boot gate (deliberate: no shortcuts while the decision screen
+        // owns first paint) is exercised separately; this is the post-boot
+        // path, which is where a page's report must land.
+        app.boot_block = None;
+        let chrome = Rc::new(MockHandle::default());
+        app.chrome = Some(chrome.clone() as Rc<dyn WebViewHandle>);
+        let tab_id = uuid::Uuid::new_v4();
+        let report = |code: &str, token: &str| {
+            serde_json::json!({
+                "type": "shortcut",
+                "token": token,
+                "code": code,
+                "primary": true,
+                "shift": false,
+                "alt": false,
+                "repeat": false,
+            })
+            .to_string()
+        };
+        // The sender is a content origin (no ferrite:// tab behind the id), so
+        // neither the type nor the tab lookup grants anything — the token does.
+        let token = ferrite_tabs::shortcuts::token_for(tab_id);
+        // Ctrl+B: the side panel, a headless-observable action.
+        let panel = app.panel_open;
+        assert!(app.ipc_bridge.try_send(IpcMessage {
+            tab_id,
+            payload: report("KeyB", &token),
+        }));
+        app.tick();
+        assert_ne!(
+            app.panel_open, panel,
+            "Ctrl+B from a page must toggle the panel"
+        );
+
+        // Ctrl+L: focuses the omnibox, which claims chrome's keyboard first.
+        assert!(app.ipc_bridge.try_send(IpcMessage {
+            tab_id,
+            payload: report("KeyL", &token),
+        }));
+        app.tick();
+        assert!(
+            chrome
+                .scripts()
+                .iter()
+                .any(|s| s == "__ferriteFocusOmnibox()"),
+            "Ctrl+L from a page must reach focus_omnibox, got {:?}",
+            chrome.scripts()
+        );
+    }
+
+    #[test]
+    fn a_shortcut_report_without_its_token_is_ignored() {
+        use ferrite_tabs::{IpcMessage, MockHandle, WebViewHandle};
+        use std::rc::Rc;
+        let mut app = test_app();
+        app.boot_block = None;
+        let chrome = Rc::new(MockHandle::default());
+        app.chrome = Some(chrome.clone() as Rc<dyn WebViewHandle>);
+        let panel = app.panel_open;
+        let tab_id = uuid::Uuid::new_v4();
+        let other = ferrite_tabs::shortcuts::token_for(uuid::Uuid::new_v4());
+        let report = |token: &str, repeat: bool| {
+            serde_json::json!({
+                "type": "shortcut",
+                "token": token,
+                "code": "KeyL",
+                "primary": true,
+                "shift": false,
+                "alt": false,
+                "repeat": repeat,
+            })
+            .to_string()
+        };
+        // Every page can post any JSON it likes; none of these may act.
+        for payload in [
+            // No token at all: a hand-rolled message from page script.
+            serde_json::json!({"type":"shortcut","code":"KeyL","primary":true}).to_string(),
+            // Another webview's token.
+            report(&other, false),
+            // Empty token: wrong length must not panic or match.
+            report("", false),
+            // A held key's auto-repeat: forwarded, then dropped.
+            report(&ferrite_tabs::shortcuts::token_for(tab_id), true),
+            // A code that is not a binding at all.
+            serde_json::json!({
+                "type":"shortcut","token":ferrite_tabs::shortcuts::token_for(tab_id),
+                "code":"KeyZ","primary":true,"shift":false,"alt":false
+            })
+            .to_string(),
+        ] {
+            assert!(app.ipc_bridge.try_send(IpcMessage { tab_id, payload }));
+            app.tick();
+        }
+        assert_eq!(app.panel_open, panel);
+        assert!(
+            !chrome
+                .scripts()
+                .iter()
+                .any(|s| s == "__ferriteFocusOmnibox()"),
+            "an unauthenticated report must not drive the shell"
+        );
+    }
+
+    #[test]
+    fn focus_omnibox_claims_chrome_focus_then_drives_the_page() {
+        use ferrite_tabs::{MockHandle, WebViewHandle};
+        use std::rc::Rc;
+        let mut app = test_app();
+        let chrome = Rc::new(MockHandle::default());
+        app.chrome = Some(chrome.clone() as Rc<dyn WebViewHandle>);
+        app.focus_omnibox();
+        // Ctrl+L, the shell's FocusOmnibox command and the new-tab autofocus
+        // all land here. The chrome overlay and the content webviews share
+        // one parent and do not hand focus over on their own, so chrome has
+        // to claim the keyboard: without that the caret never arrives and
+        // the shortcut reads as dead. The page hook then un-hides the bar and
+        // takes the caret (the mock cannot observe that interleaving; the
+        // un-hide-before-focus order is pinned by ferrite-chrome's
+        // `omnibox_focus_has_a_single_entry_point`).
+        assert!(chrome.was_focused(), "chrome must claim the keyboard");
+        assert_eq!(
+            chrome.scripts(),
+            vec!["__ferriteFocusOmnibox()".to_owned()],
+            "the page hook opens the bar"
+        );
+    }
+
+    #[test]
+    fn focus_omnibox_command_claims_chrome_focus() {
+        use ferrite_tabs::{MockHandle, WebViewHandle};
+        use std::rc::Rc;
+        let mut app = test_app();
+        let chrome = Rc::new(MockHandle::default());
+        app.chrome = Some(chrome.clone() as Rc<dyn WebViewHandle>);
+        // Chrome commands are ignored until the boot decision screen is done
+        // (the real shell clears this when boot finishes).
+        app.boot_block = None;
+        app.handle_chrome_command(ChromeCommand::FocusOmnibox);
+        assert!(
+            chrome.was_focused(),
+            "the chrome command must claim the keyboard too"
+        );
+        assert_eq!(chrome.scripts(), vec!["__ferriteFocusOmnibox()".to_owned()]);
+    }
+
+    #[test]
+    fn every_omnibox_entry_point_claims_focus() {
+        // The keyboard path (Ctrl+L) cannot be constructed portably here
+        // (winit's KeyEvent is cfg-gated), so its routing is pinned over the
+        // source instead: the page hook has exactly one caller and every
+        // entry point goes through it. The needles are built at runtime so
+        // this test's own text is never what it counts.
+        let hook = concat!("__ferrite", "FocusOmnibox");
+        let caller = concat!("self.", "focus_omnibox()");
+        let bare = format!("eval_chrome(\"{hook}()\")");
+        let src = include_str!("shell.rs");
+        assert_eq!(
+            src.matches(&bare).count(),
+            1,
+            "the page hook has exactly one caller, focus_omnibox"
+        );
+        assert_eq!(
+            src.matches(caller).count(),
+            4,
+            "new tab, the FocusOmnibox command, Ctrl+L and the permission \
+             card's Not now all route through it"
+        );
+    }
+
+    #[test]
+    fn new_browser_shortcut_actions_dispatch_without_a_window() {
+        // The exhaustive match is compile-checked; this catches an arm that
+        // panics or depends on a window before the action can be routed. The
+        // real window path is measured on screen, not here.
+        let mut app = test_app();
+        app.boot_block = None;
+        for action in [
+            Action::OpenHistory,
+            Action::OpenDownloads,
+            Action::OpenBookmarks,
+            Action::OpenMenu,
+            Action::FocusContent,
+            Action::HardReload,
+        ] {
+            assert!(
+                app.handle_shortcut(action),
+                "{action:?} must be consumed by the shell"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -18899,6 +23710,176 @@ mod chrome_state_tests {
         // 232px rail, 48px omnibar row on top.
         assert_eq!(VTAB_W_PX, 232.0);
         assert_eq!(CHROME_TOP_VTAB_PX, 48.0);
+    }
+
+    #[test]
+    fn content_slot_reserves_the_status_strip_band() {
+        // 1536x793 is the measured chrome webview on the 125% display.
+        let plain = content_slot(1536.0, 793.0, false, false, false, None, false).unwrap();
+        assert_eq!(
+            (plain.x, plain.y, plain.w, plain.h),
+            (0.0, 88.0, 1536.0, 705.0)
+        );
+        let with_status = content_slot(1536.0, 793.0, false, false, false, None, true).unwrap();
+        assert_eq!(
+            (with_status.x, with_status.y, with_status.w, with_status.h),
+            (0.0, 88.0, 1536.0, 705.0 - STATUS_H_PX)
+        );
+        // The strip owns exactly the last STATUS_H_PX of the window: content
+        // bottom + strip height == window height, no overlap, no gap.
+        assert_eq!(with_status.y + with_status.h + STATUS_H_PX, 793.0);
+    }
+
+    #[test]
+    fn content_slot_accounts_for_every_band_at_once() {
+        let r = content_slot(1536.0, 793.0, false, true, true, Some(320.0), true).unwrap();
+        assert_eq!(r.x, 0.0);
+        assert_eq!(r.y, CHROME_TOP_PX + BAR_H_PX + INFOBAR_H_PX);
+        assert_eq!(r.w, 1536.0 - 320.0);
+        assert_eq!(r.h, 793.0 - r.y - STATUS_H_PX);
+        let v = content_slot(1536.0, 793.0, true, false, false, None, false).unwrap();
+        assert_eq!((v.x, v.y, v.w, v.h), (VTAB_W_PX, 48.0, 1304.0, 745.0));
+        // Degenerate windows yield no slot at all (never a negative box).
+        assert!(content_slot(300.0, 793.0, false, false, false, Some(320.0), false).is_none());
+        assert!(content_slot(1536.0, 80.0, false, false, false, None, false).is_none());
+        assert!(content_slot(1536.0, 110.0, false, false, false, None, true).is_none());
+    }
+
+    #[test]
+    fn find_card_sits_top_right_of_the_content_slot() {
+        let content = LogicalRect::new(0.0, 88.0, 1536.0, 705.0);
+        let r = find_card_rect(content, 1536.0, 793.0);
+        assert_eq!((r.w, r.h), (FIND_W_PX, FIND_H_PX));
+        assert_eq!(r.x + r.w, 1536.0 - 12.0, "12px in from the page edge");
+        assert_eq!(r.y, 96.0, "8px below the band");
+        // Panel open: the card tracks the page, not the window.
+        let paneled = LogicalRect::new(0.0, 88.0, 1216.0, 705.0);
+        let p = find_card_rect(paneled, 1536.0, 793.0);
+        assert_eq!(p.x + p.w, 1216.0 - 12.0);
+        // Window narrower than the card: clamp to the left edge, never spill.
+        let narrow = find_card_rect(content, 300.0, 793.0);
+        assert_eq!(narrow.x, 0.0);
+        assert_eq!(narrow.y, 96.0);
+    }
+
+    #[test]
+    fn toast_card_anchors_floating_above_the_strip() {
+        use crate::toast::ToastAnchor;
+        let content = LogicalRect::new(0.0, 88.0, 1536.0, 705.0);
+        let size = (300.0, 64.0);
+        let float = toast_card_rect(content, 1536.0, 793.0, size, ToastAnchor::Floating);
+        assert_eq!(float.x + float.w, 1536.0 - 12.0);
+        assert_eq!(
+            float.y + float.h,
+            88.0 + 705.0 - 10.0,
+            "10px above the page bottom"
+        );
+        // With the strip reserved, the same gap lands above the strip.
+        let inset = content_slot(1536.0, 793.0, false, false, false, None, true).unwrap();
+        let floored = toast_card_rect(inset, 1536.0, 793.0, size, ToastAnchor::Floating);
+        assert_eq!(floored.y + floored.h, 793.0 - STATUS_H_PX - 10.0);
+        // Downloads anchor: top-right of the page, under the toolbar button.
+        let dl = toast_card_rect(content, 1536.0, 793.0, size, ToastAnchor::Downloads);
+        assert_eq!(dl.y, 88.0 + 8.0);
+        assert_eq!(dl.x, float.x);
+        // Oversized card (already clamped by place_toast) stays inside.
+        let big = toast_card_rect(
+            content,
+            1536.0,
+            793.0,
+            (400.0, 100.0),
+            ToastAnchor::Floating,
+        );
+        assert!(big.x >= 0.0 && big.x + big.w <= 1536.0);
+        assert!(big.y >= 0.0 && big.y + big.h <= 793.0);
+    }
+
+    #[test]
+    fn toast_size_clamps_and_rejects_unmeasurable_cards() {
+        assert_eq!(
+            clamp_toast_size(0.0, 0.0),
+            Some((TOAST_MIN_W_PX, TOAST_MIN_H_PX))
+        );
+        assert_eq!(
+            clamp_toast_size(9999.0, 9999.0),
+            Some((TOAST_MAX_W_PX, TOAST_MAX_H_PX))
+        );
+        assert_eq!(clamp_toast_size(300.0, 64.0), Some((300.0, 64.0)));
+        assert_eq!(clamp_toast_size(f64::NAN, 64.0), None);
+        assert_eq!(clamp_toast_size(300.0, f64::INFINITY), None);
+    }
+
+    #[test]
+    fn status_strip_css_matches_the_reserved_inset() {
+        let html = include_str!("../../ferrite-chrome/assets/chrome.html");
+        let start = html.find("#status{").expect("status rule present");
+        let rule = &html[start..start + html[start..].find('}').expect("rule terminates")];
+        assert!(
+            rule.contains("box-sizing:border-box"),
+            "the 1px top rule must be inside the 26px band"
+        );
+        let height = rule
+            .split("height:")
+            .nth(1)
+            .and_then(|s| s.split(';').next())
+            .expect("height declared");
+        assert_eq!(
+            height.trim(),
+            format!("{STATUS_H_PX}px"),
+            "STATUS_H_PX and #status height must not drift"
+        );
+        assert!(rule.contains("position:fixed") && rule.contains("bottom:0"));
+    }
+
+    #[test]
+    fn toast_expired_only_closes_the_live_window() {
+        // Window-bound path (no headless shell), pinned over the source: a
+        // card that expired after its toast was superseded must not blank the
+        // window that now shows the replacement.
+        let src = include_str!("shell.rs");
+        let start = src.find("\"toast_expired\" => {").expect("expired arm");
+        let arm = &src[start..start + 600];
+        assert!(arm.contains("self.toast_seq == Some(seq)"), "seq-gated");
+        assert!(
+            arm.contains("self.hide_toast_overlay()"),
+            "hides the window"
+        );
+        assert!(
+            !arm.contains("self.toasts.dismiss"),
+            "queue stays authoritative"
+        );
+    }
+
+    #[test]
+    fn overlay_ready_is_first_only_and_creation_hands_focus_back() {
+        // Window-bound paths (no headless shell), pinned over the source: the
+        // page retries `find_ready`, so a duplicate must not re-select the term
+        // under the user's caret; and creating a hidden overlay takes the
+        // keyboard, so both creation sites capture and hand it back.
+        let src = include_str!("shell.rs");
+        let arm = &src[src.find("\"find_ready\" => {").expect("ready arm")..];
+        let arm = &arm[..arm.find("\"find_search\" => {").expect("next arm")];
+        assert!(
+            arm.contains("if !self.find_ready"),
+            "a retried ready is a no-op"
+        );
+        assert!(
+            arm.contains("self.find_focus = true"),
+            "replays the open frame"
+        );
+        for page in ["ferrite://find", "ferrite://toast"] {
+            let create = format!(".create(window, \"{page}\"");
+            let at = src.find(&create).expect("creation site");
+            let block = &src[at.saturating_sub(900)..(at + 1400).min(src.len())];
+            assert!(
+                block.contains("focus_owner()"),
+                "{page}: captures the focus owner before creation"
+            );
+            assert!(
+                block.contains("hand_focus_back(owner)"),
+                "{page}: hands the keyboard back after hiding"
+            );
+        }
     }
 
     #[test]
@@ -19683,5 +24664,1505 @@ mod af_dropdown_tests {
         assert!(!saveable_url("file:///C:/x.png"));
         assert!(!saveable_url("javascript:alert(1)"));
         assert!(!saveable_url(""));
+    }
+}
+
+#[cfg(test)]
+mod omni_popover_tests {
+    use super::*;
+
+    fn test_app() -> ShellApp {
+        let mut app = ShellApp::new(
+            ShellConfig::default(),
+            None,
+            crate::forward::ForwardQueue::default(),
+        );
+        // The decision-screen gate swallows every chrome command (the test
+        // host has no keyring, so the gate is usually tripped). Clear it to
+        // exercise the state funnel headless.
+        app.boot_block = None;
+        app
+    }
+
+    fn sug(url: &str, title: &str, kind: &str) -> SugRow {
+        SugRow {
+            url: url.to_owned(),
+            title: title.to_owned(),
+            tab: None,
+            kind: kind.to_owned(),
+            provider: None,
+        }
+    }
+
+    // The omnibox dropdown is painted in the overlay webview (chrome DOM is
+    // occluded below the content webview). These pin the shell half of the
+    // contract: the row shape the overlay renderer consumes, the window-
+    // relative geometry, the state funnel, and the unprivileged post types.
+    // The chrome/protocol halves are pinned in `tokens.rs` / `protocol.rs`.
+
+    #[test]
+    fn rows_carry_title_url_kind_and_history_delete() {
+        let s = vec![
+            sug("https://a.test/", "A", "history"),
+            sug("https://b.test/", "", "bookmark"),
+        ];
+        let rows = ShellApp::omni_pop_rows(&s, None);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["t"], "A");
+        assert_eq!(rows[0]["u"], "https://a.test/");
+        assert_eq!(rows[0]["k"], "history");
+        assert_eq!(rows[0]["del"], true, "history rows offer per-row delete");
+        assert_eq!(
+            rows[1]["t"], "https://b.test/",
+            "blank title falls back to the url"
+        );
+        assert_eq!(rows[1]["del"], false, "non-history rows do not");
+    }
+
+    #[test]
+    fn clipboard_row_appends_last_with_url_aware_label() {
+        let s = vec![sug("https://a.test/", "A", "history")];
+        let rows = ShellApp::omni_pop_rows(&s, Some("https://x.test/path"));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1]["clip"], true);
+        assert_eq!(rows[1]["go"], "Paste and go");
+        assert_eq!(rows[1]["u"], "https://x.test/path");
+        let search = ShellApp::omni_pop_rows(&s, Some("how to test"));
+        assert_eq!(search[1]["go"], "Paste and search");
+        // Empty snippet: no row appended.
+        assert_eq!(ShellApp::omni_pop_rows(&s, Some("")).len(), 1);
+    }
+
+    #[test]
+    fn clip_url_test_matches_chrome() {
+        assert!(clip_looks_url("https://example.com"));
+        assert!(clip_looks_url("example.com/x"));
+        assert!(!clip_looks_url("how to test"));
+        assert!(!clip_looks_url("example."));
+        assert!(!clip_looks_url(".hidden"));
+        assert!(!clip_looks_url("a b.com"));
+        assert!(!clip_looks_url("<script>"));
+        assert!(!clip_looks_url(""));
+    }
+
+    #[test]
+    fn popover_geometry_left_aligns_and_clamps() {
+        let g = ShellApp::popover_overlay_geom(40.0, 92.0, 720.0, 100.0, 1280.0, 800.0).unwrap();
+        assert_eq!(g, (40.0, 92.0, 720.0, 100.0));
+        // Runs off the right: clamped left, width kept.
+        let g = ShellApp::popover_overlay_geom(700.0, 92.0, 720.0, 100.0, 1280.0, 800.0).unwrap();
+        assert_eq!(g.0, 560.0);
+        // Taller than the window: capped, then clamped so it stays on screen.
+        let g = ShellApp::popover_overlay_geom(0.0, 700.0, 300.0, 5000.0, 1280.0, 800.0).unwrap();
+        assert!(g.3 <= 792.0);
+        assert!(g.1 >= 0.0);
+        assert!(g.1 + g.3 <= 800.0);
+        // Non-finite refuses (no stray popup).
+        assert!(
+            ShellApp::popover_overlay_geom(f64::NAN, 0.0, 100.0, 100.0, 1280.0, 800.0).is_none()
+        );
+    }
+
+    #[test]
+    fn popover_open_sets_state_highlight_clip_and_close_clears() {
+        let mut app = test_app();
+        assert!(app.omni_pop.is_none());
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "omnibox".into(),
+            x: 40,
+            y: 6,
+            w: 720,
+            h: 32,
+            hl: 2,
+            clip: Some("https://x.test".into()),
+        });
+        let pop = app.omni_pop.as_ref().expect("open sets state");
+        assert_eq!((pop.x, pop.y, pop.w, pop.h), (40.0, 6.0, 720.0, 32.0));
+        assert_eq!(pop.hl, Some(2));
+        assert_eq!(pop.clip.as_deref(), Some("https://x.test"));
+
+        app.handle_chrome_command(ChromeCommand::PopoverHighlight { index: 4 });
+        assert_eq!(app.omni_pop.as_ref().unwrap().hl, Some(4));
+        app.handle_chrome_command(ChromeCommand::PopoverHighlight { index: -1 });
+        assert_eq!(app.omni_pop.as_ref().unwrap().hl, None, "-1 clears");
+
+        app.handle_chrome_command(ChromeCommand::PopoverClipboard { clip: None });
+        assert_eq!(app.omni_pop.as_ref().unwrap().clip, None);
+
+        app.handle_chrome_command(ChromeCommand::PopoverClose {
+            kind: "omnibox".into(),
+        });
+        assert!(app.omni_pop.is_none(), "close clears state");
+    }
+
+    #[test]
+    fn unknown_popover_kinds_open_and_close_nothing() {
+        let mut app = test_app();
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "not-a-popover".into(),
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+            hl: -1,
+            clip: None,
+        });
+        assert!(app.omni_pop.is_none());
+        app.handle_chrome_command(ChromeCommand::PopoverClose {
+            kind: "not-a-popover".into(),
+        });
+        assert!(app.omni_pop.is_none());
+    }
+
+    #[test]
+    fn overlay_channel_accepts_suggestion_posts() {
+        // The overlay webview is unprivileged like the menu overlay, so the
+        // suggestion relay types must be on the content allowlist or every
+        // click on a visible suggestion would be dropped.
+        assert!(content_page_allowed("sug_activate"));
+        assert!(content_page_allowed("sug_delete"));
+        assert!(content_page_allowed("popover_dismiss"));
+    }
+
+    #[test]
+    fn zoom_pop_open_toggle_and_close_by_kind() {
+        let mut app = test_app();
+        // Open by anchor rect: shell state first (window-less test), flag
+        // state identical to dismissal mechanics.
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "zoom".into(),
+            x: 900,
+            y: 8,
+            w: 48,
+            h: 32,
+            hl: -1,
+            clip: None,
+        });
+        let pop = app.toolbar_pop.as_ref().expect("zoom opens state");
+        assert_eq!(pop.kind, PopKind::Zoom);
+        assert_eq!(pop.x, 900.0);
+        assert_eq!(pop.h, 32.0);
+        // Toggle: the same kind again closes (chrome posts only geometry —
+        // the toggle decision lives here, D3).
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "zoom".into(),
+            x: 900,
+            y: 8,
+            w: 48,
+            h: 32,
+            hl: -1,
+            clip: None,
+        });
+        assert!(app.toolbar_pop.is_none(), "same-kind re-open toggles shut");
+        // Kind-tagged close and chrome's wildcard close both land here.
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "zoom".into(),
+            x: 1,
+            y: 1,
+            w: 48,
+            h: 32,
+            hl: -1,
+            clip: None,
+        });
+        app.handle_chrome_command(ChromeCommand::PopoverClose { kind: "*".into() });
+        assert!(app.toolbar_pop.is_none(), "wildcard close clears");
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "zoom".into(),
+            x: 1,
+            y: 1,
+            w: 48,
+            h: 32,
+            hl: -1,
+            clip: None,
+        });
+        app.handle_chrome_command(ChromeCommand::PopoverClose {
+            kind: "zoom".into(),
+        });
+        assert!(app.toolbar_pop.is_none(), "kind close clears");
+        // Unknown names stay inert both ways.
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "not-a-pop".into(),
+            x: 1,
+            y: 1,
+            w: 10,
+            h: 10,
+            hl: -1,
+            clip: None,
+        });
+        app.handle_chrome_command(ChromeCommand::PopoverClose {
+            kind: "not-a-pop".into(),
+        });
+        assert!(app.toolbar_pop.is_none());
+    }
+
+    #[test]
+    fn zoom_pop_frame_and_card_size_pin_the_page_contract() {
+        let f = ShellApp::zoom_pop_frame(125);
+        assert_eq!(f["kind"], "zoom");
+        assert_eq!(f["pct"], 125);
+        let mut app = test_app();
+        let v = app.toolbar_pop_view(&PopKind::Zoom, None);
+        // The overlay page `.pz` row must fit the card exactly: 34+64+34
+        // controls, 6px gaps, 2px `.pz` padding, the `#m` frame's own 4px
+        // padding and 1px border. The old 6px `.pz` padding overflowed the
+        // card on both axes (measured: content 52x166 in a 44x160 box, which
+        // raised a scrollbar and clipped the bottom border).
+        assert_eq!((v.w, v.h), (ZOOM_POP_W, ZOOM_POP_H));
+        assert!(v.w >= 34.0 * 2.0 + 64.0 + 6.0 * 2.0 + 2.0 * 2.0 + 4.0 * 2.0 + 2.0);
+        assert!(v.h >= 30.0 + 2.0 * 2.0 + 4.0 * 2.0 + 2.0);
+        assert!(v.actions.is_empty(), "zoom rows are string-gated");
+    }
+
+    #[test]
+    fn pop_anchor_x_hangs_right_aligned_cards_off_the_button() {
+        // History sits near the window's right edge with a 360px card, so it
+        // hangs its right edge off the button's right edge (old DOM parity:
+        // `#histpop{right:120px}`); nav drops hang from the button's left.
+        assert_eq!(ShellApp::pop_anchor_x(false, 48.0, 32.0, 300.0), 48.0);
+        assert_eq!(ShellApp::pop_anchor_x(true, 880.0, 32.0, 360.0), 552.0);
+        assert!(PopKind::History.aligns_right());
+        assert!(!PopKind::NavBack.aligns_right());
+        assert!(!PopKind::NavFwd.aligns_right());
+        assert!(!PopKind::Zoom.aligns_right());
+        // Downloads and shield are right-side owners too (old DOM:
+        // `#dlpop` clamped to `r.right-320`, `#shieldpop` was `right:120px`).
+        assert!(PopKind::Downloads.aligns_right());
+        assert!(PopKind::Shield.aligns_right());
+        // ...and click-toggled, like zoom/history. Only the right-click nav
+        // drops always re-open.
+        assert!(PopKind::Zoom.toggles_on_repeat());
+        assert!(PopKind::History.toggles_on_repeat());
+        assert!(PopKind::Downloads.toggles_on_repeat());
+        assert!(PopKind::Shield.toggles_on_repeat());
+        assert!(!PopKind::NavBack.toggles_on_repeat());
+        assert!(!PopKind::NavFwd.toggles_on_repeat());
+        // The permission chip is a click toggle anchored to the chip's left
+        // edge inside the address pill, and the only kind that arms its
+        // buttons on open and closes instead of painting an empty card.
+        assert!(PopKind::Permissions.toggles_on_repeat());
+        assert!(!PopKind::Permissions.aligns_right());
+        assert!(PopKind::Permissions.arms_on_open());
+        assert!(PopKind::Permissions.closes_when_empty());
+        assert!(PopKind::Permissions.closes_on_tab_change());
+        assert!(!PopKind::Shield.arms_on_open());
+        assert!(!PopKind::History.closes_when_empty());
+        // Only the permission card is pinned to its tab; the rest follow
+        // session-wide stores across a switch (3c-2/3c-3).
+        for k in [
+            PopKind::Zoom,
+            PopKind::NavBack,
+            PopKind::NavFwd,
+            PopKind::History,
+            PopKind::Downloads,
+            PopKind::Shield,
+        ] {
+            assert!(
+                !k.closes_on_tab_change(),
+                "{} follows live stores",
+                k.name()
+            );
+            assert!(!k.arms_on_open(), "{} never arms", k.name());
+        }
+        // Wire names round-trip for every kind.
+        for k in [
+            PopKind::Zoom,
+            PopKind::NavBack,
+            PopKind::NavFwd,
+            PopKind::History,
+            PopKind::Downloads,
+            PopKind::Shield,
+            PopKind::Permissions,
+        ] {
+            assert_eq!(PopKind::from_name(k.name()), Some(k));
+        }
+        assert_eq!(PopKind::from_name("nope"), None);
+    }
+
+    #[test]
+    fn page_originated_dismissals_keep_the_page_focus() {
+        // The content-page reporter marks itself `src:"page"`; every other
+        // sender of the shared dismissal type (overlay Esc, suggestion
+        // mirror Esc) leaves the field absent or different. Only the page
+        // case skips the chrome refocus, because that press already focused
+        // the page (D6b).
+        assert!(ShellApp::dismiss_keeps_page_focus(
+            &serde_json::json!({"type": "popover_dismiss", "src": "page"})
+        ));
+        assert!(!ShellApp::dismiss_keeps_page_focus(
+            &serde_json::json!({"type": "popover_dismiss", "src": "overlay"})
+        ));
+        assert!(!ShellApp::dismiss_keeps_page_focus(
+            &serde_json::json!({"type": "popover_dismiss"})
+        ));
+        // Both origins close the open pop, so the keep-focus variant is a
+        // hide with a different focus tail, never a hide that forgets state.
+        let mut app = test_app();
+        app.toolbar_pop = Some(ToolbarPop {
+            ctx: None,
+            point: false,
+            kind: PopKind::Zoom,
+            x: 10.0,
+            y: 8.0,
+            w: 32.0,
+            h: 20.0,
+            frame: ShellApp::zoom_pop_frame(100),
+            actions: Vec::new(),
+            cw: 260.0,
+            ch: 200.0,
+            arm_until: None,
+            tab: None,
+        });
+        app.hide_toolbar_pop_keep_page_focus();
+        assert!(app.toolbar_pop.is_none());
+        app.toolbar_pop = Some(ToolbarPop {
+            ctx: None,
+            point: false,
+            kind: PopKind::Zoom,
+            x: 10.0,
+            y: 8.0,
+            w: 32.0,
+            h: 20.0,
+            frame: ShellApp::zoom_pop_frame(100),
+            actions: Vec::new(),
+            cw: 260.0,
+            ch: 200.0,
+            arm_until: None,
+            tab: None,
+        });
+        app.hide_toolbar_pop();
+        assert!(app.toolbar_pop.is_none());
+    }
+
+    #[test]
+    fn refresh_repaints_only_when_the_frame_changed() {
+        // Chrome state pushes ride every load tick and favicon arrival. A
+        // refresh that recomputes the same frame must not repaint (it would
+        // re-render the card under the pointer and reset keyboard focus),
+        // while a changed frame (a zoom step, a new history entry) must.
+        let mut app = test_app();
+        let live_pct = app.zoom_pop_pct();
+        let live_frame = ShellApp::zoom_pop_frame(live_pct);
+        app.toolbar_pop = Some(ToolbarPop {
+            ctx: None,
+            point: false,
+            kind: PopKind::Zoom,
+            x: 10.0,
+            y: 8.0,
+            w: 32.0,
+            h: 20.0,
+            frame: live_frame.clone(),
+            actions: Vec::new(),
+            cw: 260.0,
+            ch: 200.0,
+            arm_until: None,
+            tab: None,
+        });
+        // Up to date: no repaint is attempted at all, so the card under the
+        // pointer is never re-rendered (and never loses keyboard focus).
+        assert!(
+            !app.refresh_toolbar_pop(),
+            "an unchanged frame does not repaint"
+        );
+        // Stale (a zoom step the page has not seen yet): the refresh
+        // repaints to the live percentage.
+        app.toolbar_pop.as_mut().unwrap().frame = ShellApp::zoom_pop_frame(37);
+        assert!(app.refresh_toolbar_pop(), "a stale frame repaints");
+        assert_eq!(
+            app.toolbar_pop.as_ref().map(|p| p.frame.clone()),
+            Some(live_frame)
+        );
+        // Nothing open: refresh is a no-op, not a panic.
+        app.toolbar_pop = None;
+        assert!(!app.refresh_toolbar_pop());
+    }
+
+    #[test]
+    fn nav_pop_view_pins_rows_actions_and_heights() {
+        // Two back entries: steps are 1..=N in display order, kind matches
+        // the direction, and the card height is the pinned row grammar.
+        let urls: Vec<String> = vec![
+            "https://example.com/older".into(),
+            "https://example.com/newer".into(),
+        ];
+        let v = ShellApp::nav_pop_view(true, &urls);
+        assert_eq!(v.frame["kind"], "nav_back");
+        assert_eq!(v.rows_len(), 2);
+        assert_eq!(
+            v.actions,
+            vec![
+                PopAction::Nav {
+                    fwd: false,
+                    steps: 1
+                },
+                PopAction::Nav {
+                    fwd: false,
+                    steps: 2
+                },
+            ]
+        );
+        assert_eq!(v.w, NAV_POP_W);
+        assert_eq!(
+            v.h,
+            POP_LIST_PAD_PX + 2.0 * POP_ROW_PX + POP_BORDER_PX,
+            "card height is exactly the overlay page row grammar"
+        );
+        // Forward kind flips the direction; empty list renders the muted
+        // "No history here" row with no actionable table.
+        let fwd = ShellApp::nav_pop_view(false, &urls);
+        assert_eq!(fwd.frame["kind"], "nav_fwd");
+        assert_eq!(
+            fwd.actions,
+            vec![
+                PopAction::Nav {
+                    fwd: true,
+                    steps: 1
+                },
+                PopAction::Nav {
+                    fwd: true,
+                    steps: 2
+                },
+            ]
+        );
+        let empty = ShellApp::nav_pop_view(true, &[]);
+        assert_eq!(empty.actions.len(), 0, "no rows, no actions");
+        assert_eq!(empty.rows_len(), 1, "single muted row");
+        assert_eq!(empty.h, POP_LIST_PAD_PX + POP_ROW_PX + POP_BORDER_PX);
+    }
+
+    #[test]
+    fn history_pop_view_pins_sections_actions_and_heights() {
+        let hist: Vec<(String, String)> = vec![
+            ("https://a.example/".into(), "A".into()),
+            ("https://b.example/".into(), "".into()),
+        ];
+        let closed: Vec<(String, String)> = vec![
+            ("https://c.example/".into(), "C".into()),
+            ("https://d.example/".into(), "D".into()),
+        ];
+        let v = ShellApp::history_pop_view_impl(&hist, &closed);
+        assert_eq!(v.frame["kind"], "history");
+        // Section rows + 2 closed + restore + section header + 2 hist
+        // entries + footer = non-actionable 3, actionable 5.
+        assert_eq!(v.rows_len(), 3 + 5);
+        // Display order: closed reopens 0/1, restore-all, then history nav.
+        assert_eq!(
+            v.actions,
+            vec![
+                PopAction::Reopen(0),
+                PopAction::Reopen(1),
+                PopAction::RestoreAll,
+                PopAction::Go("https://a.example/".into()),
+                PopAction::Go("https://b.example/".into()),
+                PopAction::AllHistory,
+            ]
+        );
+        assert_eq!(
+            v.h,
+            POP_LIST_PAD_PX
+                + POP_SEC_PX
+                + 2.0 * POP_ROW2_PX
+                + POP_ROW_PX
+                + POP_SEC_PX
+                + 2.0 * POP_ROW2_PX
+                + POP_ROW_PX
+                + POP_BORDER_PX,
+            "card height is exactly the overlay page row grammar"
+        );
+        // Empty-title rows fall back to the URL as their title.
+        assert_eq!(v.frame["rows"][6]["t"], "https://b.example/");
+        assert_eq!(v.frame["rows"][1]["t"], "C", "closed titles ride in");
+        assert_eq!(v.frame["rows"][3]["t"], "Restore all 2 tabs");
+        // CTA rows keep the old DOM's accent hierarchy and the footer its
+        // centring; both tags are height-neutral, so the card arithmetic
+        // above still holds.
+        assert_eq!(v.frame["rows"][3]["k"], "acc", "restore-all is accented");
+        assert_eq!(v.frame["rows"][7]["k"], "acc", "see-all is accented");
+        assert_eq!(v.frame["rows"][7]["foot"], 1, "footer is centred");
+        // Closed/history rows must never borrow the accent tag.
+        assert!(v.frame["rows"][1].get("k").is_none());
+        assert!(v.frame["rows"][6].get("k").is_none());
+        // All-empty store: muted row + footer only, no header.
+        let app_hist: Vec<(String, String)> = Vec::new();
+        let v0 = ShellApp::history_pop_view_impl(&app_hist, &[]);
+        assert_eq!(v0.rows_len(), 2, "muted row + footer");
+        assert_eq!(v0.actions.len(), 1, "footer stays reachable");
+        assert_eq!(v0.frame["rows"][0]["t"], "Nothing here yet");
+        // History-only render: no "Recent history" header (old parity).
+        let app_hist2: Vec<(String, String)> = vec![("https://a.example/".into(), "A".into())];
+        let vh = ShellApp::history_pop_view_impl(&app_hist2, &[]);
+        assert_eq!(vh.rows_len(), 2, "no header rows without a closed stack");
+    }
+
+    #[test]
+    fn downloads_pop_view_pins_rows_buttons_and_heights() {
+        let items = vec![
+            serde_json::json!({"id":"a","filename":"report.pdf","url":"https://e.test/r.pdf",
+                "state":"Completed","size":1572864u64}),
+            serde_json::json!({"id":"b","filename":"","url":"https://e.test/big.iso",
+                "state":"Failed","size":null}),
+        ];
+        let v = ShellApp::downloads_pop_view_impl(&items);
+        assert_eq!(v.frame["kind"], "downloads");
+        assert_eq!(v.rows_len(), 3, "two rows plus the footer");
+        assert_eq!(v.w, DL_POP_W);
+        assert_eq!(
+            v.h,
+            POP_LIST_PAD_PX + 2.0 * POP_DL_ROW_PX + POP_ROW_PX + POP_BORDER_PX,
+            "card height is exactly the overlay page row grammar"
+        );
+        // Row 0: filename, human size, three buttons (no Retry when it did
+        // not fail).
+        assert_eq!(v.frame["rows"][0]["k"], "dl");
+        assert_eq!(v.frame["rows"][0]["t"], "report.pdf");
+        assert_eq!(v.frame["rows"][0]["s"], "Completed · 1.5 MB");
+        assert_eq!(v.frame["rows"][0]["btns"].as_array().unwrap().len(), 3);
+        assert_eq!(v.frame["rows"][0]["btns"][0]["t"], "Open");
+        assert_eq!(v.frame["rows"][0]["btns"][0]["a"], "dl_open");
+        assert_eq!(v.frame["rows"][0]["btns"][1]["a"], "dl_folder");
+        assert_eq!(v.frame["rows"][0]["btns"][1]["t"], "Show in folder");
+        assert_eq!(v.frame["rows"][0]["btns"][2]["a"], "dl_remove");
+        // Row 1: a Failed row gains Retry, and an empty filename falls back
+        // to the URL as its title (old bubble parity).
+        assert_eq!(v.frame["rows"][1]["t"], "https://e.test/big.iso");
+        assert_eq!(v.frame["rows"][1]["s"], "Failed");
+        assert_eq!(v.frame["rows"][1]["btns"].as_array().unwrap().len(), 4);
+        assert_eq!(v.frame["rows"][1]["btns"][2]["a"], "dl_retry");
+        // The action table mirrors the buttons in order, one entry per
+        // button, so the (kind, act, index) gate validates each of them.
+        assert_eq!(
+            v.actions,
+            vec![
+                PopAction::DlOpen("a".into()),
+                PopAction::DlFolder("a".into()),
+                PopAction::DlRemove("a".into()),
+                PopAction::DlOpen("b".into()),
+                PopAction::DlFolder("b".into()),
+                PopAction::DlRetry("b".into()),
+                PopAction::DlRemove("b".into()),
+                PopAction::Go("ferrite://downloads".into()),
+            ]
+        );
+        assert_eq!(v.frame["rows"][1]["btns"][3]["i"], 6);
+        assert_eq!(v.actions[6], PopAction::DlRemove("b".into()));
+        assert_eq!(v.actions[5], PopAction::DlRetry("b".into()));
+        // Footer keeps the old `#dlpop .all` accent and centring.
+        assert_eq!(v.frame["rows"][2]["t"], "See all downloads");
+        assert_eq!(v.frame["rows"][2]["k"], "acc");
+        assert_eq!(v.frame["rows"][2]["foot"], 1);
+        assert_eq!(v.frame["rows"][2]["i"], 7);
+    }
+
+    #[test]
+    fn downloads_pop_view_empty_store_keeps_the_footer() {
+        let v = ShellApp::downloads_pop_view_impl(&[]);
+        assert_eq!(v.rows_len(), 2, "muted row + footer");
+        assert_eq!(v.frame["rows"][0]["t"], "No downloads yet");
+        assert_eq!(v.frame["rows"][0]["m"], 1);
+        assert_eq!(
+            v.h,
+            POP_LIST_PAD_PX + POP_ROW_PX + POP_ROW_PX + POP_BORDER_PX
+        );
+        assert_eq!(v.actions, vec![PopAction::Go("ferrite://downloads".into())]);
+    }
+
+    #[test]
+    fn downloads_row_falls_back_to_url_then_plain_download() {
+        // Old bubble: `it.filename||it.url||'download'`. A row with neither
+        // still renders a title, never an empty line.
+        let items = vec![
+            serde_json::json!({"id": "a", "filename": "", "url": "https://e.test/x.bin", "state": "Completed"}),
+            serde_json::json!({"id": "b", "filename": "", "url": "", "state": "Completed"}),
+        ];
+        let v = ShellApp::downloads_pop_view_impl(&items);
+        assert_eq!(v.frame["rows"][0]["t"], "https://e.test/x.bin");
+        assert_eq!(v.frame["rows"][1]["t"], "download");
+    }
+
+    #[test]
+    fn downloads_visible_slice_keeps_live_transfers_first() {
+        // The vault half of `downloads_json` is newest-first and capped, so
+        // eight finished downloads would hide the transfer the user just
+        // started. In-flight states sort ahead of the rest.
+        let mut items: Vec<serde_json::Value> = (0..10)
+            .map(|i| {
+                serde_json::json!({"id": format!("d{i}"), "state": "Completed", "filename": "f"})
+            })
+            .collect();
+        items.push(serde_json::json!({"id": "live", "state": "Progress", "filename": "now.bin"}));
+        let got = ShellApp::downloads_pop_items(items);
+        assert_eq!(got.len(), 8, "the old 8-row cap survives");
+        assert_eq!(got[0]["id"], "live", "the active transfer is never cut");
+        assert!(
+            got[1..].iter().all(|it| it["state"] == "Completed"),
+            "and the rest stay newest-first"
+        );
+        // Paused and Interrupted are in-flight too (same log membership).
+        let got = ShellApp::downloads_pop_items(vec![
+            serde_json::json!({"id": "c", "state": "Completed"}),
+            serde_json::json!({"id": "p", "state": "Paused"}),
+            serde_json::json!({"id": "i", "state": "Interrupted"}),
+        ]);
+        assert_eq!(got[0]["id"], "p");
+        assert_eq!(got[1]["id"], "i");
+        assert_eq!(got[2]["id"], "c");
+    }
+
+    #[test]
+    fn shield_pop_view_pins_rows_and_heights() {
+        let input = ShieldInput {
+            scheme: "lock".into(),
+            host: "example.com".into(),
+            proxy_alive: true,
+            blocked: 12,
+            blocked_ad: 3,
+            blocked_tracker: 5,
+            blocked_fingerprinting: 1,
+            blocked_malware: 0,
+            blocked_mixed: 0,
+            site_blocked: 4,
+            site_paused: false,
+            fail_open: 0,
+            recent_trackers: vec!["t.example".into(), "u.example".into()],
+            site_details: true,
+        };
+        let v = ShellApp::shield_pop_view_impl(&input);
+        assert_eq!(v.frame["kind"], "shield");
+        assert_eq!(v.w, SHIELD_POP_W);
+        // head, connection, blocked, breakdown, site line (5 text rows),
+        // pause button, tracker header, 2 tracker rows, 3 accent actions.
+        assert_eq!(v.rows_len(), 12);
+        assert_eq!(
+            v.h,
+            POP_LIST_PAD_PX
+                + 5.0 * POP_TX_PX
+                + POP_BTN_PX
+                + POP_SEC_PX
+                + 2.0 * POP_TX_PX
+                + 3.0 * POP_ROW_PX
+                + POP_BORDER_PX,
+            "card height is exactly the overlay page row grammar"
+        );
+        assert_eq!(v.frame["rows"][0]["t"], "Privacy Protection");
+        assert_eq!(v.frame["rows"][0]["k"], "tx");
+        assert_eq!(v.frame["rows"][0]["col"], "head");
+        assert_eq!(
+            v.frame["rows"][1]["t"],
+            "🔒 Secure connection to example.com"
+        );
+        assert!(v.frame["rows"][1].get("col").is_none());
+        assert_eq!(v.frame["rows"][2]["t"], "12 blocked this session");
+        assert_eq!(v.frame["rows"][3]["col"], "faint");
+        assert_eq!(
+            v.frame["rows"][3]["t"],
+            "ads 3 · trackers 5 · fingerprinting 1 · malware 0 · mixed 0"
+        );
+        assert_eq!(v.frame["rows"][4]["t"], "4 blocked on this site");
+        assert_eq!(v.frame["rows"][5]["k"], "btn");
+        assert_eq!(v.frame["rows"][5]["t"], "Pause blocking for this site");
+        assert_eq!(v.frame["rows"][5]["a"], "pause");
+        assert_eq!(v.frame["rows"][5]["i"], 0);
+        assert_eq!(v.frame["rows"][6]["sec"], "Recent trackers");
+        assert_eq!(v.frame["rows"][7]["t"], "t.example");
+        assert_eq!(v.frame["rows"][7]["col"], "faint");
+        assert_eq!(
+            v.actions,
+            vec![
+                PopAction::ShieldPause,
+                PopAction::ManagePrivacy,
+                PopAction::ViewCert,
+                PopAction::SiteDetails,
+            ]
+        );
+        assert_eq!(v.frame["rows"][9]["a"], "manage");
+        assert_eq!(v.frame["rows"][9]["k"], "acc");
+        assert_eq!(v.frame["rows"][11]["a"], "site");
+        // Paused + no trackers + fail-open + proxy down + internal page +
+        // no site details: the conditional rows swap, the height follows.
+        let input2 = ShieldInput {
+            scheme: "shield".into(),
+            host: String::new(),
+            proxy_alive: false,
+            site_blocked: 0,
+            site_paused: true,
+            fail_open: 3,
+            recent_trackers: Vec::new(),
+            site_details: false,
+            ..input.clone()
+        };
+        let v2 = ShellApp::shield_pop_view_impl(&input2);
+        // head, internal conn, proxy, blocked, breakdown, paused, fail-open,
+        // blockers-active (8 text rows), pause button, 2 accent actions.
+        assert_eq!(v2.rows_len(), 11);
+        assert_eq!(v2.frame["rows"][1]["col"], "faint", "internal page");
+        assert_eq!(v2.frame["rows"][2]["col"], "danger", "proxy down");
+        assert_eq!(v2.frame["rows"][5]["col"], "warn");
+        assert_eq!(v2.frame["rows"][5]["t"], "Blocking paused on this site.");
+        assert_eq!(v2.frame["rows"][6]["t"], "Resume blocking");
+        assert_eq!(v2.frame["rows"][7]["col"], "danger", "fail-open");
+        assert_eq!(v2.frame["rows"][8]["t"], "Blockers active for this session");
+        assert_eq!(v2.frame["rows"][10]["a"], "cert");
+        assert_eq!(
+            v2.actions.len(),
+            3,
+            "no site-details row for internal pages"
+        );
+        assert_eq!(
+            v2.h,
+            POP_LIST_PAD_PX + 8.0 * POP_TX_PX + POP_BTN_PX + 2.0 * POP_ROW_PX + POP_BORDER_PX
+        );
+    }
+
+    #[test]
+    fn pop_action_tags_are_unique_and_only_download_rows_keep_the_pop() {
+        let all = [
+            PopAction::Nav {
+                fwd: true,
+                steps: 1,
+            },
+            PopAction::Reopen(0),
+            PopAction::RestoreAll,
+            PopAction::Go("https://e.test/".into()),
+            PopAction::AllHistory,
+            PopAction::DlOpen("a".into()),
+            PopAction::DlFolder("a".into()),
+            PopAction::DlRetry("a".into()),
+            PopAction::DlRemove("a".into()),
+            PopAction::ManagePrivacy,
+            PopAction::ViewCert,
+            PopAction::SiteDetails,
+            PopAction::ShieldPause,
+        ];
+        let tags: Vec<&str> = all.iter().map(|a| a.tag()).collect();
+        let mut uniq = tags.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), tags.len(), "act tags are the wire vocabulary");
+        assert_eq!(tags[5], "dl_open");
+        assert_eq!(tags[12], "pause");
+        // Only the three keep-open downloads rows leave the pop up (old
+        // bubble parity: Open/Show in folder/Remove stayed, and the Remove
+        // re-rendered the list in place).
+        let keep: Vec<&str> = all
+            .iter()
+            .filter(|a| !a.closes_pop())
+            .map(|a| a.tag())
+            .collect();
+        assert_eq!(keep, vec!["dl_open", "dl_folder", "dl_remove"]);
+    }
+
+    fn perm_row(kind: &str, label: &str, origin: &str) -> ferrite_chrome::chrome::PermRow {
+        ferrite_chrome::chrome::PermRow {
+            kind: kind.to_owned(),
+            label: label.to_owned(),
+            origin: origin.to_owned(),
+            quiet: false,
+        }
+    }
+
+    #[test]
+    fn permissions_pop_view_pins_rows_actions_and_heights() {
+        let rows = vec![perm_row("camera", "Camera", "https://a.test")];
+        let v = ShellApp::permissions_pop_view_impl(&rows, 1234);
+        assert_eq!(v.frame["kind"], "permissions");
+        assert_eq!(v.frame["arm_until"], 1234);
+        // One request row, the fixed note, the Not-now button.
+        assert_eq!(v.rows_len(), 3);
+        assert_eq!((v.w, v.h), (PERM_POP_W, 152.0));
+        assert_eq!(
+            v.h,
+            POP_LIST_PAD_PX + POP_PERM_ROW_PX + POP_NOTE_PX + POP_BTN_PX + POP_BORDER_PX
+        );
+        let r = &v.frame["rows"][0];
+        assert_eq!(r["k"], "perm");
+        assert_eq!(r["t"], "Camera");
+        assert_eq!(r["s"], "https://a.test");
+        assert_eq!(r["btns"][0]["t"], "Allow once");
+        assert_eq!(r["btns"][0]["a"], "allow");
+        assert_eq!(r["btns"][0]["arm"], 1);
+        assert_eq!(r["btns"][1]["t"], "Always");
+        assert_eq!(r["btns"][1]["a"], "always");
+        assert_eq!(r["btns"][1]["arm"], 1);
+        assert_eq!(v.frame["rows"][1]["k"], "note");
+        assert_eq!(v.frame["rows"][1]["t"], PERM_NOTE);
+        assert_eq!(v.frame["rows"][2]["t"], "Not now");
+        assert_eq!(v.frame["rows"][2]["a"], "notnow");
+        assert_eq!(v.frame["rows"][2]["arm"], 1);
+        assert_eq!(v.frame["rows"][2]["def"], 1, "arming focuses Not now");
+        assert_eq!(
+            v.actions,
+            vec![
+                PopAction::PermDecide {
+                    origin: "https://a.test".into(),
+                    kind: "camera".into(),
+                    always: false,
+                },
+                PopAction::PermDecide {
+                    origin: "https://a.test".into(),
+                    kind: "camera".into(),
+                    always: true,
+                },
+                PopAction::PermNotNow,
+            ]
+        );
+        // Every permission row closes the card before acting (old DOM hid the
+        // popover and then posted; Not now closed and refocused the omnibox).
+        assert!(v.actions.iter().all(|a| a.closes_pop()));
+        assert_eq!(
+            v.actions.iter().map(|a| a.tag()).collect::<Vec<_>>(),
+            vec!["allow", "always", "notnow"]
+        );
+    }
+
+    #[test]
+    fn permissions_pop_view_indexes_every_button_of_every_row() {
+        let rows = vec![
+            perm_row("camera", "Camera", "https://a.test"),
+            perm_row("microphone", "Microphone", "https://b.test"),
+        ];
+        let v = ShellApp::permissions_pop_view_impl(&rows, 9);
+        assert_eq!(v.rows_len(), 4);
+        assert_eq!(
+            v.h,
+            POP_LIST_PAD_PX + 2.0 * POP_PERM_ROW_PX + POP_NOTE_PX + POP_BTN_PX + POP_BORDER_PX
+        );
+        // Each button names its own action-table entry and its own request, so
+        // a stale or crossed index can never decide the wrong site or scope.
+        let frame_rows = v.frame["rows"].as_array().unwrap();
+        for (row, (origin, kind)) in frame_rows[..2].iter().zip([
+            ("https://a.test", "camera"),
+            ("https://b.test", "microphone"),
+        ]) {
+            for (n, (tag, always)) in [("allow", false), ("always", true)].iter().enumerate() {
+                let i = row["btns"][n]["i"].as_u64().unwrap() as usize;
+                assert_eq!(row["btns"][n]["a"], *tag);
+                assert_eq!(
+                    v.actions[i],
+                    PopAction::PermDecide {
+                        origin: origin.to_owned(),
+                        kind: kind.to_owned(),
+                        always: *always,
+                    }
+                );
+            }
+        }
+        assert_eq!(frame_rows[3]["i"].as_u64().unwrap() as usize, 4);
+    }
+
+    #[test]
+    fn permissions_empty_store_has_no_card() {
+        // The pending list is per active tab, so answering the last request or
+        // switching away empties it. An empty frame closes the card rather
+        // than painting a note with nothing to ask about.
+        let v = ShellApp::permissions_pop_view_impl(&[], 1);
+        assert!(v.no_rows());
+        assert!(v.actions.is_empty());
+    }
+
+    #[test]
+    fn open_overlay_is_raised_above_content_and_repaint_keeps_it_there() {
+        use ferrite_tabs::{MockHandle, WebViewHandle};
+        use std::rc::Rc;
+        let mut app = test_app();
+        let ov = Rc::new(MockHandle::default());
+        app.ctx_overlay = Some(ov.clone() as Rc<dyn WebViewHandle>);
+        // Nothing open: no raise, so a closed card never fights a new page.
+        app.raise_open_overlays();
+        assert_eq!(ov.raised_count(), 0);
+        // A visible menu must be above the content webview that was just
+        // created or shown (wry creation uses HWND_TOP; bounds use
+        // SWP_NOZORDER, so only an explicit raise restores this invariant).
+        app.menu_open = true;
+        app.raise_open_overlays();
+        assert_eq!(ov.raised_count(), 1);
+        // A repaint (toggle-row refresh) has no hidden->visible transition;
+        // it must still end with the layer on top.
+        app.refresh_menu_rows();
+        assert_eq!(ov.raised_count(), 2);
+    }
+
+    #[test]
+    fn theme_switch_rethemes_every_open_overlay() {
+        // Overlays are long-lived pages themed at load. A pack switch that
+        // only repaints chrome leaves every dropdown card in the boot pack's
+        // colours, so the live style block must be upserted in both overlay
+        // webviews as well as in ferrite:// documents.
+        use ferrite_tabs::{MockHandle, WebViewHandle};
+        use std::rc::Rc;
+        let mut app = test_app();
+        let ctx = Rc::new(MockHandle::default());
+        let dialog = Rc::new(MockHandle::default());
+        let chrome = Rc::new(MockHandle::default());
+        app.ctx_overlay = Some(ctx.clone() as Rc<dyn WebViewHandle>);
+        app.dlg_overlay = Some(dialog.clone() as Rc<dyn WebViewHandle>);
+        app.chrome = Some(chrome.clone() as Rc<dyn WebViewHandle>);
+        let next = app.theme_pack.next();
+        app.apply_pack_live(next);
+        assert_eq!(app.theme_pack, next);
+        // Chrome keeps its boot stylesheet order; the live block must carry
+        // the whole layered theme (including `color-scheme`), not just the
+        // pack's tokens, or crossing a light/dark pack leaves the window in
+        // the old scheme.
+        assert!(
+            chrome
+                .scripts()
+                .iter()
+                .any(|js| js.contains("__ferriteTheme") && js.contains("color-scheme")),
+            "chrome received the layered theme"
+        );
+        for (name, mock) in [("ctx", &ctx), ("dialog", &dialog)] {
+            let scripts = mock.scripts();
+            assert!(
+                scripts
+                    .iter()
+                    .any(|js| js.contains("ferrite-theme-live") && js.contains("color-scheme")),
+                "{name} overlay received the live theme block"
+            );
+        }
+    }
+
+    #[test]
+    fn every_overlay_layer_is_raised_and_the_dialog_stays_last() {
+        use ferrite_tabs::{MockHandle, WebViewHandle};
+        use std::rc::Rc;
+        let mut app = test_app();
+        let ctx = Rc::new(MockHandle::default());
+        let search = Rc::new(MockHandle::default());
+        let dialog = Rc::new(MockHandle::default());
+        app.ctx_overlay = Some(ctx.clone() as Rc<dyn WebViewHandle>);
+        app.overlay = Some(search.clone() as Rc<dyn WebViewHandle>);
+        app.dlg_overlay = Some(dialog.clone() as Rc<dyn WebViewHandle>);
+        app.toolbar_pop = Some(ToolbarPop {
+            ctx: None,
+            point: false,
+            kind: PopKind::Zoom,
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+            frame: serde_json::json!({}),
+            actions: Vec::new(),
+            cw: 260.0,
+            ch: 200.0,
+            arm_until: None,
+            tab: None,
+        });
+        app.overlay_open = true;
+        app.dlg_shown = Some((uuid::Uuid::nil(), 1));
+        app.raise_open_overlays();
+        for (name, mock) in [("ctx", &ctx), ("search", &search), ("dialog", &dialog)] {
+            assert_eq!(mock.raised_count(), 1, "{name} layer raised exactly once");
+        }
+    }
+
+    #[test]
+    fn a_shortcut_dismisses_the_open_menu_before_it_acts() {
+        use ferrite_tabs::{MockHandle, WebViewHandle};
+        use std::rc::Rc;
+        let mut app = test_app();
+        let ov = Rc::new(MockHandle::new_visible(true));
+        app.ctx_overlay = Some(ov.clone() as Rc<dyn WebViewHandle>);
+        app.menu_open = true;
+        // Ctrl+T used to create the new tab's webview above the still-open
+        // menu and leave `menu_open` set, so the next menu click toggled a
+        // hidden card and looked dead.
+        assert!(app.handle_shortcut(Action::NewTab));
+        assert!(!app.menu_open, "the menu flag cannot survive the command");
+        assert!(!ov.was_visible(), "the shared overlay view is hidden");
+    }
+
+    #[test]
+    fn escape_closes_the_open_menu_before_stopping_the_page() {
+        use ferrite_tabs::{MockHandle, WebViewHandle};
+        use std::rc::Rc;
+        let mut app = test_app();
+        let ov = Rc::new(MockHandle::new_visible(true));
+        app.ctx_overlay = Some(ov.clone() as Rc<dyn WebViewHandle>);
+        app.menu_open = true;
+        assert!(app.handle_shortcut(Action::DismissOrStop));
+        assert!(!app.menu_open);
+        assert!(!ov.was_visible());
+    }
+
+    #[test]
+    fn ctx_ready_replays_the_open_frame_once_and_ignores_a_closed_card() {
+        // The overlay page is created and shown synchronously, then navigated
+        // asynchronously; the first frame eval can land on the empty initial
+        // document. The page's readiness post must repaint the card, but a
+        // late post after dismissal must not resurrect it.
+        use ferrite_tabs::{MockHandle, WebViewHandle};
+        use std::rc::Rc;
+        let mut app = test_app();
+        let ov = Rc::new(MockHandle::new_visible(true));
+        app.ctx_overlay = Some(ov.clone() as Rc<dyn WebViewHandle>);
+        app.ctx_last_js = Some("__ferritePop({\"kind\":\"shield\"})".to_owned());
+        app.replay_ctx_payload();
+        assert!(
+            ov.scripts().is_empty(),
+            "no owner open: readiness paints nothing"
+        );
+        app.menu_open = true;
+        app.replay_ctx_payload();
+        assert_eq!(
+            ov.scripts(),
+            vec!["__ferritePop({\"kind\":\"shield\"})".to_owned()],
+            "the exact last frame is replayed"
+        );
+        // A toolbar pop is also an owner: the replay is not menu-specific.
+        app.menu_open = false;
+        app.toolbar_pop = Some(ToolbarPop {
+            ctx: None,
+            point: false,
+            kind: PopKind::Shield,
+            x: 10.0,
+            y: 8.0,
+            w: 20.0,
+            h: 20.0,
+            frame: serde_json::json!({"kind": "shield"}),
+            actions: Vec::new(),
+            cw: 260.0,
+            ch: 200.0,
+            arm_until: None,
+            tab: None,
+        });
+        app.replay_ctx_payload();
+        assert_eq!(ov.scripts().len(), 2);
+        // The autofill field dropdown is the same shared overlay and can also
+        // be the first surface ever created, so it is an owner too.
+        app.toolbar_pop = None;
+        app.af_open = true;
+        app.replay_ctx_payload();
+        assert_eq!(ov.scripts().len(), 3);
+    }
+
+    #[test]
+    fn permission_actions_wait_for_the_arming_window() {
+        // The page disables the same buttons for the same window; this gate is
+        // the authoritative one, so a press that somehow lands early still
+        // decides nothing.
+        use ferrite_tabs::{MockHandle, WebViewHandle};
+        use std::rc::Rc;
+        let mut app = test_app();
+        let chrome = Rc::new(MockHandle::default());
+        app.chrome = Some(chrome.clone() as Rc<dyn WebViewHandle>);
+        let v = ShellApp::permissions_pop_view_impl(
+            &[perm_row("camera", "Camera", "https://a.test")],
+            0,
+        );
+        let now = ferrite_tabs::now_millis();
+        app.toolbar_pop = Some(ToolbarPop {
+            ctx: None,
+            point: false,
+            kind: PopKind::Permissions,
+            x: 10.0,
+            y: 8.0,
+            w: 20.0,
+            h: 20.0,
+            frame: v.frame,
+            actions: v.actions,
+            cw: 260.0,
+            ch: 200.0,
+            arm_until: Some(now + 60_000),
+            tab: None,
+        });
+        app.toolbar_pop_act("permissions", "notnow", 2);
+        assert!(
+            app.toolbar_pop.is_some(),
+            "a press inside the arm window is refused"
+        );
+        assert!(
+            !chrome.was_focused(),
+            "a refused press must not move the caret to the omnibox"
+        );
+        // Past the deadline the same press lands, closes the card, focuses
+        // chrome and drives the omnibox hook (old `#permnotnow` behavior).
+        app.toolbar_pop.as_mut().unwrap().arm_until = Some(now - 1);
+        app.toolbar_pop_act("permissions", "notnow", 2);
+        assert!(app.toolbar_pop.is_none());
+        assert!(
+            chrome.was_focused(),
+            "Not now hands the caret back to chrome"
+        );
+        assert!(
+            chrome
+                .scripts()
+                .iter()
+                .any(|s| s == "__ferriteFocusOmnibox()"),
+            "Not now opens the omnibox, matching the removed DOM handler"
+        );
+    }
+
+    #[test]
+    fn permission_decisions_need_a_live_request() {
+        // A card row is just shell-built data; the request it names can die
+        // (navigation, tab close). Deciding the dead row would mint a one-shot
+        // grant that the *next* request would silently consume.
+        let mut app = test_app();
+        let tab = app
+            .app
+            .tabs
+            .new_discarded_tab("https://stale.test".into(), "Stale".into(), false)
+            .unwrap();
+        let now = ferrite_tabs::now_millis();
+        let origin = "https://stale.test";
+        assert!(!app.permissions.decide(tab, origin, "camera", now));
+        assert_eq!(app.perm_rows().len(), 1, "the request is pending");
+        // The request dies before the user answers.
+        app.permissions
+            .retain_tabs(&std::collections::HashSet::new());
+        assert!(app.perm_rows().is_empty());
+        app.toolbar_pop = Some(ToolbarPop {
+            cw: 260.0,
+            ch: 200.0,
+            ctx: None,
+            point: false,
+            kind: PopKind::Permissions,
+            x: 10.0,
+            y: 8.0,
+            w: 20.0,
+            h: 20.0,
+            frame: serde_json::json!({}),
+            actions: vec![PopAction::PermDecide {
+                origin: origin.to_owned(),
+                kind: "camera".to_owned(),
+                always: false,
+            }],
+            arm_until: None,
+            tab: None,
+        });
+        app.toolbar_pop_act("permissions", "allow", 0);
+        // No one-shot grant for nobody: a fresh request still asks.
+        assert!(
+            !app.permissions.decide(tab, origin, "camera", now + 1),
+            "a dead row cannot mint a grant"
+        );
+    }
+
+    #[test]
+    fn permission_card_closes_when_its_tab_is_not_active() {
+        // The pending list is per active tab, so an open card whose tab is no
+        // longer active closes instead of repainting with another page's
+        // requests (old chrome DOM hid the popover on tab change).
+        let mut app = test_app();
+        let v = ShellApp::permissions_pop_view_impl(
+            &[perm_row("camera", "Camera", "https://a.test")],
+            0,
+        );
+        let arm = |app: &mut ShellApp, tab: Option<Uuid>| {
+            app.toolbar_pop = Some(ToolbarPop {
+                ctx: None,
+                point: false,
+                kind: PopKind::Permissions,
+                x: 10.0,
+                y: 8.0,
+                w: 20.0,
+                h: 20.0,
+                frame: v.frame.clone(),
+                actions: v.actions.clone(),
+                cw: 260.0,
+                ch: 200.0,
+                arm_until: None,
+                tab,
+            });
+        };
+        // A refresh (any chrome state push) catches the mismatch.
+        arm(&mut app, Some(Uuid::new_v4()));
+        assert!(app.refresh_toolbar_pop(), "a foreign-tab card is closed");
+        assert!(app.toolbar_pop.is_none());
+        // The same check is the tab-activation funnel's, for the keyboard
+        // switches that push no chrome state at all.
+        arm(&mut app, Some(Uuid::new_v4()));
+        assert!(app.close_tab_owned_pop(), "the funnel closes it");
+        assert!(app.toolbar_pop.is_none());
+        // The live tab's own card is left alone (the repaint that follows
+        // re-derives from the live store).
+        let live = app.app.tabs.active_id();
+        arm(&mut app, live);
+        assert!(!app.close_tab_owned_pop(), "the live tab's card stays up");
+        assert!(app.toolbar_pop.is_some());
+        // Both call sites exist: the refresh guard and the activation funnel.
+        let src = include_str!("shell.rs");
+        assert_eq!(
+            src.matches("self.close_tab_owned_pop();").count(),
+            2,
+            "refresh and the tab-activation funnel both close tab-owned cards"
+        );
+    }
+
+    #[test]
+    fn fmt_dl_size_matches_the_old_chrome_formatter() {
+        assert_eq!(fmt_dl_size(0), "0 B");
+        assert_eq!(fmt_dl_size(1023), "1023 B");
+        assert_eq!(fmt_dl_size(1024), "1.0 KB");
+        assert_eq!(fmt_dl_size(1536), "1.5 KB");
+        assert_eq!(fmt_dl_size(1_048_576), "1.0 MB");
+        assert_eq!(fmt_dl_size(1_572_864), "1.5 MB");
+        assert_eq!(fmt_dl_size(1_073_741_824), "1.00 GB");
+        assert_eq!(fmt_dl_size(1_610_612_736), "1.50 GB");
+    }
+
+    #[test]
+    fn popover_anchor_geom_aligns_flips_and_clamps() {
+        // Nav drop: below the button by the standard gap, button's left edge.
+        let g = ShellApp::popover_anchor_geom(
+            48.0, 40.0, 32.0, 28.0, 300.0, 200.0, 1280.0, 800.0, false,
+        )
+        .unwrap();
+        assert_eq!(g, (48.0, 72.0, 300.0, 200.0));
+        // Right-aligned card hangs its right edge off the button's right
+        // edge (history/downloads/shield).
+        let g = ShellApp::popover_anchor_geom(
+            880.0, 40.0, 32.0, 28.0, 360.0, 200.0, 1280.0, 800.0, true,
+        )
+        .unwrap();
+        assert_eq!(g.0, 552.0);
+        // A card that would run past the bottom flips above the button,
+        // keeping the gap (the status-strip shield button at y=700).
+        let g = ShellApp::popover_anchor_geom(
+            600.0, 700.0, 40.0, 26.0, 360.0, 300.0, 1280.0, 800.0, true,
+        )
+        .unwrap();
+        assert_eq!(g.1, 700.0 - POP_GAP_PX - 300.0);
+        // Both edges clamp into the window; a card taller than the window is
+        // capped so it can never be presented off-screen.
+        let g = ShellApp::popover_anchor_geom(
+            1270.0, 40.0, 32.0, 28.0, 360.0, 200.0, 1280.0, 800.0, false,
+        )
+        .unwrap();
+        assert_eq!(g.0, 1280.0 - 360.0);
+        let g = ShellApp::popover_anchor_geom(
+            0.0, 40.0, 32.0, 28.0, 360.0, 900.0, 1280.0, 800.0, false,
+        )
+        .unwrap();
+        assert_eq!(g.3, 792.0);
+        assert!(
+            ShellApp::popover_anchor_geom(f64::NAN, 0.0, 1.0, 1.0, 10.0, 10.0, 100.0, 100.0, false)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn toolbar_pop_act_is_gated_on_open_kind() {
+        let mut app = test_app();
+        // No pop: any activation is dropped, nothing panics or acts.
+        app.toolbar_pop_act("zoom", "in", 0);
+        assert!(app.toolbar_pop.is_none());
+        // A zoom pop with a forged kind name: still dropped (this shell has
+        // no zoomable tab in tests, but the gate runs before zoom entirely).
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "zoom".into(),
+            x: 1,
+            y: 1,
+            w: 48,
+            h: 32,
+            hl: -1,
+            clip: None,
+        });
+        app.toolbar_pop_act("not-zoom", "in", 0);
+        assert!(
+            app.toolbar_pop.is_some(),
+            "mismatched kind never acts and never closes"
+        );
+        // In-scope no-op on a webview-less tab (zoom_current is None) must
+        // not close the pop or panic either.
+        app.toolbar_pop_act("zoom", "in", 0);
+        assert!(app.toolbar_pop.is_some(), "rows keep the pop open");
+        app.toolbar_pop_act("zoom", "reset", 0);
+        assert!(app.toolbar_pop.is_some(), "reset keeps the pop open too");
+    }
+
+    #[test]
+    fn toolbar_pop_list_rows_are_gated_on_index_and_tag() {
+        // A hand-published list pop carries its action table; activation
+        // must hit a real index AND the row's act tag. Wrong index, wrong
+        // tag, or negative index never close the pop; a valid row closes
+        // first and then acts (old DOM parity: hide, then post).
+        let mut app = test_app();
+        app.toolbar_pop = Some(ToolbarPop {
+            ctx: None,
+            point: false,
+            kind: PopKind::History,
+            x: 10.0,
+            y: 8.0,
+            w: 32.0,
+            h: 20.0,
+            frame: serde_json::json!({"kind": "history", "rows": []}),
+            actions: vec![PopAction::AllHistory],
+            cw: 260.0,
+            ch: 200.0,
+            arm_until: None,
+            tab: None,
+        });
+        // Out-of-range: dropped, pop stays.
+        app.toolbar_pop_act("history", "all", 1);
+        assert!(app.toolbar_pop.is_some());
+        app.toolbar_pop_act("history", "all", -3);
+        assert!(app.toolbar_pop.is_some());
+        // Wrong tag: dropped, pop stays (a stale frame's vocabulary cannot
+        // act through a replaced table).
+        app.toolbar_pop_act("history", "reopen", 0);
+        assert!(app.toolbar_pop.is_some());
+        // Wrong kind name: dropped.
+        app.toolbar_pop_act("nav_back", "all", 0);
+        assert!(app.toolbar_pop.is_some());
+        // Valid: pop closes, then the action dispatches (navigate is inert
+        // on a shell with no tabs but must not panic or re-open pop).
+        app.toolbar_pop_act("history", "all", 0);
+        assert!(app.toolbar_pop.is_none(), "list rows close before acting");
+    }
+
+    #[test]
+    fn nav_drops_reopen_and_click_kinds_toggle() {
+        // nav kinds are press-open (right-click/long-press open fresh);
+        // zoom and history toggle shut on a repeat press (D3: the shell
+        // owns the toggle decision).
+        let mut app = test_app();
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "nav_back".into(),
+            x: 1,
+            y: 1,
+            w: 24,
+            h: 24,
+            hl: -1,
+            clip: None,
+        });
+        assert!(app.toolbar_pop.is_some(), "nav drop opens on first press");
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "nav_back".into(),
+            x: 1,
+            y: 1,
+            w: 24,
+            h: 24,
+            hl: -1,
+            clip: None,
+        });
+        assert!(
+            app.toolbar_pop.is_some(),
+            "nav drop re-opens on repeated press, never toggles shut"
+        );
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "history".into(),
+            x: 1,
+            y: 1,
+            w: 24,
+            h: 24,
+            hl: -1,
+            clip: None,
+        });
+        assert_eq!(
+            app.toolbar_pop.as_ref().map(|p| p.kind.clone()),
+            Some(PopKind::History),
+            "history replaces the nav drop"
+        );
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "history".into(),
+            x: 1,
+            y: 1,
+            w: 24,
+            h: 24,
+            hl: -1,
+            clip: None,
+        });
+        assert!(
+            app.toolbar_pop.is_none(),
+            "history button toggles shut on repeat press"
+        );
+    }
+
+    #[test]
+    fn hide_ctx_menu_releases_the_toolbar_pop() {
+        // The ctx menu and the toolbar pop share one overlay view; the ctx
+        // janitor must retire the pop as well, or a stale dismissal flag
+        // would hide the next menu from a content press.
+        let mut app = test_app();
+        app.handle_chrome_command(ChromeCommand::PopoverOpen {
+            kind: "zoom".into(),
+            x: 1,
+            y: 1,
+            w: 48,
+            h: 32,
+            hl: -1,
+            clip: None,
+        });
+        assert!(app.toolbar_pop.is_some());
+        app.hide_ctx_menu();
+        assert!(app.toolbar_pop.is_none(), "pop cleared with its flags");
+    }
+
+    #[test]
+    fn toolbar_pop_channel_is_on_the_content_allowlist() {
+        // Both halves of the shell-hosted pop channel must clear the default
+        // deny gate: activations (rows/buttons) and submissions (form values).
+        // A missing submit entry silently drops every star/workspace/group
+        // form before `toolbar_pop_submit` can validate it; the surface then
+        // looks alive (Escape closes it) but its primary button does nothing.
+        assert!(content_page_allowed("popover_activate"));
+        assert!(content_page_allowed("popover_submit"));
+        assert!(content_page_allowed("popover_dismiss"));
+    }
+
+    #[test]
+    fn opening_the_menu_closes_the_omnibox_popover() {
+        // One shared overlay: menu, context menu, autofill, and the omnibox
+        // popover never coexist. Any of them opening clears the others.
+        let mut app = test_app();
+        app.omni_pop = Some(OmniPop {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+            hl: None,
+            clip: None,
+        });
+        app.handle_chrome_command(ChromeCommand::MenuOpen { x: 0, y: 0 });
+        assert!(app.omni_pop.is_none(), "menu replaces the popover");
+    }
+}
+
+/// The console-free Windows build must still run console helpers — the
+/// default-browser probe and "open download" both shell out. These pin that
+/// hiding the console changes neither spawning, stdio capture, nor exit
+/// status: exactly what a wrong creation flag would break.
+#[cfg(all(test, windows))]
+mod console_spawn_tests {
+    use super::*;
+
+    #[test]
+    fn hidden_spawn_still_runs_and_captures_output() {
+        let out = spawn_without_console("cmd")
+            .args(["/C", "echo ferrite-console-probe"])
+            .output()
+            .expect("spawn a console helper with its window suppressed");
+        assert!(out.status.success(), "helper exited non-zero");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("ferrite-console-probe"),
+            "stdout is still captured when the console is hidden"
+        );
+    }
+
+    #[test]
+    fn create_no_window_is_the_documented_flag() {
+        // A wrong bit silently alters process-creation semantics; pin it.
+        assert_eq!(CREATE_NO_WINDOW, 0x0800_0000);
+    }
+}
+
+#[cfg(test)]
+mod shortcut_index_tests {
+    use super::switch_tab_index;
+
+    #[test]
+    fn ctrl_digits_do_not_clamp_onto_the_last_tab() {
+        // Ctrl+1..8 select that position; a digit past the end is a no-op.
+        // Ctrl+9 always selects the last tab. The old clamp turned Ctrl+4 in a
+        // two-tab window into a jump to tab 2.
+        assert_eq!(switch_tab_index(1, 2), Some(0));
+        assert_eq!(switch_tab_index(2, 2), Some(1));
+        assert_eq!(switch_tab_index(3, 2), None);
+        assert_eq!(switch_tab_index(8, 8), Some(7));
+        assert_eq!(switch_tab_index(8, 3), None);
+        assert_eq!(switch_tab_index(9, 2), Some(1));
+        assert_eq!(switch_tab_index(9, 9), Some(8));
+        assert_eq!(switch_tab_index(9, 0), None);
+        assert_eq!(switch_tab_index(1, 0), None);
     }
 }

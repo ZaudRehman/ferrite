@@ -3042,6 +3042,19 @@ impl Vault {
         .flatten()
     }
 
+    /// The live bookmark row for a URL: id, title, parent folder. The star
+    /// card's edit mode pre-fills from this row and updates it in place, so
+    /// editing a name can never insert a second bookmark for the same page.
+    pub fn bookmark_row(&self, url: &str) -> Option<(String, String, Option<String>)> {
+        let conn = self.conn.lock().ok()?;
+        conn.query_row(
+            "SELECT id, title, parent_folder_id FROM bookmarks WHERE url=?1 AND is_deleted=0",
+            [url],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok()
+    }
+
     /// Save a page to the reading list (idempotent per URL).
     pub fn reading_add(&self, url: &str, title: &str) -> VaultResult<String> {
         let url = url.trim();

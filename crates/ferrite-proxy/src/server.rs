@@ -329,6 +329,8 @@ pub const INTERNAL_WORKAROUND_PAGES: &[&str] = &[
     "tabsearch",
     "ctxmenu",
     "dialog",
+    "find",
+    "toast",
     "passwords",
     "autofill",
     "about",

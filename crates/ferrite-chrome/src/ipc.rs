@@ -3,6 +3,37 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Chrome-owned surfaces that used to be DOM popovers. The shell maps each
+/// one onto the shared overlay and builds its rows/actions from live state;
+/// chrome only supplies the surface name, validated target ids and geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChromeSurface {
+    Star,
+    Workspaces,
+    Profiles,
+    BarMenu,
+    TabContext,
+    TabsContext,
+    GroupContext,
+    BookmarkContext,
+}
+
+/// The complete value vocabulary a chrome form may submit. Deliberately not
+/// an arbitrary JSON object: the shell can validate every field without
+/// walking an attacker-shaped tree, and the enum stays `Eq`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PopValues {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub folder: String,
+    #[serde(default)]
+    pub color: u8,
+    #[serde(default)]
+    pub collapsed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum ChromeCommand {
@@ -90,6 +121,9 @@ pub enum ChromeCommand {
     },
     FolderAdd {
         name: String,
+        /// Parent folder id; absent = bookmarks-bar root (old posts).
+        #[serde(default)]
+        parent: Option<String>,
     },
     BookmarkAllTabs,
     FolderList {
@@ -98,19 +132,12 @@ pub enum ChromeCommand {
     BarReorder {
         ids: Vec<String>,
     },
-    HistoryRecent,
-    HistList {
-        dir: String,
-    },
-    /// Reopen one recently-closed tab. `index` counts in the
-    /// most-recent-first display order the shell pushes (0 = latest).
-    ClosedReopen {
-        index: usize,
-    },
-    /// Reopen every recently-closed tab, oldest first (newest ends active).
-    ClosedRestoreAll,
     /// Push the 8 most recent downloads to `__ferriteDownloadsRecent`
-    /// (bubble source; same builder as the downloads page).
+    /// (downloads bubble source; same builder as the downloads page).
+    /// Desktop's bubble is now a shell-hosted overlay pop (`PopKind::
+    /// Downloads`, tasks/toolbar-overlay-3c.md 3c-3), but the bundled
+    /// mobile chrome template still posts this and the bubble actions
+    /// below, so the vocabulary stays until that surface migrates too.
     DownloadsRecent,
     /// Bubble actions by download id (resolved server-side to filename).
     DlBubbleOpen {
@@ -150,6 +177,12 @@ pub enum ChromeCommand {
     },
     ReadingList,
     FindOpen,
+    /// Mobile-only contract below the find/toast group: desktop's find card
+    /// and toast are overlay windows now (tasks/toolbar-overlay-3c.md 3c-5),
+    /// but the bundled mobile chrome template still posts this vocabulary
+    /// with its own DOM card, and
+    /// `mobile_template_shares_contract_and_stays_bundled` pins that it can
+    /// be served unchanged. Desktop never sends these.
     FindSearch {
         query: String,
         case: bool,
@@ -313,7 +346,10 @@ pub enum ChromeCommand {
     },
     FocusOmnibox,
     RequestState,
-    /// `seq` must match the visible frame. Stale clicks are ignored.
+    /// Mobile-only toast vocabulary, same reason as the find commands above:
+    /// the bundled template renders its own card and posts both actions.
+    /// Desktop posts `toast_action`/`toast_dismiss` as overlay `type`
+    /// messages instead.
     ToastAction {
         seq: u64,
     },
@@ -336,12 +372,66 @@ pub enum ChromeCommand {
         x: i32,
         y: i32,
     },
+    /// Open a toolbar popover on the shared overlay webview. `kind` names the
+    /// popup (`omnibox`). x/y/w/h are the anchor's window-relative top-left
+    /// and size in whole CSS pixels, so the shell can hang the popup below it
+    /// (integers keep the command `Eq`; sub-pixel anchoring is meaningless).
+    /// `hl` is the highlighted row (-1 for none); `clip` carries an optional
+    /// clipboard row, display snippet only — the full text never leaves chrome.
+    PopoverOpen {
+        kind: String,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        #[serde(default)]
+        hl: i32,
+        #[serde(default)]
+        clip: Option<String>,
+    },
+    /// Close the named popover (blur, Esc, submit, empty results).
+    PopoverClose {
+        kind: String,
+    },
+    /// Highlight moved while the field keeps keyboard focus. -1 clears.
+    PopoverHighlight {
+        index: i32,
+    },
+    /// Clipboard snippet for the popover's clipboard row; absent clears it.
+    PopoverClipboard {
+        #[serde(default)]
+        clip: Option<String>,
+    },
+    /// Open one of the chrome surfaces that used to be a DOM popover on the
+    /// shared overlay. `id` names a folder/group/bookmark target; `ids` names
+    /// a tab set; `items` carries chrome's measured overflow list (bar menu
+    /// only). `point` anchors at (x,y) instead of below an owner rect.
+    ChromeSurfaceOpen {
+        surface: ChromeSurface,
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        ids: Vec<String>,
+        #[serde(default)]
+        items: Vec<String>,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        point: bool,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    },
 }
 
 impl ChromeCommand {
-    /// Empty and oversize input is rejected, never truncated.
+    /// Empty and oversize input is rejected, never truncated. 8 KiB covers
+    /// a bar-overflow id list (a 100-item bar is ~3.6 KiB of ids) plus a long
+    /// URL; chrome is the only producer of this channel, and an unparseable
+    /// envelope still never reaches a behavior.
     pub fn parse(json: &str) -> Result<Self, ChromeError> {
-        if json.is_empty() || json.len() > 2048 {
+        if json.is_empty() || json.len() > 8192 {
             return Err(ChromeError::BadEnvelope);
         }
         serde_json::from_str(json).map_err(|_| ChromeError::BadEnvelope)
@@ -403,6 +493,59 @@ mod tests {
     }
 
     #[test]
+    fn popover_open_round_trips_with_and_without_clip() {
+        // Popover anchor: window-relative top-left + size, plus the field
+        // highlight and an optional clipboard row snippet.
+        let cmd = ChromeCommand::PopoverOpen {
+            kind: "omnibox".into(),
+            x: 40,
+            y: 6,
+            w: 720,
+            h: 48,
+            hl: -1,
+            clip: None,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(ChromeCommand::parse(&json).unwrap(), cmd);
+
+        let with_clip = ChromeCommand::PopoverOpen {
+            kind: "omnibox".into(),
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 40,
+            hl: 2,
+            clip: Some("https://example.com".into()),
+        };
+        let json = serde_json::to_string(&with_clip).unwrap();
+        assert_eq!(ChromeCommand::parse(&json).unwrap(), with_clip);
+    }
+
+    #[test]
+    fn popover_close_highlight_and_clipboard_round_trip() {
+        for cmd in [
+            ChromeCommand::PopoverClose {
+                kind: "omnibox".into(),
+            },
+            ChromeCommand::PopoverHighlight { index: 3 },
+            ChromeCommand::PopoverHighlight { index: -1 },
+            ChromeCommand::PopoverClipboard {
+                clip: Some("paste and go".into()),
+            },
+            ChromeCommand::PopoverClipboard { clip: None },
+        ] {
+            let json = serde_json::to_string(&cmd).unwrap();
+            assert_eq!(ChromeCommand::parse(&json).unwrap(), cmd);
+        }
+    }
+
+    #[test]
+    fn popover_open_requires_anchor_fields() {
+        // No anchor: rejected, never defaulted into a stray popup.
+        assert!(ChromeCommand::parse(r#"{"cmd":"popover_open","kind":"omnibox"}"#).is_err());
+    }
+
+    #[test]
     fn unknown_cmd_is_rejected_not_ignored() {
         assert!(ChromeCommand::parse(r#"{"cmd":"eval","js":"x"}"#).is_err());
     }
@@ -410,7 +553,7 @@ mod tests {
     #[test]
     fn oversize_and_empty_are_rejected() {
         assert!(ChromeCommand::parse("").is_err());
-        assert!(ChromeCommand::parse(&"x".repeat(2049)).is_err());
+        assert!(ChromeCommand::parse(&"x".repeat(8193)).is_err());
     }
 
     #[test]
@@ -422,7 +565,7 @@ mod tests {
         // Oversize still names the command (parsed past the length cap).
         let big = format!(
             r#"{{"cmd":"go_back","steps":1,"pad":"{}"}}"#,
-            "x".repeat(3000)
+            "x".repeat(9000)
         );
         assert!(ChromeCommand::parse(&big).is_err());
         assert_eq!(ChromeCommand::envelope_cmd(&big), "go_back");
@@ -484,18 +627,9 @@ mod tests {
     }
 
     #[test]
-    fn find_search_round_trips_with_case_flag() {
-        let cmd = ChromeCommand::FindSearch {
-            query: "salary figure".into(),
-            case: true,
-        };
-        let json = serde_json::to_string(&cmd).unwrap();
-        assert_eq!(ChromeCommand::parse(&json).unwrap(), cmd);
+    fn find_open_and_simple_commands_round_trip() {
         for simple in [
             ChromeCommand::FindOpen,
-            ChromeCommand::FindNext,
-            ChromeCommand::FindPrev,
-            ChromeCommand::FindClose,
             ChromeCommand::OpenDevTools,
             ChromeCommand::ReaderOpen,
             ChromeCommand::EnterPip,
@@ -508,6 +642,30 @@ mod tests {
             let json = serde_json::to_string(&simple).unwrap();
             assert_eq!(ChromeCommand::parse(&json).unwrap(), simple);
         }
+    }
+
+    #[test]
+    fn mobile_find_and_toast_vocabulary_round_trips() {
+        // The bundled mobile chrome template is not served yet, but it must
+        // keep parsing unchanged: desktop migrated these to overlay `type`
+        // messages in 3c-5 without breaking the template's contract.
+        for cmd in [
+            ChromeCommand::FindSearch {
+                query: "needle".into(),
+                case: true,
+            },
+            ChromeCommand::FindNext,
+            ChromeCommand::FindPrev,
+            ChromeCommand::FindClose,
+            ChromeCommand::ToastAction { seq: 4 },
+            ChromeCommand::ToastDismiss { seq: 4 },
+        ] {
+            let json = serde_json::to_string(&cmd).unwrap();
+            assert_eq!(ChromeCommand::parse(&json).unwrap(), cmd);
+        }
+        // Shape checks: the case flag and seq are required, never defaulted.
+        assert!(ChromeCommand::parse(r#"{"cmd":"find_search","query":"x"}"#).is_err());
+        assert!(ChromeCommand::parse(r#"{"cmd":"toast_action"}"#).is_err());
     }
 
     #[test]
@@ -578,8 +736,6 @@ mod tests {
             ChromeCommand::WsDefault,
             ChromeCommand::SleepActive,
             ChromeCommand::TranslatePage,
-            ChromeCommand::ClosedReopen { index: 0 },
-            ChromeCommand::ClosedRestoreAll,
             ChromeCommand::DownloadsRecent,
             ChromeCommand::DlBubbleOpen { id: "abc".into() },
             ChromeCommand::DlBubbleFolder { id: "abc".into() },
@@ -590,8 +746,6 @@ mod tests {
                 name: "Work".into(),
             },
             ChromeCommand::ProfileDelete { id: "Work".into() },
-            ChromeCommand::ToastAction { seq: 7 },
-            ChromeCommand::ToastDismiss { seq: 7 },
             ChromeCommand::CrashRestore,
             ChromeCommand::CrashRestoreExceptActive,
             ChromeCommand::CrashDismiss,
@@ -631,8 +785,21 @@ mod tests {
         assert!(ChromeCommand::parse(r#"{"cmd":"menu_item","id":"settings"}"#).is_ok());
         assert!(ChromeCommand::parse(r#"{"cmd":"select_engine","id":"ddg"}"#).is_ok());
         assert!(ChromeCommand::parse(r#"{"cmd":"request_state"}"#).is_ok());
-        assert!(ChromeCommand::parse(r#"{"cmd":"history_recent"}"#).is_ok());
         assert!(ChromeCommand::parse(r#"{"cmd":"toggle_maximize"}"#).is_ok());
+        // The history surface posts popover_open now; the old hook commands
+        // (history_recent / hist_list / closed_reopen / closed_restore_all)
+        // are deleted envelope surface and must stay rejected.
+        for gone in [
+            r#"{"cmd":"history_recent"}"#,
+            r#"{"cmd":"hist_list","dir":"back"}"#,
+            r#"{"cmd":"closed_reopen","index":0}"#,
+            r#"{"cmd":"closed_restore_all"}"#,
+        ] {
+            assert!(
+                ChromeCommand::parse(gone).is_err(),
+                "deleted still parsed: {gone}"
+            );
+        }
     }
 
     #[test]
@@ -646,6 +813,61 @@ mod tests {
         assert_eq!(
             ChromeCommand::parse(reorder).unwrap(),
             ChromeCommand::Reorder { from: 2, to: 0 }
+        );
+    }
+
+    #[test]
+    fn chrome_surface_open_round_trips_and_requires_geometry() {
+        let cmd = ChromeCommand::ChromeSurfaceOpen {
+            surface: ChromeSurface::BarMenu,
+            id: "folder-a".into(),
+            ids: vec!["tab-1".into(), "tab-2".into()],
+            items: vec!["bookmark-a".into()],
+            parent: Some("root".into()),
+            point: false,
+            x: 120,
+            y: 40,
+            w: 80,
+            h: 24,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(ChromeCommand::parse(&json).unwrap(), cmd);
+        // Missing anchor geometry is rejected, never defaulted into a popup
+        // at (0,0).
+        assert!(ChromeCommand::parse(r#"{"cmd":"chrome_surface_open","surface":"star"}"#).is_err());
+        assert!(
+            ChromeCommand::parse(
+                r#"{"cmd":"chrome_surface_open","surface":"nope","x":0,"y":0,"w":0,"h":0}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pop_values_defaults_and_round_trips() {
+        assert_eq!(
+            PopValues::default(),
+            PopValues {
+                name: String::new(),
+                folder: String::new(),
+                color: 0,
+                collapsed: false
+            }
+        );
+        let v = PopValues {
+            name: "Docs".into(),
+            folder: "f1".into(),
+            color: 3,
+            collapsed: true,
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(serde_json::from_str::<PopValues>(&json).unwrap(), v);
+        // Missing fields default instead of failing the whole submit.
+        assert_eq!(
+            serde_json::from_str::<PopValues>(r#"{"name":"Docs"}"#)
+                .unwrap()
+                .color,
+            0
         );
     }
 }
