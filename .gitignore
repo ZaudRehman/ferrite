@@ -8,7 +8,8 @@
 /graphify-out/
 crates/*/sbom.json
 ferrite-threat.db*
-# locally built/downloaded installers live on Releases, never in the repo
 *.msi
 *.deb
 *.dmg
+/tasks/
+/tools/
