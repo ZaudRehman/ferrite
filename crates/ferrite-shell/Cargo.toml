@@ -63,6 +63,6 @@ windows = { version = "0.61", features = [
 # workflow, so a silent minor bump here rots until release day (0.6.x API
 # churn broke the share sheet once already). Bump deliberately with the
 # ENGINE.md matrix and the Apple-target check in hand.
-objc2 = "=0.6.4"
+objc2 = "=0.6.5"
 objc2-foundation = { version = "=0.3.2", features = ["NSString", "NSURL", "NSArray", "NSGeometry"] }
 objc2-app-kit = { version = "=0.3.2", features = ["NSSharingService", "NSView", "NSWindow", "NSEvent", "NSResponder", "NSWorkspace"] }
